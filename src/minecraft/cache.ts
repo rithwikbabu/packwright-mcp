@@ -270,7 +270,7 @@ async function fetchJson(
 ): Promise<{ readonly value: unknown; readonly sha1: string }> {
   assertOfficialUrl(url);
   const response = await fetch(url, {
-    headers: { 'user-agent': 'packwright-mcp/0.1.1' },
+    headers: { 'user-agent': 'packwright-mcp/0.1.2' },
     redirect: 'error',
     ...(signal === undefined ? {} : { signal }),
   });
@@ -455,7 +455,7 @@ async function downloadVerified(
   );
   try {
     const response = await fetch(url, {
-      headers: { 'user-agent': 'packwright-mcp/0.1.1' },
+      headers: { 'user-agent': 'packwright-mcp/0.1.2' },
       redirect: 'error',
       ...(signal === undefined ? {} : { signal }),
     });

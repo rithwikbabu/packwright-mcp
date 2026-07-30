@@ -1,6 +1,6 @@
 {
   "name": "@rithwikbabu/packwright-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A local-first MCP server for developing Minecraft Java Edition datapacks.",
   "type": "module",
   "bin": {

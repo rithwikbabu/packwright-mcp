@@ -4,7 +4,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-30
+
+### Fixed
+
+- Carried forward the `0.1.1` vanilla GameTest corrections in a publishable release.
+- Corrected the npm release tarball path so npm treats the downloaded artifact as a local package instead of a Git repository shorthand.
+
 ## [0.1.1] - 2026-07-30
+
+### Withdrawn
+
+- The immutable tag passed CI and vanilla Minecraft testing, but publication stopped before npm, MCP Registry, or GitHub release artifacts were created. Use `0.1.2` instead.
 
 ### Fixed
 
@@ -26,6 +37,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Excluded Spyglass from runtime dependencies because its current dependency tree contains an unfixed critical archive-extraction advisory; external use requires explicit operator configuration.
 
-[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rithwikbabu/packwright-mcp/releases/tag/v0.1.0

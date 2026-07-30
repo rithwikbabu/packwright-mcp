@@ -52,13 +52,7 @@ The release workflow first verifies that the tagged commit is on `main`, runs al
 
 The workflow tolerates a package version that is already public so the manually bootstrapped `0.1.0` can proceed to MCP Registry and GitHub release creation. Never move or reuse a version tag for different contents.
 
-If publication fails after an immutable tag has been created, fix the workflow on `main` and retry the existing tag through the protected manual path:
-
-```sh
-gh workflow run release.yml --ref main -f release_tag=vX.Y.Z
-```
-
-The retry checks out the existing tag, verifies that it points to a commit on `main`, reruns the complete release gate, and requires approval in the `release` environment. Never delete or move the tag to pick up workflow changes.
+If a workflow defect prevents publication after an immutable tag has been created, do not delete, move, or manually republish that tag. Fix the workflow, increment every package/server version, and create a new patch release through the normal tag-triggered path. This keeps npm provenance tied to the exact source commit that owns the published version.
 
 ## MCP Registry bootstrap and verification
 
