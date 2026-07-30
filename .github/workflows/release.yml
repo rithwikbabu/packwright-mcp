@@ -104,6 +104,17 @@ jobs:
     steps:
       - name: Check out tagged metadata
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Reconfirm immutable release source
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$RELEASE_SHA"
 
       - name: Download verified release tarball
         uses: actions/download-artifact@v4
@@ -121,22 +132,35 @@ jobs:
       - name: Use an OIDC-capable npm CLI
         run: npm install --global npm@11.6.2
 
-      - name: Check whether npm version already exists
+      - name: Check whether exact npm artifact already exists
         id: npm_version
         env:
           PACKAGE_NAME: '@rithwikbabu/packwright-mcp'
           PACKAGE_VERSION: ${{ github.ref_name }}
         run: |
           node --input-type=module <<'NODE'
+          import crypto from "node:crypto";
           import fs from "node:fs";
 
           const name = process.env.PACKAGE_NAME;
           const version = process.env.PACKAGE_VERSION.replace(/^v/, "");
+          const tarballs = fs.readdirSync("release-package").filter((entry) => entry.endsWith(".tgz"));
+          if (tarballs.length !== 1) {
+            console.error(`Expected exactly one verified tarball, found ${tarballs.length}`);
+            process.exit(1);
+          }
+          const tarball = fs.readFileSync(`release-package/${tarballs[0]}`);
+          const localIntegrity = `sha512-${crypto.createHash("sha512").update(tarball).digest("base64")}`;
           const encodedName = name.replace("/", "%2f");
           const response = await fetch(`https://registry.npmjs.org/${encodedName}/${version}`);
           if (response.status === 404) {
             fs.appendFileSync(process.env.GITHUB_OUTPUT, "exists=false\n");
           } else if (response.ok) {
+            const metadata = await response.json();
+            if (metadata.dist?.integrity !== localIntegrity) {
+              console.error(`Existing npm artifact integrity does not match the verified ${name}@${version} tarball`);
+              process.exit(1);
+            }
             fs.appendFileSync(process.env.GITHUB_OUTPUT, "exists=true\n");
           } else {
             console.error(`npm Registry lookup failed with HTTP ${response.status}`);
@@ -146,7 +170,7 @@ jobs:
 
       - name: Publish package with npm trusted publishing
         if: steps.npm_version.outputs.exists != 'true'
-        run: npm publish release-package/*.tgz --access public
+        run: npm publish ./release-package/*.tgz --access public
 
       - name: Wait for npm package visibility
         env:
@@ -248,7 +272,11 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
         run: |
+          git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          test "$(git rev-parse "${RELEASE_TAG}^{commit}")" = "$RELEASE_SHA"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "GitHub release already exists"
           else

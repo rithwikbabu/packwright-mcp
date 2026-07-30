@@ -50,7 +50,9 @@ Trusted publishing requires a GitHub-hosted runner, `id-token: write`, Node 22.1
 
 The release workflow first verifies that the tagged commit is on `main`, runs all ordinary gates without write or OIDC permissions, and uploads the resulting tarball. Only the protected publish job receives that verified tarball and OIDC credentials. It uses npm trusted publishing with automatic provenance, then authenticates `mcp-publisher` through GitHub OIDC. It downloads a pinned publisher archive with GitHub CLI, verifies its committed SHA-256, and extracts it locally; it never pipes a network response into a shell.
 
-The workflow tolerates a package version that is already public so the manually bootstrapped `0.1.0` can proceed to MCP Registry and GitHub release creation. Never move or reuse a version tag for different contents.
+The workflow tolerates a package version that is already public only when its npm SHA-512 integrity exactly matches the verified release tarball, so the manually bootstrapped `0.1.0` can proceed to MCP Registry and GitHub release creation safely. It also reconfirms the release tag's commit after environment approval and immediately before creating the GitHub release. Never move or reuse a version tag for different contents.
+
+If a workflow defect prevents publication after an immutable tag has been created, do not delete, move, or manually republish that tag. Fix the workflow, increment every package/server version, and create a new patch release through the normal tag-triggered path. This keeps npm provenance tied to the exact source commit that owns the published version.
 
 ## MCP Registry bootstrap and verification
 

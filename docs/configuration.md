@@ -44,7 +44,7 @@ Use read-only mode when an MCP client only needs inspection, lookup, or review:
   "mcpServers": {
     "packwright": {
       "command": "npx",
-      "args": ["-y", "@rithwikbabu/packwright-mcp@0.1.1"],
+      "args": ["-y", "@rithwikbabu/packwright-mcp@0.1.2"],
       "env": {
         "PACKWRIGHT_WORKSPACE": "/absolute/path/to/datapacks",
         "PACKWRIGHT_READ_ONLY": "true"
