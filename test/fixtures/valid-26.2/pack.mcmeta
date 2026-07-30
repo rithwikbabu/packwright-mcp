@@ -1,0 +1,7 @@
+{
+  "pack": {
+    "description": "Packwright Minecraft 26.2 validation fixture",
+    "min_format": [107, 1],
+    "max_format": [107, 1]
+  }
+}

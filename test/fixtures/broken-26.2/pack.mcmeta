@@ -1,0 +1,7 @@
+{
+  "pack": {
+    "description": "Intentionally broken Packwright fixture",
+    "min_format": [106, 0],
+    "max_format": [106, 0]
+  }
+}

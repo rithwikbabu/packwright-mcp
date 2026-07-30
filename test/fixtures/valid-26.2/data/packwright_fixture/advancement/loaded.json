@@ -1,0 +1,10 @@
+{
+  "criteria": {
+    "loaded": {
+      "trigger": "minecraft:tick"
+    }
+  },
+  "rewards": {
+    "function": "packwright_fixture:load"
+  }
+}

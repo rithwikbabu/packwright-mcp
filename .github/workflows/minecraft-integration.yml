@@ -1,0 +1,56 @@
+name: Minecraft integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      accept_minecraft_eula:
+        description: I have read and accept the Minecraft EULA for this integration run.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: minecraft-integration-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  vanilla:
+    name: Minecraft Java Edition 26.2
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: minecraft-integration
+    env:
+      PACKWRIGHT_CACHE_DIR: ${{ runner.temp }}/packwright-cache
+      PACKWRIGHT_ACCEPT_MINECRAFT_EULA: ${{ inputs.accept_minecraft_eula }}
+    steps:
+      - name: Require explicit EULA acceptance
+        if: ${{ inputs.accept_minecraft_eula != true }}
+        run: |
+          echo "This workflow requires explicit acceptance of the Minecraft EULA." >&2
+          exit 1
+
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run explicit setup and vanilla fixture tests
+        run: npm run test:minecraft
+
+      # Never upload the cache, server jar, generated vanilla data, or logs as artifacts.

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.rithwikbabu/packwright-mcp",
+  "title": "Packwright MCP",
+  "description": "Local-first MCP server for creating, validating, testing, and packaging Minecraft Java datapacks.",
+  "repository": {
+    "url": "https://github.com/rithwikbabu/packwright-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@rithwikbabu/packwright-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PACKWRIGHT_WORKSPACE",
+          "description": "Absolute path to the directory containing datapack projects Packwright may access.",
+          "format": "string",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "PACKWRIGHT_JAVA",
+          "description": "Optional Java 25 executable used for setup and vanilla GameTest runs.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "PACKWRIGHT_CACHE_DIR",
+          "description": "Optional absolute path for verified Minecraft artifacts and local reference data.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "PACKWRIGHT_READ_ONLY",
+          "description": "Set to true to disable MCP tools that write to the workspace.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "PACKWRIGHT_OFFLINE",
+          "description": "Set to true to prohibit network access, including explicit version setup.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "PACKWRIGHT_SPYGLASS_COMMAND",
+          "description": "Optional command for an independently installed and trusted Spyglass executable.",
+          "format": "string",
+          "isRequired": false,
+          "isSecret": false
+        }
+      ]
+    }
+  ]
+}

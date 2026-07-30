@@ -1,0 +1,81 @@
+{
+  "name": "@rithwikbabu/packwright-mcp",
+  "version": "0.1.0",
+  "description": "A local-first MCP server for developing Minecraft Java Edition datapacks.",
+  "type": "module",
+  "bin": {
+    "packwright-mcp": "dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "SECURITY.md",
+    "THIRD_PARTY_NOTICES.md",
+    "server.json"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "mcpName": "io.github.rithwikbabu/packwright-mcp",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rithwikbabu/packwright-mcp.git"
+  },
+  "homepage": "https://github.com/rithwikbabu/packwright-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/rithwikbabu/packwright-mcp/issues"
+  },
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "minecraft",
+    "datapack",
+    "mcfunction"
+  ],
+  "scripts": {
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:minecraft": "npm run build && node scripts/run-minecraft-integration.mjs",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "commander": "^14.0.0",
+    "env-paths": "^3.0.0",
+    "fast-xml-parser": "^5.2.5",
+    "yazl": "^3.3.1",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/node": "^24.0.0",
+    "@types/yazl": "^3.3.0",
+    "@vitest/coverage-v8": "^4.1.10",
+    "eslint": "^10.8.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.56.1",
+    "vitest": "^4.1.10"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
