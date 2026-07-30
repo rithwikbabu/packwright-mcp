@@ -51,10 +51,27 @@ function operationContext(signal: AbortSignal): PackwrightServiceContext {
   };
 }
 
-function diagnosticsText(diagnostics: readonly Diagnostic[]): string[] {
-  return diagnostics.map((entry) => {
+function displayDiagnosticPath(value: string): string {
+  const functionPath = /^data\/([^/]+)\/function\/(.+\.mcfunction)$/u.exec(value);
+  return functionPath?.[1] === undefined || functionPath[2] === undefined
+    ? value
+    : `${functionPath[1]}/${functionPath[2]}`;
+}
+
+export function diagnosticsText(diagnostics: readonly Diagnostic[]): string[] {
+  return diagnostics.flatMap((entry) => {
+    if (entry.path !== undefined && entry.range !== undefined) {
+      return [
+        `${displayDiagnosticPath(entry.path)}:${String(entry.range.start.line + 1)}`,
+        entry.message,
+        ...(entry.suggestedFix === undefined ? [] : [entry.suggestedFix]),
+      ];
+    }
     const location = entry.path === undefined ? '' : ` ${entry.path}`;
-    return `${entry.severity.toUpperCase()} [${entry.engine}:${entry.code}]${location}: ${entry.message}`;
+    return [
+      `${entry.severity.toUpperCase()} [${entry.engine}:${entry.code}]${location}: ${entry.message}`,
+      ...(entry.suggestedFix === undefined ? [] : [entry.suggestedFix]),
+    ];
   });
 }
 
@@ -127,7 +144,7 @@ export function createCli(): Command {
   program
     .name('packwright-mcp')
     .description('Local-first MCP server and CLI for Minecraft Java 26.2 datapacks')
-    .version('0.1.2')
+    .version('0.2.0')
     .showSuggestionAfterError()
     .showHelpAfterError();
   addGlobalOptions(program);
@@ -196,29 +213,36 @@ export function createCli(): Command {
     .description('validate a workspace datapack')
     .argument('<project>', 'workspace-relative datapack path')
     .option('--no-spyglass', 'skip the configured external Spyglass adapter')
-    .action(async (project: string, local: { spyglass: boolean }, command: Command) => {
-      const options = globalOptions(command);
-      const config = resolveRuntimeConfig(configOverrides(options));
-      const application = await PackwrightApplication.open(config);
-      const abort = installAbortHandlers();
-      try {
-        const result = await application.validateDatapack(
-          { project, includeSpyglass: local.spyglass },
-          operationContext(abort.controller.signal),
-        );
-        emitResult(
-          result,
-          options.json ?? false,
-          [
-            `${result.ok ? 'VALID' : 'INVALID'}: ${String(result.filesScanned)} files, ${String(result.bytesScanned)} bytes`,
-          ],
-          result.diagnostics,
-        );
-        if (!result.ok) process.exitCode = 1;
-      } finally {
-        abort.dispose();
-      }
-    });
+    .option('--no-vanilla', 'skip authoritative Minecraft command validation')
+    .action(
+      async (project: string, local: { spyglass: boolean; vanilla: boolean }, command: Command) => {
+        const options = globalOptions(command);
+        const config = resolveRuntimeConfig(configOverrides(options));
+        const application = await PackwrightApplication.open(config);
+        const abort = installAbortHandlers();
+        try {
+          const result = await application.validateDatapack(
+            {
+              project,
+              includeSpyglass: local.spyglass,
+              includeVanilla: local.vanilla,
+            },
+            operationContext(abort.controller.signal),
+          );
+          emitResult(
+            result,
+            options.json ?? false,
+            [
+              `${result.ok ? 'VALID' : 'INVALID'}: ${String(result.filesScanned)} files, ${String(result.bytesScanned)} bytes`,
+            ],
+            result.diagnostics,
+          );
+          if (!result.ok) process.exitCode = result.vanilla?.status === 'setup_required' ? 2 : 1;
+        } finally {
+          abort.dispose();
+        }
+      },
+    );
 
   program
     .command('test')
@@ -305,7 +329,7 @@ export function createCli(): Command {
               : ['BUILD FAILED'],
             result.diagnostics,
           );
-          if (!result.ok) process.exitCode = 1;
+          if (!result.ok) process.exitCode = result.vanilla?.status === 'setup_required' ? 2 : 1;
         } finally {
           abort.dispose();
         }

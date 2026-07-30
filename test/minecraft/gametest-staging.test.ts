@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createDatapack } from '../../src/core/authoring.js';
 import { MAX_SCAN_BYTES } from '../../src/core/limits.js';
 import { scanDatapack } from '../../src/core/scanner.js';
-import { stageDatapackFromSnapshot } from '../../src/minecraft/gametest.js';
+import { parseGameTestCases, stageDatapackFromSnapshot } from '../../src/minecraft/gametest.js';
 import { temporaryWorkspace } from '../core/helpers.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -17,6 +17,19 @@ afterEach(async () => {
 });
 
 describe('GameTest staging snapshots', () => {
+  it('parses the nested JUnit suite shape emitted by Minecraft 26.2', () => {
+    const cases = parseGameTestCases(
+      '<?xml version="1.0"?><testsuite><testsuite time="1"><testcase classname="minecraft:empty" name="packwright:command_validation" time="0.25"/></testsuite></testsuite>',
+    );
+    expect(cases).toEqual([
+      {
+        name: 'minecraft:empty:packwright:command_validation',
+        status: 'passed',
+        durationMs: 250,
+      },
+    ]);
+  });
+
   it('copies only bytes matching the scanned size and hash', async () => {
     const fixture = await temporaryWorkspace();
     cleanups.push(fixture.cleanup);

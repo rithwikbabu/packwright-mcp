@@ -91,6 +91,49 @@ function jsonSafe(value: unknown): JsonValue | undefined {
 }
 
 function textFallback(value: object): string {
+  const candidate = value as {
+    diagnostics?: unknown;
+  };
+  if (Array.isArray(candidate.diagnostics) && candidate.diagnostics.length > 0) {
+    const rendered = candidate.diagnostics
+      .flatMap((raw): string[] => {
+        if (raw === null || typeof raw !== 'object') return [];
+        const item = raw as {
+          path?: unknown;
+          range?: { start?: { line?: unknown } };
+          message?: unknown;
+          suggestedFix?: unknown;
+          severity?: unknown;
+          engine?: unknown;
+          code?: unknown;
+        };
+        if (typeof item.message !== 'string') return [];
+        const severity = typeof item.severity === 'string' ? item.severity.toUpperCase() : 'ERROR';
+        const engine = typeof item.engine === 'string' ? item.engine : 'packwright';
+        const code = typeof item.code === 'string' ? item.code : 'diagnostic';
+        let location: string | undefined;
+        if (typeof item.path === 'string' && typeof item.range?.start?.line === 'number') {
+          const match = /^data\/([^/]+)\/function\/(.+\.mcfunction)$/u.exec(item.path);
+          const displayed =
+            match?.[1] === undefined || match[2] === undefined
+              ? item.path
+              : `${match[1]}/${match[2]}`;
+          location = `${displayed}:${String(item.range.start.line + 1)}`;
+        }
+        return location === undefined
+          ? [
+              `${severity} [${engine}:${code}]: ${item.message}`,
+              ...(typeof item.suggestedFix === 'string' ? [item.suggestedFix] : []),
+            ]
+          : [
+              location,
+              item.message,
+              ...(typeof item.suggestedFix === 'string' ? [item.suggestedFix] : []),
+            ];
+      })
+      .join('\n');
+    if (rendered.length > 0 && Buffer.byteLength(rendered, 'utf8') <= 32 * 1024) return rendered;
+  }
   const compact = JSON.stringify(value);
   if (Buffer.byteLength(compact, 'utf8') > 32 * 1024) {
     return 'The complete bounded result is available in structuredContent; the duplicate text fallback was omitted to stay within the MCP payload limit.';
@@ -317,7 +360,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Validate Datapack',
       description:
-        'Run Packwright structural validation and, when configured, external Spyglass diagnostics. Invalid packs return normalized diagnostics as a tool execution error.',
+        'Run structural checks plus authoritative Minecraft 26.2 dispatcher, registry, and codec validation for every ordinary .mcfunction command. Requires setup-version and Java 25 unless includeVanilla=false; configured Spyglass diagnostics are also available. Invalid packs return normalized diagnostics as a tool execution error.',
       inputSchema: DatapackValidateInputSchema,
       outputSchema: ValidationResultSchema,
       annotations: {
@@ -360,7 +403,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Run Vanilla GameTests',
       description:
-        'Load a staged copy of the pack and run selected GameTests in a disposable Minecraft 26.2 universe. The configured timeout is capped at five minutes.',
+        'Validate commands, then load a staged copy of the pack and run selected GameTests in a disposable Minecraft 26.2 universe. The configured timeout is one shared budget capped at five minutes.',
       inputSchema: DatapackTestInputSchema,
       outputSchema: GameTestResultSchema,
       annotations: {
@@ -383,7 +426,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Build Datapack ZIP',
       description:
-        'Validate and create a deterministic datapack ZIP with pack.mcmeta at its root. Existing output files require overwrite=true and their current SHA-256.',
+        'Run strict structural and authoritative Minecraft 26.2 command validation, then create a deterministic datapack ZIP with pack.mcmeta at its root. Java 25 and setup-version are required; builds cannot bypass vanilla validation. Existing output files require overwrite=true and their current SHA-256.',
       inputSchema: DatapackBuildInputSchema,
       outputSchema: BuildResultSchema,
       annotations: {
@@ -711,7 +754,7 @@ export function createPackwrightMcpServer(
   const server = new McpServer(
     {
       name: options.name ?? 'packwright-mcp',
-      version: options.version ?? '0.1.2',
+      version: options.version ?? '0.2.0',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );

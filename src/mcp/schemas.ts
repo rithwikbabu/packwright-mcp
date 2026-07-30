@@ -140,11 +140,20 @@ export const ResourceInventoryEntrySchema = z.strictObject({
   resourceId: z.string().optional(),
 });
 
+export const VanillaValidationSummarySchema = z.strictObject({
+  status: z.enum(['passed', 'failed', 'setup_required', 'timeout']),
+  filesChecked: z.number().int().nonnegative(),
+  commandLinesChecked: z.number().int().nonnegative(),
+  macroLinesDeferred: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative(),
+});
+
 export const ValidationResultSchema = z.strictObject({
   ok: z.boolean(),
   diagnostics: z.array(DiagnosticSchema),
   filesScanned: z.number().int().nonnegative(),
   bytesScanned: z.number().int().nonnegative(),
+  vanilla: VanillaValidationSummarySchema.optional(),
   truncated: z.boolean().optional(),
 });
 
@@ -155,6 +164,7 @@ export const BuildResultSchema = z.strictObject({
   sha256: Sha256Schema.optional(),
   entries: z.number().int().nonnegative(),
   diagnostics: z.array(DiagnosticSchema),
+  vanilla: VanillaValidationSummarySchema.optional(),
   truncated: z.boolean().optional(),
 });
 
@@ -280,6 +290,12 @@ export const DatapackValidateInputSchema = z
   .strictObject({
     project: RelativePathSchema,
     includeSpyglass: z.boolean().default(true),
+    includeVanilla: z
+      .boolean()
+      .default(true)
+      .describe(
+        'Use the prepared Minecraft 26.2 runtime to validate every logical function command; disable only for reduced structural validation',
+      ),
   })
   .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
 

@@ -6,7 +6,8 @@ Packwright operates on local files and can launch a downloaded Minecraft server 
 
 | Version                   | Security fixes |
 | ------------------------- | -------------- |
-| 0.1.x                     | Supported      |
+| 0.2.x                     | Supported      |
+| 0.1.x                     | Not supported  |
 | Earlier/unreleased builds | Not supported  |
 
 Only the latest published patch release receives security fixes.

@@ -30,7 +30,7 @@ Built-in structural validation still completed. Spyglass is optional, externally
 
 Only after independently reviewing and installing a safe executable, set `PACKWRIGHT_SPYGLASS_COMMAND` in the server process environment and restart it. Never accept a validator command from an MCP prompt or tool argument.
 
-## Lookup or vanilla testing returns `setup_required`
+## Validation, build, lookup, or vanilla testing returns `setup_required`
 
 Run explicit setup as the operator, not through MCP:
 
@@ -42,9 +42,17 @@ packwright-mcp setup-version 26.2 \
 
 Setup cannot run under `PACKWRIGHT_OFFLINE=true`. If a custom cache is configured, use the same `PACKWRIGHT_CACHE_DIR` for setup and the MCP server.
 
+Default `validate` and every `build` use the cached official runtime; setup is therefore required even when no GameTest is requested. For temporary structural-only analysis, use `validate --no-vanilla` or call `datapack_validate` with `includeVanilla: false`. Build intentionally has no equivalent bypass.
+
 ## Java is missing or incompatible
 
-Minecraft Java Edition 26.2 GameTests require Java 25. Set `PACKWRIGHT_JAVA` to the Java 25 executable when it is not first on `PATH`, then rerun `doctor`. Node-only structural validation and builds do not need Java.
+Minecraft Java Edition 26.2 command validation, builds, and GameTests require Java 25. Set `PACKWRIGHT_JAVA` to the Java 25 executable when it is not first on `PATH`, then rerun `doctor`. Normal authoring and explicit structural-only validation do not need Java.
+
+## A vanilla command diagnostic includes `Did you mean`
+
+The command rejection and its source range come from Minecraft 26.2's real parser. The suggested replacement is Packwright's deterministic heuristic over identifiers in the verified cached registry/command reports; it is not a correction supplied or guaranteed by Minecraft. Review the proposed identifier and its intended semantics before editing the pack.
+
+If a function macro receives a deferred informational diagnostic, Minecraft validated its macro template but could not parse the final substituted command without runtime arguments. Likewise, a clean parse does not establish that an objective, entity, storage value, or other required world state will exist. Exercise those cases with focused GameTests.
 
 ## A GameTest times out
 
@@ -56,7 +64,7 @@ Do not point a function-type `test_instance` at a datapack `.mcfunction`. Vanill
 
 ## A build is refused
 
-Run `validate` and resolve structural errors first. Also check the 20,000-file/512-MiB scan limits and confirm the output location is permitted. Warnings alone do not block a build.
+Run default `validate` and resolve both structural and vanilla command errors first. Also confirm Java 25 and the prepared 26.2 cache are available, check the 20,000-file/512-MiB scan limits and 20,000-logical-command probe limit, and confirm the output location is permitted. Build always runs vanilla command validation and cannot be forced past missing setup or an authoritative parse error. Warnings and informational macro findings alone do not block a build.
 
 ## Reporting a problem
 

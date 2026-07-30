@@ -40,7 +40,7 @@ describe('Packwright MCP registration', () => {
       () => client.close(),
       () => server.close(),
     );
-    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.1.2' });
+    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.2.0' });
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
@@ -159,6 +159,74 @@ describe('Packwright MCP registration', () => {
       ok: false,
       error: { code: 'size_limit' },
     });
+  });
+
+  it('defaults to vanilla validation and renders command diagnostics as three readable lines', async () => {
+    let receivedInput: unknown;
+    const diagnosticService: PackwrightService = {
+      ...service,
+      validateDatapack: (input) => {
+        receivedInput = input;
+        return Promise.resolve({
+          ok: false,
+          filesScanned: 1,
+          bytesScanned: 128,
+          vanilla: {
+            status: 'failed',
+            filesChecked: 1,
+            commandLinesChecked: 1,
+            macroLinesDeferred: 0,
+            durationMs: 10,
+          },
+          diagnostics: [
+            {
+              engine: 'minecraft',
+              authority: 'authoritative',
+              severity: 'error',
+              code: 'minecraft.command.unknown_particle',
+              message: 'Unknown particle `minecraft:electric`',
+              path: 'data/spell/function/chain/cast.mcfunction',
+              range: {
+                start: { line: 11, character: 9 },
+                end: { line: 11, character: 27 },
+              },
+              suggestedFix: 'Did you mean `minecraft:electric_spark`?',
+            },
+          ],
+        });
+      },
+    };
+    const server = createPackwrightMcpServer(diagnosticService);
+    const client = new Client({ name: 'packwright-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    closeCallbacks.push(
+      () => client.close(),
+      () => server.close(),
+    );
+
+    const result = await client.callTool({
+      name: 'datapack_validate',
+      arguments: { project: 'example' },
+    });
+
+    expect(receivedInput).toEqual({
+      project: 'example',
+      includeSpyglass: true,
+      includeVanilla: true,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([
+      {
+        type: 'text',
+        text: [
+          'spell/chain/cast.mcfunction:12',
+          'Unknown particle `minecraft:electric`',
+          'Did you mean `minecraft:electric_spark`?',
+        ].join('\n'),
+      },
+    ]);
   });
 
   it('replaces an oversized JSON resource with a compact size-limit payload', async () => {

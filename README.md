@@ -12,7 +12,7 @@ Packwright does not contain or redistribute Minecraft code, assets, server jars,
 
 ## Status and compatibility
 
-Packwright `0.1.x` supports [Minecraft Java Edition **26.2**](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2) only, datapack format **107.1**. Node.js 20 or newer is required. Java 25 is needed only for `setup-version` and authoritative vanilla GameTest runs; normal authoring and structural validation do not require Java.
+Packwright `0.2.x` supports [Minecraft Java Edition **26.2**](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2) only, datapack format **107.1**. Node.js 20 or newer is required. Default validation, every build, and vanilla GameTest runs require Java 25 plus an operator-prepared Minecraft 26.2 cache. Normal authoring and an explicitly requested structural-only validation do not require Java.
 
 The server uses the stable MCP TypeScript SDK v2, targets the MCP `2026-07-28` specification, and relies on SDK protocol negotiation for compatible clients.
 
@@ -22,9 +22,10 @@ The server is local and stdio-only. It does not install packs into a live world,
 
 - Guarded datapack creation and resource editing with atomic writes and SHA-256 preconditions.
 - Datapack inspection, resource lookup, and cached Minecraft command/registry search.
+- Default vanilla-backed validation of every `.mcfunction` command with Minecraft 26.2's real dispatcher, registries, and component codecs.
 - Always-available structural validation, plus optional diagnostics from an operator-configured external Spyglass process.
 - Disposable vanilla pack-loading and GameTest execution after explicit setup.
-- Deterministic ZIP builds that fail when structural validation has errors.
+- Deterministic ZIP builds that fail when structural or vanilla command validation has errors.
 - Read-only MCP resources and workflow prompts for review, scaffolding, and GameTest authoring.
 
 See [MCP tools, resources, and prompts](docs/mcp-reference.md) for the complete interface.
@@ -42,7 +43,7 @@ Generic MCP client configuration:
       "command": "npx",
       "args": [
         "-y",
-        "@rithwikbabu/packwright-mcp@0.1.2",
+        "@rithwikbabu/packwright-mcp@0.2.0",
         "serve",
         "--workspace",
         "/absolute/path/to/datapacks"
@@ -59,7 +60,7 @@ The workspace can instead be passed through the environment:
   "mcpServers": {
     "packwright": {
       "command": "npx",
-      "args": ["-y", "@rithwikbabu/packwright-mcp@0.1.2"],
+      "args": ["-y", "@rithwikbabu/packwright-mcp@0.2.0"],
       "env": {
         "PACKWRIGHT_WORKSPACE": "/absolute/path/to/datapacks"
       }
@@ -95,7 +96,9 @@ packwright-mcp setup-version 26.2 \
   --workspace /absolute/path/to/datapacks
 ```
 
-Authoritative tests run `net.minecraft.gametest.Main` with Java 25 in a newly created disposable universe. A user world path is never accepted as the test universe. See [Validation and vanilla testing](docs/validation-and-testing.md).
+After setup, `validate` uses the pinned vanilla runtime by default to parse each logical `.mcfunction` command against Minecraft 26.2's real command dispatcher, loaded datapack registries, and component codecs. This catches invalid command, selector, item/component, particle, attribute, entity, and text-component syntax before packaging. `validate --no-vanilla` is the explicit structural-only escape hatch; builds never provide that bypass.
+
+Both command validation and authoritative tests run Java 25 in newly created disposable state. Command validation substitutes inert placeholders for the pack's functions and validates unreferenced command probes, so it does not execute user functions. GameTests receive a freshly allocated universe; a user world path is never accepted. See [Validation and vanilla testing](docs/validation-and-testing.md).
 
 Function-type GameTests resolve Minecraft's internal `test_function` registry; a datapack `.mcfunction` does not register a Test Function. Use `minecraft:always_pass` only for pack-load/runner smoke coverage, or an existing block-based test structure for behavior-focused tests.
 

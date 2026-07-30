@@ -18,12 +18,13 @@ function parseJavaMajor(output: string): number | undefined {
 export async function getJavaVersion(
   javaCommand: string,
   signal?: AbortSignal,
+  timeoutMs = 10_000,
 ): Promise<JavaVersionResult> {
   try {
     const result = await runProcess({
       command: javaCommand,
       args: ['-version'],
-      timeoutMs: 10_000,
+      timeoutMs,
       ...(signal === undefined ? {} : { signal }),
       maxOutputBytes: 64 * 1024,
     });
