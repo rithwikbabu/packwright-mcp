@@ -64,11 +64,6 @@ describe('offline authoring flow', () => {
 
     await Promise.all([
       upsertResource(workspace, 'packs/adventure', {
-        type: 'function',
-        id: 'adventure:gametest',
-        content: 'return 1\n',
-      }),
-      upsertResource(workspace, 'packs/adventure', {
         type: 'advancement',
         id: 'adventure:loaded',
         content: prettyJson({ criteria: { loaded: { trigger: 'minecraft:tick' } } }),
@@ -116,7 +111,7 @@ describe('offline authoring flow', () => {
           max_ticks: 100,
           setup_ticks: 0,
           required: true,
-          function: 'adventure:gametest',
+          function: 'minecraft:always_pass',
         }),
       }),
     ]);

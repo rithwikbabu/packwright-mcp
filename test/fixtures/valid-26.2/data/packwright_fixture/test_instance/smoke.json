@@ -5,5 +5,5 @@
   "max_ticks": 100,
   "setup_ticks": 0,
   "required": true,
-  "function": "packwright_fixture:gametest"
+  "function": "minecraft:always_pass"
 }

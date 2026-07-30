@@ -40,6 +40,7 @@ describe('Packwright MCP registration', () => {
       () => client.close(),
       () => server.close(),
     );
+    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.1.1' });
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([

@@ -88,5 +88,12 @@ describe('compiled stdio server', () => {
       },
     });
     expect(prompt.messages[0]?.content).toMatchObject({ type: 'text' });
+    const promptContent = prompt.messages[0]?.content;
+    if (promptContent?.type === 'text') {
+      expect(promptContent.text).toContain(
+        'an ordinary data/<namespace>/function/*.mcfunction file is not a test_function registry entry',
+      );
+      expect(promptContent.text).toContain('minecraft:always_pass');
+    }
   }, 20_000);
 });

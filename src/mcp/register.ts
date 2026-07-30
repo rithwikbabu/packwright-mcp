@@ -619,7 +619,7 @@ function registerPrompts(server: McpServer): void {
                 : `Additional requirements: ${requirements}`,
               'Inspect existing resources first. Use resource_upsert with dryRun=true, review each diff, then apply guarded writes and run datapack_validate.',
               includeGametest === 'yes'
-                ? 'Add an appropriate GameTest and run datapack_test after validation.'
+                ? 'Add a GameTest only when the pack already has a viable block_based structure or the test can use a known vanilla Test Function for smoke coverage; never treat a datapack .mcfunction as a Test Function. Run datapack_test after validation.'
                 : 'Do not add a GameTest unless the implementation reveals a clear regression risk.',
             ].join('\n'),
           },
@@ -662,7 +662,7 @@ function registerPrompts(server: McpServer): void {
     {
       title: 'Author a GameTest',
       description:
-        'Plan and author a Minecraft 26.2 GameTest for behavior in a workspace datapack.',
+        'Plan and author a vanilla-compatible Minecraft 26.2 GameTest for behavior in a workspace datapack.',
       argsSchema: z.strictObject({
         project: RelativePathSchema,
         behavior: z.string().min(1).max(2048),
@@ -684,6 +684,9 @@ function registerPrompts(server: McpServer): void {
               testId === undefined
                 ? 'Choose a descriptive, collision-free test resource ID.'
                 : `Use test resource ID "${testId}".`,
+              'A vanilla datapack cannot register a function-type GameTest Test Function: an ordinary data/<namespace>/function/*.mcfunction file is not a test_function registry entry.',
+              'Use a known vanilla Test Function only for infrastructure smoke coverage (for example minecraft:always_pass), or use a block_based test backed by an existing binary .nbt structure containing Test Blocks. Packwright v1 does not author binary structures.',
+              'Do not invent a custom Test Function ID. If the requested behavior cannot be expressed with an existing structure, explain the limitation instead of creating a test that vanilla cannot load.',
               'Inspect related resources, create the test with a dry-run resource_upsert, apply it with optimistic concurrency, validate, then run only the new test with datapack_test.',
               'If vanilla setup is unavailable, report the setup_required result and retain the validated test resource.',
             ].join('\n'),
@@ -708,7 +711,7 @@ export function createPackwrightMcpServer(
   const server = new McpServer(
     {
       name: options.name ?? 'packwright-mcp',
-      version: options.version ?? '0.1.0',
+      version: options.version ?? '0.1.1',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );

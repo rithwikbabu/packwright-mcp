@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-30
+
+### Fixed
+
+- Corrected the vanilla Minecraft acceptance flow to use the built-in `minecraft:always_pass` Test Function instead of treating a datapack `.mcfunction` as a GameTest Test Function.
+- Added structural diagnostics and MCP authoring guidance for vanilla-only GameTest function constraints.
+
 ## [0.1.0] - 2026-07-30
 
 ### Added
@@ -19,5 +26,6 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Excluded Spyglass from runtime dependencies because its current dependency tree contains an unfixed critical archive-extraction advisory; external use requires explicit operator configuration.
 
-[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rithwikbabu/packwright-mcp/releases/tag/v0.1.0
