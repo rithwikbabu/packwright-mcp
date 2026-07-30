@@ -43,16 +43,22 @@ function textValue(value: unknown): string | undefined {
   return typeof text === 'string' || typeof text === 'number' ? String(text) : undefined;
 }
 
-function parseCases(xml: string): GameTestCaseResult[] {
+export function parseGameTestCases(xml: string): GameTestCaseResult[] {
   const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
   const document = asObject(parser.parse(xml));
-  const roots = [
+  const pending = [
     ...asArray(asObject(document?.testsuites)?.testsuite),
     ...asArray(document?.testsuite),
   ];
   const cases: GameTestCaseResult[] = [];
-  for (const root of roots) {
-    for (const rawCase of asArray(asObject(root)?.testcase)) {
+  let suitesVisited = 0;
+  while (pending.length > 0) {
+    const suite = asObject(pending.shift());
+    if (suite === undefined) continue;
+    suitesVisited += 1;
+    if (suitesVisited > 10_000) throw new Error('GameTest XML contains too many test suites.');
+    pending.push(...asArray(suite.testsuite));
+    for (const rawCase of asArray(suite.testcase)) {
       const item = asObject(rawCase);
       if (item === undefined) continue;
       const rawName = item['@_name'];
@@ -78,11 +84,11 @@ function parseCases(xml: string): GameTestCaseResult[] {
   return cases;
 }
 
-function setupRequired(message: string): GameTestResult {
+function setupRequired(message: string, durationMs = 0): GameTestResult {
   return {
     ok: false,
     status: 'setup_required',
-    durationMs: 0,
+    durationMs,
     tests: [],
     diagnostics: [
       {
@@ -164,6 +170,7 @@ export async function runGameTests(
   input: RunGameTestsInput,
   signal?: AbortSignal,
 ): Promise<GameTestResult> {
+  const startedAt = Date.now();
   if (input.tests?.length === 0) {
     throw new PackwrightError(
       'invalid_argument',
@@ -179,17 +186,58 @@ export async function runGameTests(
     }
   }
   const status = await getCacheStatus(config.cacheDir, true);
+  if (Date.now() - startedAt >= input.timeoutMs) {
+    return {
+      ok: false,
+      status: 'timeout',
+      durationMs: Date.now() - startedAt,
+      tests: [],
+      diagnostics: [
+        {
+          engine: 'minecraft',
+          authority: 'authoritative',
+          severity: 'error',
+          code: 'minecraft.timeout',
+          message: `GameTests exceeded the ${String(input.timeoutMs)} ms timeout.`,
+        },
+      ],
+    };
+  }
   if (!status.ready) {
     return setupRequired(
       'Minecraft 26.2 is not prepared. A human operator must run setup-version 26.2 --accept-minecraft-eula.',
+      Date.now() - startedAt,
     );
   }
-  const java = await getJavaVersion(config.javaCommand, signal);
+  const java = await getJavaVersion(
+    config.javaCommand,
+    signal,
+    Math.max(1, Math.min(10_000, input.timeoutMs - (Date.now() - startedAt))),
+  );
+  if (Date.now() - startedAt >= input.timeoutMs) {
+    return {
+      ok: false,
+      status: 'timeout',
+      durationMs: Date.now() - startedAt,
+      tests: [],
+      diagnostics: [
+        {
+          engine: 'minecraft',
+          authority: 'authoritative',
+          severity: 'error',
+          code: 'minecraft.timeout',
+          message: `GameTests exceeded the ${String(input.timeoutMs)} ms timeout.`,
+        },
+      ],
+    };
+  }
   if (!java.available || java.major !== 25) {
-    return setupRequired(`Java 25 is required for GameTests; ${java.description}.`);
+    return setupRequired(
+      `Java 25 is required for GameTests; ${java.description}.`,
+      Date.now() - startedAt,
+    );
   }
 
-  const startedAt = Date.now();
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'packwright-gametest-'));
   const packsDir = path.join(temporaryRoot, 'packs');
   const stagedPack = path.join(packsDir, 'packwright-under-test');
@@ -300,7 +348,7 @@ export async function runGameTests(
       }
 
       try {
-        tests.push(...parseCases(await readFile(report, 'utf8')));
+        tests.push(...parseGameTestCases(await readFile(report, 'utf8')));
       } catch (error) {
         diagnostics.push({
           engine: 'minecraft',
@@ -340,4 +388,4 @@ export async function runGameTests(
   }
 }
 
-export { parseCases as parseGameTestReport };
+export { parseGameTestCases as parseGameTestReport };

@@ -82,6 +82,50 @@ describe('deterministic builds', () => {
     });
   });
 
+  it('refuses to build when an authoritative validation adapter rejects a command', async () => {
+    const fixture = await temporaryWorkspace();
+    cleanups.push(fixture.cleanup);
+    await createDatapack(fixture.workspace, {
+      packPath: 'pack',
+      namespace: 'demo',
+      description: 'Authoritative validation',
+      loadFunction: 'particle minecraft:electric ~ ~ ~',
+    });
+
+    const result = await buildDatapack(fixture.workspace, 'pack', {
+      outputPath: 'invalid-command.zip',
+      adapters: [
+        {
+          name: 'minecraft',
+          authority: 'authoritative',
+          validate(_packRoot, _signal, context) {
+            expect(context?.packPath).toBe('pack');
+            expect(context?.scan.entries.some((entry) => entry.path.endsWith('.mcfunction'))).toBe(
+              true,
+            );
+            return Promise.resolve([
+              {
+                engine: 'minecraft',
+                authority: 'authoritative',
+                severity: 'error',
+                code: 'minecraft.command.unknown_particle',
+                message: 'Unknown particle `minecraft:electric`',
+              },
+            ]);
+          },
+        },
+      ],
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'minecraft.command.unknown_particle' }),
+    );
+    await expect(stat(path.join(fixture.root, 'invalid-command.zip'))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
   it('refuses files added after the validated scan snapshot', async () => {
     const fixture = await temporaryWorkspace();
     cleanups.push(fixture.cleanup);

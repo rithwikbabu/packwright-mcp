@@ -4,6 +4,7 @@ import { MAX_MCP_PAYLOAD_BYTES } from '../../src/core/limits.js';
 import {
   DatapackCreateInputSchema,
   DatapackTestInputSchema,
+  DatapackValidateInputSchema,
   ResourceIdSchema,
   ResourceUpsertInputSchema,
 } from '../../src/mcp/schemas.js';
@@ -20,6 +21,17 @@ describe('MCP input schemas', () => {
       minecraftVersion: '26.2',
       dryRun: false,
     });
+  });
+
+  it('enables authoritative vanilla validation by default', () => {
+    expect(DatapackValidateInputSchema.parse({ project: 'example' })).toEqual({
+      project: 'example',
+      includeSpyglass: true,
+      includeVanilla: true,
+    });
+    expect(
+      DatapackValidateInputSchema.parse({ project: 'example', includeVanilla: false }),
+    ).toMatchObject({ includeVanilla: false });
   });
 
   it('rejects unknown fields and unsafe project paths', () => {

@@ -16,7 +16,29 @@ Structural validation is deterministic, offline-capable, and always available. I
 - Unsafe paths, symlink escapes, and scan limits.
 - ZIP root layout before or during a build.
 
-A structural error prevents `datapack_build`. Warnings and informational findings are returned but do not by themselves block packaging.
+A structural error prevents `datapack_build`. Warnings and informational findings are returned but do not by themselves block packaging. Structural checks remain available without Java through `validate --no-vanilla` or `datapack_validate` with `includeVanilla: false`, but that reduced mode does not prove that Minecraft can parse commands.
+
+## Vanilla-backed command validation
+
+`validate` and `datapack_validate` run vanilla-backed command validation by default. Packwright stages the exact scanned pack and asks the pinned Minecraft 26.2 server runtime to compile every logical command in every `.mcfunction` file. The check uses the target version's real command dispatcher, its loaded registries, and its item/component, text-component, selector, particle, attribute, entity-data, and other command codecs. Pack-defined dynamic registry entries are present while commands are parsed.
+
+Each logical command is placed in its own unreferenced probe function. The staged copies of the pack's original functions are replaced with inert comments, and the isolated harness executes only Minecraft's built-in always-pass test. This lets Minecraft report failures from later lines even when an earlier line is invalid, without executing user-authored functions or accepting a user world path. Temporary packs, reports, logs, and the disposable universe are removed after success, failure, timeout, or cancellation.
+
+Vanilla diagnostics are mapped back to the original file and physical line. Human-readable output is line-oriented:
+
+```text
+spell/chain/cast.mcfunction:12
+Unknown particle `minecraft:electric`
+Did you mean `minecraft:electric_spark`?
+```
+
+The parse failure is authoritative Minecraft evidence. A `Did you mean` suggestion is a deterministic heuristic over identifiers in the verified cached 26.2 reports, not a message or guarantee from Minecraft; review it before applying a change.
+
+This check validates syntax and codec parsing, not runtime state or behavior. It cannot prove that an objective, entity, storage value, scheduled function, or world condition will exist when a command executes. Function macro lines beginning with `$` are template-checked by Minecraft, but substituted commands cannot be fully dispatched until runtime arguments are supplied; Packwright reports those lines as deferred informational diagnostics. Use GameTests for stateful behavior and retain code review for data whose meaning is only established at runtime.
+
+Vanilla-backed command validation requires the verified 26.2 cache and Java 25. Without them, default validation returns `setup_required`. The CLI's `--no-vanilla` flag and the MCP input's `includeVanilla: false` are explicit validation-only escape hatches for offline structural work. `datapack_build` and the `build` CLI command always run vanilla command validation and have no bypass; missing setup or any authoritative command error prevents the ZIP from being produced.
+
+Validation is fail-closed rather than partial: a pack with more than 20,000 logical command probes is rejected with an explicit limit diagnostic instead of silently leaving later commands unchecked. The existing 20,000-file, 512-MiB scan and 4-MiB text-resource limits also apply.
 
 ## Spyglass diagnostics
 
@@ -40,7 +62,7 @@ The command:
 2. Downloads the official server jar into the configured local cache.
 3. Verifies the jar against the SHA-1 in Mojang's manifest before use.
 4. Records the operator's EULA acceptance locally.
-5. Prepares command/registry reference reports used by lookup and deep validation.
+5. Prepares command/registry reference reports used by lookup, diagnostic suggestions, and vanilla-backed command validation.
 
 The jar and generated data are cache entries, not project files, npm package contents, GitHub artifacts, or release assets. Setup fails when offline mode is enabled or verification does not match.
 
@@ -61,10 +83,10 @@ Function-type GameTests reference entries in Minecraft's internal `test_function
 Validation authority increases from left to right:
 
 ```text
-Packwright structural checks -> Spyglass static diagnostics -> vanilla pack load/GameTest
+Packwright structural checks -> Spyglass static diagnostics -> vanilla command parser -> vanilla GameTest
 ```
 
-A passing static validation is not proof that every runtime path works. Use a vanilla test for release-critical commands, predicates, scheduled behavior, and GameTest resources. Conversely, a GameTest run only exercises selected behavior; retain structural validation and code review.
+A passing structural or Spyglass result is not proof that Minecraft can parse every command. Vanilla-backed validation closes that gap for command syntax and codecs, but it still does not execute commands or prove runtime state. Use a vanilla test for release-critical predicates, scheduled behavior, world-state interactions, and GameTest resources. Conversely, a GameTest run only exercises selected behavior; retain structural validation, command validation, and code review.
 
 ## Continuous integration
 

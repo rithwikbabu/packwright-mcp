@@ -26,7 +26,7 @@
         },
         {
           "name": "PACKWRIGHT_JAVA",
-          "description": "Optional Java 25 executable used for setup and vanilla GameTest runs.",
+          "description": "Optional Java 25 executable used for setup, vanilla command validation, builds, and GameTest runs.",
           "format": "string",
           "isRequired": false,
           "isSecret": false

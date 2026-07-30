@@ -503,14 +503,20 @@ export async function validateDatapack(
   for (const adapter of options.adapters ?? []) {
     abortIfNeeded(options.signal);
     try {
-      diagnostics.push(...(await adapter.validate(packRoot, options.signal)));
+      diagnostics.push(
+        ...(await adapter.validate(packRoot, options.signal, {
+          workspace,
+          packPath: pack,
+          scan,
+        })),
+      );
     } catch (error) {
       if (options.signal?.aborted)
         throw new PackwrightError('cancelled', 'Validation was cancelled.');
       diagnostics.push({
         engine: adapter.name,
-        authority: 'advisory',
-        severity: 'warning',
+        authority: adapter.authority ?? 'advisory',
+        severity: adapter.authority === 'authoritative' ? 'error' : 'warning',
         code: 'adapter.failed',
         message: `Validation adapter failed: ${error instanceof Error ? error.message : String(error)}`,
       });

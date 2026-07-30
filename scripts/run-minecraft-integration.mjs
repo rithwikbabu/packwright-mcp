@@ -1,15 +1,10 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
-import {
-  Workspace,
-  buildDatapack,
-  createDatapack,
-  upsertResource,
-  validateDatapack,
-} from '../dist/core/index.js';
+import { Workspace, createDatapack, upsertResource } from '../dist/core/index.js';
 import { setupVersion } from '../dist/minecraft/cache.js';
 import { runGameTests } from '../dist/minecraft/gametest.js';
 import { runProcess } from '../dist/runtime/process.js';
@@ -26,6 +21,8 @@ if (cacheDir === undefined || !path.isAbsolute(cacheDir)) {
 }
 
 const workspaceRoot = await mkdtemp(path.join(os.tmpdir(), 'packwright-acceptance-'));
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const cliEntrypoint = path.join(repositoryRoot, 'dist', 'cli.js');
 const config = {
   workspaceRoot,
   cacheDir,
@@ -42,6 +39,65 @@ function requireSuccess(result, stage) {
   if (!result.ok) {
     throw new Error(`${stage} failed:\n${JSON.stringify(result, null, 2)}`);
   }
+}
+
+/**
+ * @param {readonly string[]} args
+ */
+async function runCliJson(args) {
+  const execution = await runProcess({
+    command: process.execPath,
+    args: [
+      cliEntrypoint,
+      '--workspace',
+      workspaceRoot,
+      '--cache-dir',
+      cacheDir,
+      '--java',
+      config.javaCommand,
+      '--no-read-only',
+      '--no-offline',
+      '--json',
+      ...args,
+    ],
+    cwd: repositoryRoot,
+    timeoutMs: 300_000,
+    maxOutputBytes: 4 * 1024 * 1024,
+  });
+  if (execution.timedOut || execution.cancelled || execution.stdoutTruncated) {
+    throw new Error(
+      `CLI ${args.join(' ')} did not complete cleanly:\n${JSON.stringify(execution, null, 2)}`,
+    );
+  }
+  try {
+    return { execution, payload: JSON.parse(execution.stdout) };
+  } catch (error) {
+    throw new Error(
+      `CLI ${args.join(' ')} did not emit valid JSON: ${error instanceof Error ? error.message : String(error)}\nstdout:\n${execution.stdout}\nstderr:\n${execution.stderr}`,
+    );
+  }
+}
+
+/**
+ * @param {unknown} value
+ * @param {string} message
+ */
+function requireCondition(value, message) {
+  if (!value) throw new Error(message);
+}
+
+/**
+ * @param {string} filename
+ * @param {string} stage
+ */
+async function requireMissing(filename, stage) {
+  try {
+    await access(filename);
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error(`${stage} unexpectedly created ${filename}.`);
 }
 
 try {
@@ -86,7 +142,165 @@ try {
     'GameTest instance upsert',
   );
 
-  requireSuccess(await validateDatapack(workspace, 'acceptance'), 'validate');
+  const functionPreamble = Array.from(
+    { length: 11 },
+    (_, index) => `# Vanilla command validation fixture line ${String(index + 1)}`,
+  );
+  const invalidCommands = [
+    'particle minecraft:electric ~ ~ ~',
+    'attribute @s minecraft:bouncyness base get',
+    'give @s minecraft:diamond_swor',
+    'give @s minecraft:diamond_sword[minecraft:damage="broken"] 1',
+    'tellraw @a {"text":"Arc","color":"darkpurple"}',
+    'execute as @e[type=minecraft:sulfur_cub,limit=1] run say found',
+    'summon minecraft:sulfur_cube ~ ~ ~ {Tags:["spell"]',
+    'electrify @s',
+  ];
+  const invalidFunction = await upsertResource(workspace, 'acceptance', {
+    type: 'function',
+    id: 'packwright_acceptance:spell/chain/cast',
+    content: `${[...functionPreamble, ...invalidCommands].join('\n')}\n`,
+  });
+  requireSuccess(invalidFunction, 'invalid command fixture upsert');
+
+  const invalidValidation = await runCliJson(['validate', 'acceptance', '--no-spyglass']);
+  requireCondition(
+    invalidValidation.execution.exitCode === 1 && invalidValidation.payload.ok === false,
+    `Invalid commands were not rejected by CLI validation:\n${JSON.stringify(invalidValidation, null, 2)}`,
+  );
+  requireCondition(
+    invalidValidation.payload.vanilla?.status === 'failed' &&
+      invalidValidation.payload.vanilla.commandLinesChecked >= invalidCommands.length,
+    `CLI validation did not report a failed vanilla dispatcher run covering every fixture command:\n${JSON.stringify(invalidValidation.payload, null, 2)}`,
+  );
+  const invalidDiagnostics = Array.isArray(invalidValidation.payload.diagnostics)
+    ? invalidValidation.payload.diagnostics
+    : [];
+  const functionPath = 'data/packwright_acceptance/function/spell/chain/cast.mcfunction';
+  const particleDiagnostic = invalidDiagnostics.find(
+    (diagnostic) =>
+      diagnostic.engine === 'minecraft' &&
+      diagnostic.authority === 'authoritative' &&
+      diagnostic.severity === 'error' &&
+      diagnostic.path === functionPath &&
+      diagnostic.range?.start?.line === 11 &&
+      diagnostic.message === 'Unknown particle `minecraft:electric`' &&
+      diagnostic.suggestedFix === 'Did you mean `minecraft:electric_spark`?',
+  );
+  requireCondition(
+    particleDiagnostic !== undefined,
+    `Missing the expected authoritative line-12 particle diagnostic:\n${JSON.stringify(invalidDiagnostics, null, 2)}`,
+  );
+  const attributeDiagnostic = invalidDiagnostics.find(
+    (diagnostic) =>
+      diagnostic.engine === 'minecraft' &&
+      diagnostic.authority === 'authoritative' &&
+      diagnostic.severity === 'error' &&
+      diagnostic.path === functionPath &&
+      diagnostic.range?.start?.line === 12 &&
+      diagnostic.message.includes('minecraft:bouncyness'),
+  );
+  requireCondition(
+    attributeDiagnostic !== undefined,
+    `Minecraft did not report the independently probed line-13 command:\n${JSON.stringify(invalidDiagnostics, null, 2)}`,
+  );
+  const additionalFailures = [
+    {
+      category: 'invalid item identifier',
+      line: 13,
+      expectedText: 'minecraft:diamond_swor',
+    },
+    {
+      category: 'invalid item component data',
+      line: 14,
+      expectedText: 'minecraft:damage',
+    },
+    {
+      category: 'malformed text component codec',
+      line: 15,
+      expectedText: 'darkpurple',
+    },
+    {
+      category: 'invalid selector entity type',
+      line: 16,
+      expectedText: 'minecraft:sulfur_cub',
+    },
+    {
+      category: 'malformed entity SNBT',
+      line: 17,
+    },
+    {
+      category: 'unknown command',
+      line: 18,
+      expectedText: 'electrify',
+    },
+  ];
+  for (const expected of additionalFailures) {
+    const diagnostic = invalidDiagnostics.find(
+      (candidate) =>
+        candidate.engine === 'minecraft' &&
+        candidate.authority === 'authoritative' &&
+        candidate.severity === 'error' &&
+        candidate.path === functionPath &&
+        candidate.range?.start?.line === expected.line &&
+        (expected.expectedText === undefined || candidate.message.includes(expected.expectedText)),
+    );
+    requireCondition(
+      diagnostic !== undefined,
+      `Minecraft did not map the ${expected.category} failure to source line ${String(expected.line + 1)}:\n${JSON.stringify(invalidDiagnostics, null, 2)}`,
+    );
+  }
+
+  const refusedArchive = path.join(workspaceRoot, 'build', 'invalid-commands.zip');
+  await requireMissing(refusedArchive, 'pre-build check');
+  const refusedBuild = await runCliJson([
+    'build',
+    'acceptance',
+    '--output',
+    'build/invalid-commands.zip',
+  ]);
+  requireCondition(
+    refusedBuild.execution.exitCode === 1 && refusedBuild.payload.ok === false,
+    `Build did not refuse the invalid commands:\n${JSON.stringify(refusedBuild, null, 2)}`,
+  );
+  requireCondition(
+    Array.isArray(refusedBuild.payload.diagnostics) &&
+      refusedBuild.payload.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.engine === 'minecraft' &&
+          diagnostic.authority === 'authoritative' &&
+          diagnostic.severity === 'error',
+      ),
+    `Refused build did not return an authoritative Minecraft diagnostic:\n${JSON.stringify(refusedBuild.payload, null, 2)}`,
+  );
+  await requireMissing(refusedArchive, 'refused build');
+
+  const validFunction = await upsertResource(workspace, 'acceptance', {
+    type: 'function',
+    id: 'packwright_acceptance:spell/chain/cast',
+    content: `${[
+      ...functionPreamble,
+      'particle minecraft:electric_spark ~ ~ ~',
+      'attribute @s minecraft:bounciness base get',
+      'give @s minecraft:diamond_sword',
+      'give @s minecraft:diamond_sword[minecraft:damage=1] 1',
+      'tellraw @a {"text":"Arc","color":"dark_purple"}',
+      'execute as @e[type=minecraft:sulfur_cube,limit=1] run say found',
+      'summon minecraft:sulfur_cube ~ ~ ~ {Tags:["spell"]}',
+      'say command validation passed',
+    ].join('\n')}\n`,
+    overwrite: true,
+    expectedSha256: invalidFunction.sha256,
+  });
+  requireSuccess(validFunction, 'valid command fixture upsert');
+
+  const validValidation = await runCliJson(['validate', 'acceptance', '--no-spyglass']);
+  requireCondition(
+    validValidation.execution.exitCode === 0 &&
+      validValidation.payload.ok === true &&
+      validValidation.payload.vanilla?.status === 'passed',
+    `Repaired commands did not pass CLI validation:\n${JSON.stringify(validValidation, null, 2)}`,
+  );
   requireSuccess(
     await runGameTests(config, workspace, {
       project: 'acceptance',
@@ -96,10 +310,11 @@ try {
     'source GameTest',
   );
 
-  const archive = await buildDatapack(workspace, 'acceptance', {
-    outputPath: 'build/acceptance.zip',
-  });
-  requireSuccess(archive, 'build');
+  const archive = await runCliJson(['build', 'acceptance', '--output', 'build/acceptance.zip']);
+  requireCondition(
+    archive.execution.exitCode === 0 && archive.payload.ok === true,
+    `CLI build failed:\n${JSON.stringify(archive, null, 2)}`,
+  );
 
   const extracted = path.join(workspaceRoot, 'built-pack');
   await mkdir(extracted, { mode: 0o700 });

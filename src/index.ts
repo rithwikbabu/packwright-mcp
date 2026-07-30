@@ -2,6 +2,7 @@ export * from './config.js';
 export * from './core/index.js';
 export * from './doctor.js';
 export * from './minecraft/cache.js';
+export * from './minecraft/command-validation.js';
 export * from './minecraft/gametest.js';
 export * from './minecraft/java.js';
 export * from './minecraft/lookup.js';

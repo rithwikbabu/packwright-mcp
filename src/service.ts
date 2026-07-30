@@ -14,11 +14,13 @@ import {
   validateDatapack,
   type Diagnostic,
   type ResourceLocator,
+  type ValidationAdapter,
   type ValidationResult,
 } from './core/index.js';
 import type { RuntimeConfig } from './config.js';
 import { getCacheStatus } from './minecraft/cache.js';
 import { runGameTests } from './minecraft/gametest.js';
+import { VanillaCommandValidationAdapter } from './minecraft/command-validation.js';
 import { getJavaVersion } from './minecraft/java.js';
 import {
   getCachedRegistries as readCachedRegistries,
@@ -206,6 +208,24 @@ function contentText(content: ResourceUpsertInput['content']): string {
     : JSON.stringify(content.value);
 }
 
+function gameTestTimeout(startedAt: number, timeoutMs: number): GameTestResult {
+  return {
+    ok: false,
+    status: 'timeout',
+    durationMs: Date.now() - startedAt,
+    tests: [],
+    diagnostics: [
+      {
+        engine: 'minecraft',
+        authority: 'authoritative',
+        severity: 'error',
+        code: 'minecraft.timeout',
+        message: `Datapack validation and GameTests exceeded the ${String(timeoutMs)} ms timeout.`,
+      },
+    ],
+  };
+}
+
 export class PackwrightApplication implements PackwrightService {
   readonly config: RuntimeConfig;
   readonly workspace: Workspace;
@@ -341,37 +361,56 @@ export class PackwrightApplication implements PackwrightService {
     input: DatapackValidateInput,
     context: PackwrightServiceContext,
   ): Promise<ValidationResult> {
+    const total = 1 + (input.includeVanilla ? 1 : 0) + (input.includeSpyglass ? 1 : 0);
     await context.reportProgress({
       progress: 0,
-      total: input.includeSpyglass ? 2 : 1,
+      total,
       message: 'Running structural validation',
     });
     let spyglassUnavailableReason: string | undefined;
-    let adapters: ExternalSpyglassAdapter[] = [];
+    let spyglassAdapter: ExternalSpyglassAdapter | undefined;
     if (input.includeSpyglass && this.config.spyglassCommand !== undefined) {
       const status = await getSpyglassStatus(this.config.spyglassCommand, context.signal);
       if (context.signal.aborted) {
         throw new PackwrightError('cancelled', 'Validation was cancelled.');
       }
       if (status.compatible) {
-        adapters = [new ExternalSpyglassAdapter(this.config.spyglassCommand)];
+        spyglassAdapter = new ExternalSpyglassAdapter(this.config.spyglassCommand);
       } else {
         spyglassUnavailableReason = status.description;
       }
     }
+    const vanillaAdapter = input.includeVanilla
+      ? new VanillaCommandValidationAdapter(this.config)
+      : undefined;
+    const adapters: ValidationAdapter[] = [];
+    if (vanillaAdapter !== undefined) adapters.push(vanillaAdapter);
+    if (spyglassAdapter !== undefined) adapters.push(spyglassAdapter);
     const result = await validateDatapack(this.workspace, input.project, {
       adapters,
       signal: context.signal,
     });
     const diagnostics: Diagnostic[] = [...result.diagnostics];
-    if (input.includeSpyglass && adapters.length === 0) {
+    if (input.includeSpyglass && spyglassAdapter === undefined) {
       diagnostics.push(spyglassUnavailableDiagnostic(spyglassUnavailableReason));
     }
     const bounded = boundedDiagnostics(diagnostics);
+    const vanilla = vanillaAdapter?.lastResult;
     const normalized: ValidationResult = {
       ...result,
       diagnostics: bounded.diagnostics,
       ok: !diagnostics.some((item) => item.severity === 'error'),
+      ...(vanilla === undefined
+        ? {}
+        : {
+            vanilla: {
+              status: vanilla.status,
+              filesChecked: vanilla.filesChecked,
+              commandLinesChecked: vanilla.commandLinesChecked,
+              macroLinesDeferred: vanilla.macroLinesDeferred,
+              durationMs: vanilla.durationMs,
+            },
+          }),
       truncated: bounded.truncated,
     };
     this.lastDiagnostics.set(input.project, {
@@ -379,8 +418,8 @@ export class PackwrightApplication implements PackwrightService {
       updatedAt: new Date().toISOString(),
     });
     await context.reportProgress({
-      progress: input.includeSpyglass ? 2 : 1,
-      total: input.includeSpyglass ? 2 : 1,
+      progress: total,
+      total,
       message: 'Validation complete',
     });
     return normalized;
@@ -394,54 +433,91 @@ export class PackwrightApplication implements PackwrightService {
     input: DatapackTestInput,
     context: PackwrightServiceContext,
   ): Promise<GameTestResult> {
-    await context.reportProgress({ progress: 0, total: 2, message: 'Validating datapack' });
-    const validation = await validateDatapack(this.workspace, input.project, {
-      signal: context.signal,
-    });
-    if (!validation.ok) {
-      const diagnostics = boundedDiagnostics(validation.diagnostics);
+    const startedAt = Date.now();
+    const deadlineAt = startedAt + input.timeoutMs;
+    const operationController = new AbortController();
+    const forwardCancellation = (): void => operationController.abort();
+    const deadlineReached = (): boolean => Date.now() >= deadlineAt && !context.signal.aborted;
+    context.signal.addEventListener('abort', forwardCancellation, { once: true });
+    if (context.signal.aborted) forwardCancellation();
+    const deadlineTimer = setTimeout(() => {
+      operationController.abort();
+    }, input.timeoutMs);
+    deadlineTimer.unref();
+
+    try {
+      await context.reportProgress({ progress: 0, total: 3, message: 'Validating datapack' });
+      const vanillaAdapter = new VanillaCommandValidationAdapter(
+        this.config,
+        input.timeoutMs,
+        deadlineAt,
+      );
+      const validation = await validateDatapack(this.workspace, input.project, {
+        adapters: [vanillaAdapter],
+        signal: operationController.signal,
+      });
+      if (deadlineReached()) return gameTestTimeout(startedAt, input.timeoutMs);
+      if (!validation.ok) {
+        const diagnostics = boundedDiagnostics(validation.diagnostics);
+        const vanillaStatus = vanillaAdapter.lastResult?.status;
+        return {
+          ok: false,
+          status:
+            vanillaStatus === 'setup_required'
+              ? 'setup_required'
+              : vanillaStatus === 'timeout'
+                ? 'timeout'
+                : 'failed',
+          durationMs: Date.now() - startedAt,
+          tests: [],
+          diagnostics: diagnostics.diagnostics,
+          truncated: diagnostics.truncated,
+        };
+      }
+      const remainingMs = deadlineAt - Date.now();
+      if (remainingMs <= 0) return gameTestTimeout(startedAt, input.timeoutMs);
+      await context.reportProgress({
+        progress: 2,
+        total: 3,
+        message: 'Running disposable vanilla GameTests',
+      });
+      const result = await runGameTests(
+        this.config,
+        this.workspace,
+        {
+          project: input.project,
+          ...(input.tests === undefined ? {} : { tests: input.tests }),
+          timeoutMs: remainingMs,
+        },
+        operationController.signal,
+      );
+      if (deadlineReached()) return gameTestTimeout(startedAt, input.timeoutMs);
+      await context.reportProgress({ progress: 3, total: 3, message: 'GameTests complete' });
+      const tests = boundedItems(result.tests, TEST_CASE_PAYLOAD_BUDGET);
+      const diagnostics = boundedDiagnostics(result.diagnostics);
+      const stdout = boundedText(result.stdout);
+      const stderr = boundedText(result.stderr);
       return {
-        ok: false,
-        status: 'failed',
-        durationMs: 0,
-        tests: [],
+        ...result,
+        durationMs: Date.now() - startedAt,
+        tests: tests.items,
         diagnostics: diagnostics.diagnostics,
-        truncated: diagnostics.truncated,
+        ...(stdout.value === undefined ? {} : { stdout: stdout.value }),
+        ...(stderr.value === undefined ? {} : { stderr: stderr.value }),
+        truncated:
+          (result.truncated ?? false) ||
+          tests.truncated ||
+          diagnostics.truncated ||
+          stdout.truncated ||
+          stderr.truncated,
       };
+    } catch (error) {
+      if (deadlineReached()) return gameTestTimeout(startedAt, input.timeoutMs);
+      throw error;
+    } finally {
+      clearTimeout(deadlineTimer);
+      context.signal.removeEventListener('abort', forwardCancellation);
     }
-    await context.reportProgress({
-      progress: 1,
-      total: 2,
-      message: 'Running disposable vanilla GameTests',
-    });
-    const result = await runGameTests(
-      this.config,
-      this.workspace,
-      {
-        project: input.project,
-        ...(input.tests === undefined ? {} : { tests: input.tests }),
-        timeoutMs: input.timeoutMs,
-      },
-      context.signal,
-    );
-    await context.reportProgress({ progress: 2, total: 2, message: 'GameTests complete' });
-    const tests = boundedItems(result.tests, TEST_CASE_PAYLOAD_BUDGET);
-    const diagnostics = boundedDiagnostics(result.diagnostics);
-    const stdout = boundedText(result.stdout);
-    const stderr = boundedText(result.stderr);
-    return {
-      ...result,
-      tests: tests.items,
-      diagnostics: diagnostics.diagnostics,
-      ...(stdout.value === undefined ? {} : { stdout: stdout.value }),
-      ...(stderr.value === undefined ? {} : { stderr: stderr.value }),
-      truncated:
-        (result.truncated ?? false) ||
-        tests.truncated ||
-        diagnostics.truncated ||
-        stdout.truncated ||
-        stderr.truncated,
-    };
   }
 
   async buildDatapack(
@@ -450,17 +526,31 @@ export class PackwrightApplication implements PackwrightService {
   ): Promise<BuildResult> {
     const outputPath = input.outputPath ?? `${input.project}.zip`;
     await context.reportProgress({ progress: 0, total: 2, message: 'Validating datapack' });
+    const vanillaAdapter = new VanillaCommandValidationAdapter(this.config);
     const result = await buildDatapack(this.workspace, input.project, {
       outputPath,
       overwrite: input.overwrite,
       ...(input.expectedSha256 === undefined ? {} : { expectedSha256: input.expectedSha256 }),
+      adapters: [vanillaAdapter],
       signal: context.signal,
     });
     await context.reportProgress({ progress: 2, total: 2, message: 'Build complete' });
     const diagnostics = boundedDiagnostics(result.diagnostics);
+    const vanilla = vanillaAdapter.lastResult;
     return {
       ...result,
       diagnostics: diagnostics.diagnostics,
+      ...(vanilla === undefined
+        ? {}
+        : {
+            vanilla: {
+              status: vanilla.status,
+              filesChecked: vanilla.filesChecked,
+              commandLinesChecked: vanilla.commandLinesChecked,
+              macroLinesDeferred: vanilla.macroLinesDeferred,
+              durationMs: vanilla.durationMs,
+            },
+          }),
       truncated: diagnostics.truncated,
     };
   }

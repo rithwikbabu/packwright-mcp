@@ -34,9 +34,13 @@ Deletes exactly one resource or allowed text file. It requires `confirm: true` a
 
 ### `datapack_validate`
 
-Runs Packwright's owned structural checks and, only when the operator has explicitly configured `PACKWRIGHT_SPYGLASS_COMMAND`, an external Spyglass adapter. Results are normalized diagnostics with engine, authority, severity, stable code, file/range, message, and an optional suggested fix.
+Runs Packwright's owned structural checks and vanilla-backed command validation by default. The vanilla adapter compiles every logical `.mcfunction` command with Minecraft 26.2's real dispatcher, the pack-aware registries loaded by that runtime, and its component codecs. This detects invalid commands, items/components, text components, selectors, particles, attributes, entity data, and other Brigadier/codec inputs before packaging. When the operator has explicitly configured `PACKWRIGHT_SPYGLASS_COMMAND`, the complementary external Spyglass adapter also runs.
 
-Structural validation remains available without Java, the Minecraft jar, or network access. Its MCFunction/SNBT text checks cover supported extensions, UTF-8, NUL bytes, and basic SNBT delimiter/string termination—not a full SNBT grammar. See [Validation and vanilla testing](validation-and-testing.md).
+Results include normalized diagnostics with engine, authority, severity, stable code, original file/range, message, and an optional suggested fix, plus a vanilla summary with status, files and logical command lines checked, deferred macro count, and duration. Minecraft's rejection is authoritative; identifier suggestions are deterministic heuristics over the verified cached 26.2 reports. Text fallbacks render the original physical line in a form such as `spell/chain/cast.mcfunction:12`, followed by the message and suggestion.
+
+`includeVanilla` defaults to `true` and requires Java 25 plus prior operator-run setup. Missing setup returns `setup_required`. Passing `includeVanilla: false` is an explicit validation-only escape hatch that leaves structural checks—and configured Spyglass diagnostics—available without the jar. Structural MCFunction/SNBT text checks cover supported extensions, UTF-8, NUL bytes, and basic SNBT delimiter/string termination, not full command or SNBT semantics.
+
+Command validation never executes the pack's functions: Packwright replaces staged function bodies with inert placeholders and lets vanilla compile unreferenced per-command probes in a disposable harness. Function macros are template-checked, but commands after `$` substitution remain runtime-dependent and are reported as deferred. The parser also cannot prove that objectives, entities, storage, scheduled state, or other world conditions exist. See [Validation and vanilla testing](validation-and-testing.md).
 
 ### `minecraft_lookup`
 
@@ -44,7 +48,7 @@ Searches locally cached Minecraft 26.2 commands, registries, resource types, and
 
 ### `datapack_test`
 
-Stages the pack and runs selected GameTests through the official vanilla entrypoint in a new disposable universe. Test selectors identify exact `test_instance` resources, not datapack functions. The default timeout is five minutes. Cancellation and timeout terminate the subprocess and clean up temporary state.
+Stages the pack and runs selected GameTests through the official vanilla entrypoint in a new disposable universe. Test selectors identify exact `test_instance` resources, not datapack functions. The default five-minute timeout is one shared budget for mandatory command prevalidation and the GameTest run. Cancellation and timeout terminate the subprocess and clean up temporary state.
 
 The result reports setup status, selected tests, normalized cases, bounded log excerpts, diagnostics, exit status, and elapsed time. Java 25 and prior operator-run setup are required.
 
@@ -52,7 +56,7 @@ In vanilla, a function-type test references the internal `test_function` registr
 
 ### `datapack_build`
 
-Validates and creates a deterministic ZIP with `pack.mcmeta` at the archive root. Structural errors block the build. The result includes output path, byte size, SHA-256, and validation summary.
+Runs structural checks and mandatory vanilla-backed command validation, then creates a deterministic ZIP with `pack.mcmeta` at the archive root. There is no build input that disables vanilla validation: missing Java 25/cache setup, a structural error, or any authoritative command parse error blocks the build. The result includes output path, byte size, SHA-256, validation diagnostics, and the vanilla validation summary.
 
 ## Tool annotations
 

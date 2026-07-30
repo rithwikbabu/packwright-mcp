@@ -1,3 +1,6 @@
+import type { ScanResult } from './scanner.js';
+import type { Workspace } from './workspace.js';
+
 export type MinecraftVersion = '26.2';
 
 export type PackFormat = readonly [major: number, minor: number];
@@ -53,6 +56,7 @@ export interface BuildResult {
   sha256?: string | undefined;
   entries: number;
   diagnostics: Diagnostic[];
+  vanilla?: VanillaValidationSummary | undefined;
   truncated?: boolean | undefined;
 }
 
@@ -91,10 +95,32 @@ export interface ValidationResult {
   diagnostics: Diagnostic[];
   filesScanned: number;
   bytesScanned: number;
+  vanilla?: VanillaValidationSummary | undefined;
   truncated?: boolean | undefined;
+}
+
+export type VanillaValidationStatus = 'passed' | 'failed' | 'setup_required' | 'timeout';
+
+export interface VanillaValidationSummary {
+  status: VanillaValidationStatus;
+  filesChecked: number;
+  commandLinesChecked: number;
+  macroLinesDeferred: number;
+  durationMs: number;
+}
+
+export interface ValidationAdapterContext {
+  readonly workspace: Workspace;
+  readonly packPath: string;
+  readonly scan: ScanResult;
 }
 
 export interface ValidationAdapter {
   readonly name: string;
-  validate(packRoot: string, signal?: AbortSignal): Promise<readonly Diagnostic[]>;
+  readonly authority?: DiagnosticAuthority | undefined;
+  validate(
+    packRoot: string,
+    signal?: AbortSignal,
+    context?: ValidationAdapterContext,
+  ): Promise<readonly Diagnostic[]>;
 }
