@@ -26,6 +26,8 @@ jobs:
     name: Verify release candidate
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      release_sha: ${{ steps.release_ref.outputs.sha }}
     steps:
       - name: Check out tagged source
         uses: actions/checkout@v6
@@ -37,6 +39,10 @@ jobs:
         run: |
           test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
           git merge-base --is-ancestor HEAD origin/main
+
+      - name: Record verified release commit
+        id: release_ref
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -117,7 +123,13 @@ jobs:
       - name: Check out tagged metadata
         uses: actions/checkout@v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.verify.outputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Reconfirm immutable tag
+        env:
+          VERIFIED_RELEASE_SHA: ${{ needs.verify.outputs.release_sha }}
+        run: test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$VERIFIED_RELEASE_SHA"
 
       - name: Download verified release tarball
         uses: actions/download-artifact@v4
