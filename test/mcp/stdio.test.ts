@@ -53,7 +53,7 @@ describe('compiled stdio server', () => {
       },
     );
     expect(created.isError).not.toBe(true);
-    expect(progress).toEqual([0, 1]);
+    await expect.poll(() => progress).toEqual([0, 1]);
     await expect(
       readFile(path.join(workspace, 'stdio-pack/pack.mcmeta'), 'utf8'),
     ).resolves.toContain('107');
