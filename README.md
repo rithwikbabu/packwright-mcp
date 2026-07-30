@@ -12,7 +12,7 @@ Packwright does not contain or redistribute Minecraft code, assets, server jars,
 
 ## Status and compatibility
 
-Packwright `0.1.x` supports [Minecraft Java Edition **26.2**](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2) only, datapack format **107.1**. Node.js 20 or newer is required. Default validation, every build, and vanilla GameTest runs require Java 25 plus an operator-prepared Minecraft 26.2 cache. Normal authoring and an explicitly requested structural-only validation do not require Java.
+Packwright `0.2.x` supports [Minecraft Java Edition **26.2**](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2) only, datapack format **107.1**. Node.js 20 or newer is required. Default validation, every build, and vanilla GameTest runs require Java 25 plus an operator-prepared Minecraft 26.2 cache. Normal authoring and an explicitly requested structural-only validation do not require Java.
 
 The server uses the stable MCP TypeScript SDK v2, targets the MCP `2026-07-28` specification, and relies on SDK protocol negotiation for compatible clients.
 
@@ -43,7 +43,7 @@ Generic MCP client configuration:
       "command": "npx",
       "args": [
         "-y",
-        "@rithwikbabu/packwright-mcp@0.1.2",
+        "@rithwikbabu/packwright-mcp@0.2.0",
         "serve",
         "--workspace",
         "/absolute/path/to/datapacks"
@@ -60,7 +60,7 @@ The workspace can instead be passed through the environment:
   "mcpServers": {
     "packwright": {
       "command": "npx",
-      "args": ["-y", "@rithwikbabu/packwright-mcp@0.1.2"],
+      "args": ["-y", "@rithwikbabu/packwright-mcp@0.2.0"],
       "env": {
         "PACKWRIGHT_WORKSPACE": "/absolute/path/to/datapacks"
       }

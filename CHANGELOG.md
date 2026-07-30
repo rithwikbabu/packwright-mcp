@@ -4,6 +4,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-30
+
 ### Added
 
 - Added default vanilla-backed validation for every logical `.mcfunction` command using Minecraft 26.2's real dispatcher, loaded datapack registries, and component codecs.
@@ -54,7 +56,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Excluded Spyglass from runtime dependencies because its current dependency tree contains an unfixed critical archive-extraction advisory; external use requires explicit operator configuration.
 
-[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/rithwikbabu/packwright-mcp/releases/tag/v0.1.0

@@ -144,7 +144,7 @@ export function createCli(): Command {
   program
     .name('packwright-mcp')
     .description('Local-first MCP server and CLI for Minecraft Java 26.2 datapacks')
-    .version('0.1.2')
+    .version('0.2.0')
     .showSuggestionAfterError()
     .showHelpAfterError();
   addGlobalOptions(program);

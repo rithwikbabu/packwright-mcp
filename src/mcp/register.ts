@@ -754,7 +754,7 @@ export function createPackwrightMcpServer(
   const server = new McpServer(
     {
       name: options.name ?? 'packwright-mcp',
-      version: options.version ?? '0.1.2',
+      version: options.version ?? '0.2.0',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );
