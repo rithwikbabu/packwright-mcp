@@ -465,6 +465,40 @@ export async function validateDatapack(
     }
   }
 
+  for (const [resourcePath, value] of parsedJson) {
+    const resource = parseResourcePath(resourcePath);
+    if (resource?.type !== 'test_instance') continue;
+
+    const testInstance = objectValue(value);
+    if (!testInstance) continue;
+    const testType = testInstance.type;
+    if (testType !== 'function' && testType !== 'minecraft:function') continue;
+
+    const testFunction = testInstance.function;
+    if (typeof testFunction !== 'string' || !isValidResourceId(testFunction)) {
+      diagnostics.push(
+        diagnostic(
+          'gametest.invalid_test_function',
+          'Function-type GameTests must name a valid Test Function registry ID.',
+          resourcePath,
+        ),
+      );
+      continue;
+    }
+
+    if (!testFunction.startsWith('minecraft:')) {
+      diagnostics.push(
+        diagnostic(
+          'gametest.unavailable_test_function',
+          `${testFunction} cannot be registered by a vanilla datapack; .mcfunction resources are not GameTest Test Functions.`,
+          resourcePath,
+          'error',
+          'Use a Test Function provided by vanilla (for example minecraft:always_pass for smoke coverage), or a block_based test backed by an existing binary structure containing Test Blocks.',
+        ),
+      );
+    }
+  }
+
   const packRoot = await workspace.resolve(pack, { mustExist: true, rejectSymlinks: true });
   for (const adapter of options.adapters ?? []) {
     abortIfNeeded(options.signal);

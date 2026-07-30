@@ -66,7 +66,7 @@ packwright-mcp test <project> \
   [--json]
 ```
 
-Runs the staged pack in a fresh disposable vanilla universe. Each `--test` value is an exact GameTest resource ID; without it, the vanilla runner selects its default test set. The default and maximum timeout is 300,000 ms; the CLI accepts a positive millisecond value. Test failures/timeouts use exit code 1, while missing Java/cache setup uses exit code 2.
+Runs the staged pack in a fresh disposable vanilla universe. Each `--test` value is an exact `test_instance` resource ID, not a datapack function ID; without it, the vanilla runner selects its default test set. The default and maximum timeout is 300,000 ms; the CLI accepts a positive millisecond value. Test failures/timeouts use exit code 1, while missing Java/cache setup uses exit code 2.
 
 ## `build`
 

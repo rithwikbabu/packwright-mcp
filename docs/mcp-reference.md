@@ -44,9 +44,11 @@ Searches locally cached Minecraft 26.2 commands, registries, resource types, and
 
 ### `datapack_test`
 
-Stages the pack and runs selected GameTests through the official vanilla entrypoint in a new disposable universe. The default timeout is five minutes. Cancellation and timeout terminate the subprocess and clean up temporary state.
+Stages the pack and runs selected GameTests through the official vanilla entrypoint in a new disposable universe. Test selectors identify exact `test_instance` resources, not datapack functions. The default timeout is five minutes. Cancellation and timeout terminate the subprocess and clean up temporary state.
 
 The result reports setup status, selected tests, normalized cases, bounded log excerpts, diagnostics, exit status, and elapsed time. Java 25 and prior operator-run setup are required.
+
+In vanilla, a function-type test references the internal `test_function` registry, not a datapack `.mcfunction`. Packwright rejects custom-namespace Test Function IDs and guides behavior-focused tests toward existing `block_based` structures.
 
 ### `datapack_build`
 
@@ -81,10 +83,10 @@ Clients should use the URI returned by discovery rather than constructing URIs f
 
 ## Prompts
 
-| Prompt             | Purpose                                                                                      |
-| ------------------ | -------------------------------------------------------------------------------------------- |
-| `scaffold_feature` | Plan the functions, tags, and supporting resources for a datapack feature before tool calls. |
-| `review_datapack`  | Inspect and validate a pack, then organize findings by severity and authority.               |
-| `author_gametest`  | Draft a focused GameTest workflow, including setup prerequisites and a safe disposable run.  |
+| Prompt             | Purpose                                                                                        |
+| ------------------ | ---------------------------------------------------------------------------------------------- |
+| `scaffold_feature` | Plan the functions, tags, and supporting resources for a datapack feature before tool calls.   |
+| `review_datapack`  | Inspect and validate a pack, then organize findings by severity and authority.                 |
+| `author_gametest`  | Draft a vanilla-compatible GameTest workflow and surface missing structure/code prerequisites. |
 
 Prompts supply instructions and context only. Retrieving a prompt never writes a file or launches Minecraft.

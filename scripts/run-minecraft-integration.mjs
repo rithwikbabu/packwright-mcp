@@ -59,14 +59,6 @@ try {
 
   requireSuccess(
     await upsertResource(workspace, 'acceptance', {
-      type: 'function',
-      id: 'packwright_acceptance:gametest',
-      content: 'return 1\n',
-    }),
-    'GameTest function upsert',
-  );
-  requireSuccess(
-    await upsertResource(workspace, 'acceptance', {
       type: 'test_environment',
       id: 'packwright_acceptance:fixture',
       content: `${JSON.stringify({ type: 'minecraft:all_of', definitions: [] }, null, 2)}\n`,
@@ -85,7 +77,7 @@ try {
           max_ticks: 100,
           setup_ticks: 0,
           required: true,
-          function: 'packwright_acceptance:gametest',
+          function: 'minecraft:always_pass',
         },
         null,
         2,

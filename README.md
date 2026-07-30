@@ -42,7 +42,7 @@ Generic MCP client configuration:
       "command": "npx",
       "args": [
         "-y",
-        "@rithwikbabu/packwright-mcp@0.1.0",
+        "@rithwikbabu/packwright-mcp@0.1.1",
         "serve",
         "--workspace",
         "/absolute/path/to/datapacks"
@@ -59,7 +59,7 @@ The workspace can instead be passed through the environment:
   "mcpServers": {
     "packwright": {
       "command": "npx",
-      "args": ["-y", "@rithwikbabu/packwright-mcp@0.1.0"],
+      "args": ["-y", "@rithwikbabu/packwright-mcp@0.1.1"],
       "env": {
         "PACKWRIGHT_WORKSPACE": "/absolute/path/to/datapacks"
       }
@@ -96,6 +96,8 @@ packwright-mcp setup-version 26.2 \
 ```
 
 Authoritative tests run `net.minecraft.gametest.Main` with Java 25 in a newly created disposable universe. A user world path is never accepted as the test universe. See [Validation and vanilla testing](docs/validation-and-testing.md).
+
+Function-type GameTests resolve Minecraft's internal `test_function` registry; a datapack `.mcfunction` does not register a Test Function. Use `minecraft:always_pass` only for pack-load/runner smoke coverage, or an existing block-based test structure for behavior-focused tests.
 
 Spyglass is deliberately not installed as a runtime dependency. The adapter is compatibility-pinned to Spyglass `0.4.65` and verifies the configured executable's `--version` output before use. An operator who has independently installed and reviewed a safe build may opt in with `PACKWRIGHT_SPYGLASS_COMMAND`; Packwright never downloads or enables it automatically.
 

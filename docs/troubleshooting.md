@@ -50,6 +50,10 @@ Minecraft Java Edition 26.2 GameTests require Java 25. Set `PACKWRIGHT_JAVA` to 
 
 Check the bounded stderr/log excerpt for pack load errors, a selector that never completes, or insufficient runner resources. Narrow the selected tests before raising the timeout. Packwright terminates the Java child and cleans its disposable universe on timeout or cancellation.
 
+## A GameTest reports a missing test function
+
+Do not point a function-type `test_instance` at a datapack `.mcfunction`. Vanilla resolves that field through its internal `test_function` registry, which datapacks cannot extend. Use a known vanilla Test Function only for smoke coverage, or use a `block_based` test with an existing binary structure containing Test Blocks.
+
 ## A build is refused
 
 Run `validate` and resolve structural errors first. Also check the 20,000-file/512-MiB scan limits and confirm the output location is permitted. Warnings alone do not block a build.

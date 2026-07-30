@@ -54,6 +54,8 @@ The vanilla runner may replace its universe directory. For that reason Packwrigh
 
 Packwright parses JUnit-style output and bounded server logs into structured cases. On completion, failure, five-minute default timeout, or MCP cancellation, it terminates the child process and removes disposable state. A missing jar or incompatible Java returns `setup_required`; it does not trigger a download.
 
+Function-type GameTests reference entries in Minecraft's internal `test_function` registry. A datapack `.mcfunction` file does not register such an entry, so Packwright's vanilla-only validator rejects custom-namespace Test Function IDs. Use a known vanilla Test Function such as `minecraft:always_pass` only for runner smoke coverage. Behavior-focused datapack tests must use `block_based` test instances with an existing binary structure containing Test Blocks; Packwright v1 inventories and packages binary structures but does not author them.
+
 ## Interpreting results
 
 Validation authority increases from left to right:
@@ -66,7 +68,7 @@ A passing static validation is not proof that every runtime path works. Use a va
 
 ## Continuous integration
 
-Ordinary CI never downloads Minecraft artifacts. The repository's separate `Minecraft integration` workflow is manual, uses a protected GitHub environment, requires an explicit EULA-acceptance input, and never uploads the server jar or generated vanilla cache. Its acceptance path creates a new pack, adds a load function and GameTest, validates it, passes the selected vanilla test, builds a deterministic ZIP, extracts that artifact, and loads the built contents through the vanilla runner again.
+Ordinary CI never downloads Minecraft artifacts. The repository's separate `Minecraft integration` workflow is manual, uses a protected GitHub environment, requires an explicit EULA-acceptance input, and never uploads the server jar or generated vanilla cache. Its acceptance path creates a new pack, adds a load function and an explicit `minecraft:always_pass` runner smoke test, validates it, passes the selected vanilla test, builds a deterministic ZIP, extracts that artifact, and loads the built contents through the vanilla runner again.
 
 For an explicitly approved local run, set an isolated absolute cache and the acceptance guard yourself:
 

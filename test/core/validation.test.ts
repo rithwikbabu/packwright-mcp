@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createDatapack, validateDatapack } from '../../src/core/index.js';
+import { createDatapack, upsertResource, validateDatapack } from '../../src/core/index.js';
 import { temporaryWorkspace } from './helpers.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -22,6 +22,76 @@ describe('structural validation', () => {
     const result = await validateDatapack(fixture.workspace, 'pack');
     expect(result.ok).toBe(true);
     expect(result.diagnostics).toEqual([]);
+  });
+
+  it('accepts a vanilla Test Function in a function-type GameTest', async () => {
+    const fixture = await temporaryWorkspace();
+    cleanups.push(fixture.cleanup);
+    await createDatapack(fixture.workspace, {
+      packPath: 'pack',
+      namespace: 'demo',
+      description: 'Vanilla GameTest',
+    });
+    await upsertResource(fixture.workspace, 'pack', {
+      type: 'test_instance',
+      id: 'demo:smoke',
+      content: `${JSON.stringify({
+        type: 'function',
+        environment: 'minecraft:default',
+        structure: 'minecraft:empty',
+        function: 'minecraft:always_pass',
+      })}\n`,
+    });
+
+    const result = await validateDatapack(fixture.workspace, 'pack');
+    expect(result).toMatchObject({ ok: true, diagnostics: [] });
+  });
+
+  it('rejects datapack functions used as vanilla GameTest Test Functions', async () => {
+    const fixture = await temporaryWorkspace();
+    cleanups.push(fixture.cleanup);
+    await createDatapack(fixture.workspace, {
+      packPath: 'pack',
+      namespace: 'demo',
+      description: 'Invalid GameTest functions',
+    });
+    await upsertResource(fixture.workspace, 'pack', {
+      type: 'function',
+      id: 'demo:gametest',
+      content: 'return 1\n',
+    });
+    for (const [id, type] of [
+      ['demo:short_type', 'function'],
+      ['demo:namespaced_type', 'minecraft:function'],
+    ] as const) {
+      await upsertResource(fixture.workspace, 'pack', {
+        type: 'test_instance',
+        id,
+        content: `${JSON.stringify({
+          type,
+          environment: 'minecraft:default',
+          structure: 'minecraft:empty',
+          function: 'demo:gametest',
+        })}\n`,
+      });
+    }
+
+    const result = await validateDatapack(fixture.workspace, 'pack');
+    expect(result.ok).toBe(false);
+    expect(
+      result.diagnostics.filter((entry) => entry.code === 'gametest.unavailable_test_function'),
+    ).toEqual([
+      expect.objectContaining({
+        path: 'data/demo/test_instance/namespaced_type.json',
+        authority: 'structural',
+        severity: 'error',
+      }),
+      expect.objectContaining({
+        path: 'data/demo/test_instance/short_type.json',
+        authority: 'structural',
+        severity: 'error',
+      }),
+    ]);
   });
 
   it('reports metadata, legacy layout, JSON, identifiers, and missing tag references', async () => {
