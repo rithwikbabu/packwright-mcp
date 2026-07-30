@@ -4,12 +4,21 @@ on:
   push:
     tags:
       - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable release tag to verify and publish.
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -21,10 +30,13 @@ jobs:
       - name: Check out tagged source
         uses: actions/checkout@v6
         with:
+          ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
 
-      - name: Require the tagged commit to be on main
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Require the immutable tag to be on main
+        run: |
+          test "$(git tag --points-at HEAD --list "$RELEASE_TAG")" = "$RELEASE_TAG"
+          git merge-base --is-ancestor HEAD origin/main
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -33,19 +45,19 @@ jobs:
           cache: npm
 
       - name: Verify release metadata
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           node --input-type=module <<'NODE'
           import fs from "node:fs";
 
           const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
           const server = JSON.parse(fs.readFileSync("server.json", "utf8"));
-          const version = process.env.RELEASE_TAG.replace(/^v/, "");
+          const releaseTag = process.env.RELEASE_TAG;
+          const version = releaseTag.replace(/^v/, "");
           const expectedPackage = "@rithwikbabu/packwright-mcp";
           const expectedMcpName = "io.github.rithwikbabu/packwright-mcp";
 
           const failures = [];
+          if (!/^v\d+\.\d+\.\d+$/.test(releaseTag)) failures.push("release tag must be vMAJOR.MINOR.PATCH");
           if (pkg.name !== expectedPackage) failures.push("unexpected npm package name");
           if (pkg.version !== version) failures.push("tag does not match package.json version");
           if (pkg.mcpName !== expectedMcpName) failures.push("unexpected package.json mcpName");
@@ -104,6 +116,8 @@ jobs:
     steps:
       - name: Check out tagged metadata
         uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
 
       - name: Download verified release tarball
         uses: actions/download-artifact@v4
@@ -125,13 +139,12 @@ jobs:
         id: npm_version
         env:
           PACKAGE_NAME: '@rithwikbabu/packwright-mcp'
-          PACKAGE_VERSION: ${{ github.ref_name }}
         run: |
           node --input-type=module <<'NODE'
           import fs from "node:fs";
 
           const name = process.env.PACKAGE_NAME;
-          const version = process.env.PACKAGE_VERSION.replace(/^v/, "");
+          const version = process.env.RELEASE_TAG.replace(/^v/, "");
           const encodedName = name.replace("/", "%2f");
           const response = await fetch(`https://registry.npmjs.org/${encodedName}/${version}`);
           if (response.status === 404) {
@@ -146,14 +159,13 @@ jobs:
 
       - name: Publish package with npm trusted publishing
         if: steps.npm_version.outputs.exists != 'true'
-        run: npm publish release-package/*.tgz --access public
+        run: npm publish ./release-package/*.tgz --access public
 
       - name: Wait for npm package visibility
         env:
           PACKAGE_NAME: '@rithwikbabu/packwright-mcp'
-          PACKAGE_VERSION: ${{ github.ref_name }}
         run: |
-          version="${PACKAGE_VERSION#v}"
+          version="${RELEASE_TAG#v}"
           for attempt in {1..12}; do
             if npm view "${PACKAGE_NAME}@${version}" version >/dev/null 2>&1; then
               exit 0
@@ -167,13 +179,12 @@ jobs:
         id: mcp_version
         env:
           MCP_NAME: io.github.rithwikbabu/packwright-mcp
-          MCP_VERSION: ${{ github.ref_name }}
         run: |
           node --input-type=module <<'NODE'
           import fs from "node:fs";
 
           const name = process.env.MCP_NAME;
-          const version = process.env.MCP_VERSION.replace(/^v/, "");
+          const version = process.env.RELEASE_TAG.replace(/^v/, "");
           const url = new URL("https://registry.modelcontextprotocol.io/v0.1/servers");
           url.searchParams.set("search", name);
           const response = await fetch(url);
@@ -220,11 +231,10 @@ jobs:
       - name: Verify MCP Registry entry
         env:
           MCP_NAME: io.github.rithwikbabu/packwright-mcp
-          MCP_VERSION: ${{ github.ref_name }}
         run: |
           node --input-type=module <<'NODE'
           const name = process.env.MCP_NAME;
-          const version = process.env.MCP_VERSION.replace(/^v/, "");
+          const version = process.env.RELEASE_TAG.replace(/^v/, "");
           const url = new URL("https://registry.modelcontextprotocol.io/v0.1/servers");
           url.searchParams.set("search", name);
 
@@ -249,8 +259,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "GitHub release already exists"
           else
-            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+            gh release create "$RELEASE_TAG" --verify-tag --generate-notes --title "$RELEASE_TAG"
           fi
