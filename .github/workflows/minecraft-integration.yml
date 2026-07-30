@@ -22,9 +22,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: minecraft-integration
-    env:
-      PACKWRIGHT_CACHE_DIR: ${{ runner.temp }}/packwright-cache
-      PACKWRIGHT_ACCEPT_MINECRAFT_EULA: ${{ inputs.accept_minecraft_eula }}
     steps:
       - name: Require explicit EULA acceptance
         if: ${{ inputs.accept_minecraft_eula != true }}
@@ -52,5 +49,8 @@ jobs:
 
       - name: Run explicit setup and vanilla fixture tests
         run: npm run test:minecraft
+        env:
+          PACKWRIGHT_CACHE_DIR: ${{ runner.temp }}/packwright-cache
+          PACKWRIGHT_ACCEPT_MINECRAFT_EULA: ${{ inputs.accept_minecraft_eula }}
 
       # Never upload the cache, server jar, generated vanilla data, or logs as artifacts.

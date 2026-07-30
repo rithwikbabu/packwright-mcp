@@ -22,4 +22,10 @@ export default defineConfig(
       '@typescript-eslint/no-magic-numbers': 'off',
     },
   },
+  {
+    // This acceptance runner intentionally imports build output. Keep ordinary
+    // JavaScript linting available in a clean checkout without requiring dist/.
+    files: ['scripts/*.mjs'],
+    ...tseslint.configs.disableTypeChecked,
+  },
 );
