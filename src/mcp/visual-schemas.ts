@@ -3,15 +3,28 @@ import { z } from 'zod/v4';
 import { MAX_MCP_PAYLOAD_BYTES } from '../core/limits.js';
 import { VISUAL_TARGETS } from '../visual/capabilities.js';
 import {
+  ArmorReviewSchema,
+  BlockReviewSchema,
   DISPLAY_CONTEXTS,
   DirectionVectorSchema,
   DisplayTransformSchema,
   ElementRotationSchema,
+  EntityModelReviewSchema,
+  GuiItemReviewSchema,
   HELD_ITEM_USE_POSES,
+  HeadWearableReviewSchema,
   MaterialSpecSchema,
   ModelSpecSchema,
+  PlaceableReviewSchema,
+  ProjectileReviewSchema,
+  REVIEW_PROFILE_IDS,
   Vector3Schema,
 } from '../visual/model-spec.js';
+import {
+  REVIEW_MEASUREMENT_IDS,
+  REVIEW_MEASUREMENT_UNITS,
+  REVIEW_SCENE_CATEGORIES,
+} from '../visual/review-profile.js';
 import {
   DiagnosticSchema,
   MinecraftVersionSchema,
@@ -108,7 +121,7 @@ export const VisualCapabilitiesResultSchema = z.strictObject({
   capabilities: z.array(VisualCapabilitySchema),
   reviewProfiles: z.array(
     z.strictObject({
-      id: z.literal('held_item'),
+      id: z.enum(REVIEW_PROFILE_IDS),
       version: z.number().int().positive(),
       targetKind: z.literal('item'),
       support: z.literal('full'),
@@ -376,7 +389,7 @@ export const VisualRenderResultSchema = z.strictObject({
   projectId: VisualProjectIdSchema,
   runId: VisualDraftIdSchema,
   revisionId: VisualDraftIdSchema,
-  reviewProfile: z.literal('held_item'),
+  reviewProfile: z.enum(REVIEW_PROFILE_IDS),
   profileVersion: z.number().int().positive(),
   reviewReady: z.boolean(),
   reportUri: z.url(),
@@ -386,7 +399,7 @@ export const VisualRenderResultSchema = z.strictObject({
     z.strictObject({
       name: z.string().min(1).max(128),
       required: z.boolean(),
-      category: z.enum(['first_person', 'third_person', 'neutral', 'conditional']),
+      category: z.enum(REVIEW_SCENE_CATEGORIES),
       width: z.number().int().positive(),
       height: z.number().int().positive(),
       file: VisualFileSchema,
@@ -395,21 +408,12 @@ export const VisualRenderResultSchema = z.strictObject({
   ),
   measurements: z.array(
     z.strictObject({
-      metric: z.enum([
-        'primary_grip_distance',
-        'secondary_grip_distance',
-        'arm_intersection',
-        'torso_intersection',
-        'screen_obscuration',
-        'forward_axis',
-        'hand_symmetry',
-        'frame_retention',
-      ]),
+      metric: z.enum(REVIEW_MEASUREMENT_IDS),
       view: z.string().min(1).max(64).optional(),
       status: z.enum(['passed', 'warning', 'failed', 'skipped']),
       value: z.number().optional(),
       threshold: z.number().optional(),
-      unit: z.enum(['model_pixels', 'percent', 'dot']),
+      unit: z.enum(REVIEW_MEASUREMENT_UNITS),
       message: z.string().min(1).max(4096),
       partId: z.string().min(1).max(64).optional(),
     }),
@@ -458,6 +462,16 @@ const HeldItemRepairSchema = z
     'A held-item repair must change at least one semantic field',
   );
 
+const ProfileReviewRepairSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('block_review'), value: BlockReviewSchema }),
+  z.strictObject({ kind: z.literal('placeable_review'), value: PlaceableReviewSchema }),
+  z.strictObject({ kind: z.literal('armor_review'), value: ArmorReviewSchema }),
+  z.strictObject({ kind: z.literal('head_wearable_review'), value: HeadWearableReviewSchema }),
+  z.strictObject({ kind: z.literal('projectile_review'), value: ProjectileReviewSchema }),
+  z.strictObject({ kind: z.literal('gui_item_review'), value: GuiItemReviewSchema }),
+  z.strictObject({ kind: z.literal('entity_model_review'), value: EntityModelReviewSchema }),
+]);
+
 export const VisualRevisionCreateInputSchema = z
   .strictObject({
     projectId: VisualProjectIdSchema,
@@ -475,6 +489,7 @@ export const VisualRevisionCreateInputSchema = z
           MaterialRepairSchema,
           DisplayRepairSchema,
           HeldItemRepairSchema,
+          ...ProfileReviewRepairSchema.options,
         ]),
       )
       .min(1)

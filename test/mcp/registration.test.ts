@@ -128,7 +128,16 @@ describe('Packwright MCP registration', () => {
     );
     expect(renderSchema?.properties?.reviewProfile).toMatchObject({
       type: 'string',
-      const: 'held_item',
+      enum: [
+        'held_item',
+        'block',
+        'placeable',
+        'armor',
+        'head_wearable',
+        'projectile',
+        'gui_item',
+        'entity_model',
+      ],
     });
     expect(renderSchema?.properties?.views?.items).toMatchObject({
       type: 'object',

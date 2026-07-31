@@ -6,12 +6,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
-- Added a generic, versioned visual review-profile layer and the first `held_item@1` profile, with 12 required Steve/Alex first- and third-person scenes, a neutral comparison, and conditional swing, active-use, two-handed, and aiming scenes.
-- Added held-item semantic anchors, handedness, use-pose intent, immutable render reports, MCP image/report resources, targeted metadata repairs, and guarded readiness checks for grip reach, intersection, screen coverage, direction, symmetry, and frame retention.
+- Added eight versioned visual review profiles: `held_item`, `block`, `placeable`, `armor`, `head_wearable`, `projectile`, `gui_item`, and `entity_model`, each with specialized bounded scenes and Packwright-authored reference geometry.
+- Added profile-specific semantic metadata, immutable render reports, MCP image/report resources, targeted metadata repairs, and guarded advisory checks spanning held fit, placement, GUI occupancy, armor/head presentation, projectile direction, scale, hitboxes, and frame retention.
 
 ### Changed
 
-- The visual renderer now compiles profile-selected perspective scenes instead of applying one universal contact sheet to every semantic item, while leaving Minecraft display transforms and compiled pack JSON unchanged.
+- The visual renderer now compiles model-specific profile scenes instead of applying one universal contact sheet to every semantic item, while leaving Minecraft display transforms and compiled pack JSON unchanged. Selecting a review profile does not expand the item-only compiler or native capability claims.
 - Visual commit, validation, and paired build now verify the exact renderer/profile versions, scene plan, report, required image hashes, and advisory readiness result for the selected revision.
 
 ### Fixed

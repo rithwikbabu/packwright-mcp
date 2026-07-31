@@ -52,12 +52,15 @@ import {
 } from './project.js';
 import { renderCompiledItemAsset, solidTexture, type Rgba } from './renderer.js';
 import {
-  HELD_ITEM_MEASUREMENTS,
-  HELD_ITEM_PROFILE_VERSION,
+  MAX_REVIEW_MEASUREMENTS,
   MAX_REVIEW_SCENES,
+  REVIEW_MEASUREMENT_IDS,
+  REVIEW_MEASUREMENT_UNITS,
   REVIEW_PROFILE_RENDERER_VERSION,
+  isReviewProfileId,
   resolveReviewProfile,
   type ReviewMeasurementResult,
+  type ReviewProfileId,
 } from './review-profile.js';
 import { canonicalJsonBytes, VisualRunStore } from './run-store.js';
 import { commitFileTransaction } from './transaction.js';
@@ -170,8 +173,8 @@ interface StoredRenderProfileReport {
   readonly specSha256: string;
   readonly compiledArtifactId: string;
   readonly rendererVersion: typeof REVIEW_PROFILE_RENDERER_VERSION;
-  readonly profileId: 'held_item';
-  readonly profileVersion: typeof HELD_ITEM_PROFILE_VERSION;
+  readonly profileId: ReviewProfileId;
+  readonly profileVersion: number;
   readonly viewSize: number;
   readonly planSha256: string;
   readonly requiredViewIds: readonly string[];
@@ -247,6 +250,7 @@ function artifactDiagnostic(code: string, message: string, target?: string): Vis
 
 function reviewMeasurementDiagnostic(
   target: string,
+  profileId: ReviewProfileId,
   measurement: ReviewMeasurementResult,
 ): VisualDiagnostic | undefined {
   if (measurement.status === 'passed') return undefined;
@@ -277,7 +281,7 @@ function reviewMeasurementDiagnostic(
     code: `visual.review.${measurement.metric}.${measurement.status}`,
     message: measurement.message,
     target,
-    reviewProfile: 'held_item',
+    reviewProfile: profileId,
     ...(measurement.view === undefined ? {} : { reviewView: measurement.view }),
     reviewMetric: measurement.metric,
     ...(measurement.partId === undefined ? {} : { partId: measurement.partId }),
@@ -287,10 +291,11 @@ function reviewMeasurementDiagnostic(
 
 function reviewMeasurementDiagnostics(
   target: string,
+  profileId: ReviewProfileId,
   measurements: readonly ReviewMeasurementResult[],
 ): readonly VisualDiagnostic[] {
   return measurements
-    .map((measurement) => reviewMeasurementDiagnostic(target, measurement))
+    .map((measurement) => reviewMeasurementDiagnostic(target, profileId, measurement))
     .filter((entry): entry is VisualDiagnostic => entry !== undefined);
 }
 
@@ -303,8 +308,9 @@ function parseRenderProfileReport(value: unknown): StoredRenderProfileReport {
     record.schemaVersion !== 1 ||
     record.kind !== 'packwright.render-profile-report' ||
     record.rendererVersion !== REVIEW_PROFILE_RENDERER_VERSION ||
-    record.profileId !== 'held_item' ||
-    record.profileVersion !== HELD_ITEM_PROFILE_VERSION ||
+    !isReviewProfileId(record.profileId) ||
+    !Number.isSafeInteger(record.profileVersion) ||
+    (record.profileVersion as number) <= 0 ||
     typeof record.projectId !== 'string' ||
     typeof record.runId !== 'string' ||
     typeof record.revisionId !== 'string' ||
@@ -368,16 +374,9 @@ function parseRenderProfileReport(value: unknown): StoredRenderProfileReport {
   ) {
     throw new Error('Render profile report views are duplicated or unbounded.');
   }
-  const metricIds = new Set([
-    'primary_grip_distance',
-    'secondary_grip_distance',
-    'arm_intersection',
-    'torso_intersection',
-    'screen_obscuration',
-    'forward_axis',
-    'hand_symmetry',
-    'frame_retention',
-  ]);
+  const metricIds = new Set<string>(REVIEW_MEASUREMENT_IDS);
+  const units = new Set<string>(REVIEW_MEASUREMENT_UNITS);
+  const viewIds = new Set(views.map((view) => view.id));
   const measurements = record.measurements.map((measurement) => {
     if (measurement === null || typeof measurement !== 'object' || Array.isArray(measurement)) {
       throw new Error('Render profile measurement is invalid.');
@@ -386,9 +385,12 @@ function parseRenderProfileReport(value: unknown): StoredRenderProfileReport {
     if (
       typeof entry.metric !== 'string' ||
       !metricIds.has(entry.metric) ||
-      (entry.view !== undefined && typeof entry.view !== 'string') ||
+      (entry.view !== undefined &&
+        (typeof entry.view !== 'string' ||
+          !/^[a-z0-9][a-z0-9_-]{0,47}$/u.test(entry.view) ||
+          !viewIds.has(entry.view))) ||
       !['passed', 'warning', 'failed', 'skipped'].includes(String(entry.status)) ||
-      !['model_pixels', 'percent', 'dot'].includes(String(entry.unit)) ||
+      !units.has(String(entry.unit)) ||
       typeof entry.message !== 'string' ||
       entry.message.length === 0 ||
       entry.message.length > 4096 ||
@@ -396,13 +398,14 @@ function parseRenderProfileReport(value: unknown): StoredRenderProfileReport {
         (typeof entry.value !== 'number' || !Number.isFinite(entry.value))) ||
       (entry.threshold !== undefined &&
         (typeof entry.threshold !== 'number' || !Number.isFinite(entry.threshold))) ||
-      (entry.partId !== undefined && typeof entry.partId !== 'string')
+      (entry.partId !== undefined &&
+        (typeof entry.partId !== 'string' || !/^[a-z][a-z0-9_.-]{0,63}$/u.test(entry.partId)))
     ) {
       throw new Error('Render profile measurement is invalid.');
     }
     return entry as unknown as ReviewMeasurementResult;
   });
-  if (measurements.length > MAX_REVIEW_SCENES * HELD_ITEM_MEASUREMENTS.length) {
+  if (measurements.length > MAX_REVIEW_MEASUREMENTS) {
     throw new Error('Render profile report contains too many measurements.');
   }
   return {
@@ -414,8 +417,8 @@ function parseRenderProfileReport(value: unknown): StoredRenderProfileReport {
     specSha256: record.specSha256,
     compiledArtifactId: record.compiledArtifactId,
     rendererVersion: REVIEW_PROFILE_RENDERER_VERSION,
-    profileId: 'held_item',
-    profileVersion: HELD_ITEM_PROFILE_VERSION,
+    profileId: record.profileId,
+    profileVersion: record.profileVersion as number,
     viewSize: record.viewSize as number,
     planSha256: record.planSha256,
     requiredViewIds,
@@ -1112,6 +1115,7 @@ export class VisualWorkflow {
   private async verifyRenderProfileEvidence(
     loaded: LoadedRevision,
     record: VisualRevisionState = loaded.record,
+    signal?: AbortSignal,
   ): Promise<StoredRenderProfileReport> {
     const render = record.render;
     const compiledArtifactId = record.compiledArtifactId;
@@ -1125,14 +1129,16 @@ export class VisualWorkflow {
     if (reference === undefined) {
       throw new Error('Render predates scene-profile reports and must be regenerated.');
     }
+    const plan = resolveReviewProfile(loaded.spec, reference.viewSize);
     if (
       reference.rendererVersion !== REVIEW_PROFILE_RENDERER_VERSION ||
-      reference.profileVersion !== HELD_ITEM_PROFILE_VERSION ||
+      reference.profileId !== loaded.spec.reviewProfile ||
+      reference.profileId !== plan.profileId ||
+      reference.profileVersion !== plan.profileVersion ||
       reference.specSha256 !== record.specSha256
     ) {
       throw new Error('Render profile identity is stale.');
     }
-    const plan = resolveReviewProfile(loaded.spec, reference.viewSize);
     if (
       reference.planSha256 !== plan.planSha256 ||
       !canonicalJsonBytes(reference.requiredViewIds).equals(
@@ -1147,6 +1153,61 @@ export class VisualWorkflow {
       throw new Error('Render profile view index is incomplete or contains unexpected scenes.');
     }
 
+    // A report is an index over derived evidence, not an authority for its own
+    // measurements. Recreate the exact render from the immutable specification
+    // and current texture inputs so a forged status/value/message cannot turn a
+    // failing visual review into an accepted commit.
+    abortIfNeeded(signal);
+    const compiled = compileItemAsset(loaded.spec);
+    const textureImages: Record<string, PixelImage> = {};
+    for (const requirement of compiled.textures) {
+      let image: PixelImage;
+      if (requirement.external) {
+        image = decodePng(
+          await this.readExternalResource(loaded, requirement.path, 8 * 1024 * 1024, signal),
+        );
+      } else {
+        const texture = record.textures[requirement.materialId];
+        if (texture === undefined) {
+          throw new Error(`Render-profile texture input is missing: ${requirement.materialId}`);
+        }
+        const storedTexture = await this.runs.readPng(
+          record.runId,
+          'texture',
+          texture.label,
+          texture.sha256,
+        );
+        if (
+          storedTexture.width !== texture.width ||
+          storedTexture.height !== texture.height ||
+          storedTexture.bytes !== texture.bytes
+        ) {
+          throw new Error(`Render-profile texture metadata is stale: ${requirement.materialId}`);
+        }
+        image = decodePng(storedTexture.data);
+      }
+      if (image.width !== requirement.width || image.height !== requirement.height) {
+        throw new Error(`Render-profile texture dimensions are stale: ${requirement.materialId}`);
+      }
+      textureImages[requirement.materialId] = image;
+    }
+    const canonicalRender = renderCompiledItemAsset(compiled, {
+      textures: textureImages,
+      viewSize: reference.viewSize,
+      signal,
+    });
+    const canonicalPlan = canonicalRender.reviewProfile;
+    const canonicalEvaluation = canonicalRender.evaluation;
+    if (
+      canonicalPlan === undefined ||
+      canonicalEvaluation === undefined ||
+      canonicalPlan.profileId !== plan.profileId ||
+      canonicalPlan.profileVersion !== plan.profileVersion ||
+      canonicalPlan.planSha256 !== plan.planSha256
+    ) {
+      throw new Error('Canonical render-profile evaluation is unavailable or stale.');
+    }
+
     const stored = await this.runs.readReview(record.runId, reference.reportSha256);
     const report = parseRenderProfileReport(stored.value);
     if (
@@ -1155,6 +1216,8 @@ export class VisualWorkflow {
       report.revisionId !== record.revisionId ||
       report.specSha256 !== record.specSha256 ||
       report.compiledArtifactId !== compiledArtifactId ||
+      report.profileId !== plan.profileId ||
+      report.profileVersion !== plan.profileVersion ||
       report.planSha256 !== plan.planSha256 ||
       report.viewSize !== reference.viewSize ||
       report.reviewReady !== reference.reviewReady ||
@@ -1167,15 +1230,21 @@ export class VisualWorkflow {
     }
 
     const reportViews = new Map(report.views.map((view) => [view.id, view] as const));
+    const canonicalViews = new Map(canonicalRender.views.map((view) => [view.id, view] as const));
     for (const scene of plan.scenes) {
       const indexed = render.views[scene.id];
       const reported = reportViews.get(scene.id);
+      const canonical = canonicalViews.get(scene.id);
       if (
         indexed === undefined ||
+        canonical === undefined ||
         reported?.required !== scene.required ||
         reported.sha256 !== indexed.sha256 ||
         reported.width !== indexed.width ||
-        reported.height !== indexed.height
+        reported.height !== indexed.height ||
+        canonical.sha256 !== indexed.sha256 ||
+        canonical.width !== indexed.width ||
+        canonical.height !== indexed.height
       ) {
         throw new Error(`Required render-profile view is missing or stale: ${scene.id}`);
       }
@@ -1199,12 +1268,36 @@ export class VisualWorkflow {
       contact.width !== render.contactSheet.width ||
       contact.height !== render.contactSheet.height ||
       contact.bytes !== render.contactSheet.bytes ||
+      canonicalRender.contactSheet.sha256 !== render.contactSheet.sha256 ||
+      canonicalRender.contactSheet.width !== render.contactSheet.width ||
+      canonicalRender.contactSheet.height !== render.contactSheet.height ||
       sha256Buffer(decodePng(contact.data).data) !== render.pixelSha256
     ) {
       throw new Error('Contact-sheet metadata or pixel hash does not match.');
     }
 
+    if (
+      report.reviewReady !== canonicalEvaluation.reviewReady ||
+      reference.reviewReady !== canonicalEvaluation.reviewReady ||
+      !canonicalJsonBytes(report.measurements).equals(
+        canonicalJsonBytes(canonicalEvaluation.measurements),
+      )
+    ) {
+      throw new Error('Render-profile measurements do not match canonical render evidence.');
+    }
+
     const measuredKinds = new Set(report.measurements.map((measurement) => measurement.metric));
+    const rules = new Map(plan.measurements.map((rule) => [rule.id, rule] as const));
+    const sceneIds = new Set(plan.scenes.map((scene) => scene.id));
+    for (const measurement of report.measurements) {
+      const rule = rules.get(measurement.metric);
+      if (
+        rule?.unit !== measurement.unit ||
+        (measurement.view !== undefined && !sceneIds.has(measurement.view))
+      ) {
+        throw new Error(`Render-profile measurement is not valid for ${plan.profileId}.`);
+      }
+    }
     for (const rule of plan.measurements) {
       if (!measuredKinds.has(rule.id)) {
         throw new Error(`Render-profile measurement is missing: ${rule.id}`);
@@ -1912,7 +2005,7 @@ export class VisualWorkflow {
       compiledArtifactId,
       rendererVersion: REVIEW_PROFILE_RENDERER_VERSION,
       profileId: profile.profileId,
-      profileVersion: HELD_ITEM_PROFILE_VERSION,
+      profileVersion: profile.profileVersion,
       viewSize: input.viewSize,
       planSha256: profile.planSha256,
       requiredViewIds: profile.requiredViewIds,
@@ -1943,7 +2036,7 @@ export class VisualWorkflow {
           review: {
             rendererVersion: REVIEW_PROFILE_RENDERER_VERSION,
             profileId: profile.profileId,
-            profileVersion: HELD_ITEM_PROFILE_VERSION,
+            profileVersion: profile.profileVersion,
             viewSize: input.viewSize,
             planSha256: profile.planSha256,
             reportSha256: storedReport.sha256,
@@ -1989,7 +2082,7 @@ export class VisualWorkflow {
       pixelSha256,
       diagnostics: [
         ...prepared.validation.diagnostics,
-        ...reviewMeasurementDiagnostics(loaded.spec.id, evaluation.measurements),
+        ...reviewMeasurementDiagnostics(loaded.spec.id, profile.profileId, evaluation.measurements),
       ].map(visualDiagnostic),
     };
   }
@@ -2020,6 +2113,13 @@ export class VisualWorkflow {
       materials: Record<string, unknown>;
       display: Record<string, unknown>;
       heldItem?: Record<string, unknown> | undefined;
+      blockReview?: unknown;
+      placeableReview?: unknown;
+      armorReview?: unknown;
+      headWearableReview?: unknown;
+      projectileReview?: unknown;
+      guiItemReview?: unknown;
+      entityModelReview?: unknown;
     };
     for (const repair of input.repairs) {
       if (repair.kind === 'part') {
@@ -2036,7 +2136,7 @@ export class VisualWorkflow {
         draft.materials[repair.material] = repair.value;
       } else if (repair.kind === 'display') {
         draft.display[repair.context] = repair.transform;
-      } else {
+      } else if (repair.kind === 'held_item') {
         const heldItem = draft.heldItem ?? {
           primaryGrip: [8, 5.5, 11],
           handedness: 'either',
@@ -2056,6 +2156,20 @@ export class VisualWorkflow {
         if (repair.itemKind !== undefined) heldItem.itemKind = repair.itemKind;
         if (repair.usePose !== undefined) heldItem.usePose = repair.usePose;
         draft.heldItem = heldItem;
+      } else if (repair.kind === 'block_review') {
+        draft.blockReview = repair.value;
+      } else if (repair.kind === 'placeable_review') {
+        draft.placeableReview = repair.value;
+      } else if (repair.kind === 'armor_review') {
+        draft.armorReview = repair.value;
+      } else if (repair.kind === 'head_wearable_review') {
+        draft.headWearableReview = repair.value;
+      } else if (repair.kind === 'projectile_review') {
+        draft.projectileReview = repair.value;
+      } else if (repair.kind === 'gui_item_review') {
+        draft.guiItemReview = repair.value;
+      } else {
+        draft.entityModelReview = repair.value;
       }
     }
     const spec = parseModelSpec(draft);
@@ -2277,6 +2391,7 @@ export class VisualWorkflow {
       profileReport = await this.verifyRenderProfileEvidence(
         { ...loaded, record: prepared.record },
         prepared.record,
+        signal,
       );
     } catch (error) {
       throw new PackwrightError(
@@ -2287,7 +2402,7 @@ export class VisualWorkflow {
     if (!profileReport.reviewReady) {
       throw new PackwrightError(
         'validation_failed',
-        'The held-item review profile must pass before committing.',
+        'The selected review profile must pass before committing.',
       );
     }
     const expectedContents = createProposedContents(
@@ -2517,7 +2632,9 @@ export class VisualWorkflow {
       if (rendered) {
         try {
           const report = await this.verifyRenderProfileEvidence(loaded);
-          diagnostics.push(...reviewMeasurementDiagnostics(loaded.spec.id, report.measurements));
+          diagnostics.push(
+            ...reviewMeasurementDiagnostics(loaded.spec.id, report.profileId, report.measurements),
+          );
           reviewProfileReady = report.reviewReady;
         } catch (error) {
           diagnostics.push(

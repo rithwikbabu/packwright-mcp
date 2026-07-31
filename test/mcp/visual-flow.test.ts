@@ -86,10 +86,21 @@ describe('visual MCP flow', () => {
       arguments: {},
     });
     expect(capabilities.isError).not.toBe(true);
-    expect(structured(capabilities)).toMatchObject({
-      ok: true,
-      reviewProfiles: [{ id: 'held_item', version: 1, targetKind: 'item', support: 'full' }],
-    });
+    expect(structured(capabilities)).toMatchObject({ ok: true });
+    expect(
+      objectRecords(structured(capabilities).reviewProfiles, 'review profiles').map(
+        (entry) => entry.id,
+      ),
+    ).toEqual([
+      'held_item',
+      'block',
+      'placeable',
+      'armor',
+      'head_wearable',
+      'projectile',
+      'gui_item',
+      'entity_model',
+    ]);
 
     const attached = await client.callTool({
       name: 'visual_project_attach',

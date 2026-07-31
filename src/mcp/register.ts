@@ -589,7 +589,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Create Visual Draft',
       description:
-        'Validate a semantic custom-item ModelSpec, including its held-item review profile metadata, and create an immutable, content-addressed draft run. This never writes generated assets into either pack.',
+        'Validate a semantic custom-item ModelSpec, including its selected review-profile metadata, and create an immutable, content-addressed draft run. Review profiles stage the same compiled item output and never imply new native target support.',
       inputSchema: VisualSpecUpsertInputSchema,
       outputSchema: VisualDraftResultSchema,
       annotations: {
@@ -669,7 +669,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Render Visual Draft',
       description:
-        'Render the selected generic scene-review profile with Packwright’s deterministic CPU renderer. held_item@1 produces Steve/Alex held-item scenes, advisory measurements, an immutable report, individual image resources, and a contact sheet returned as image content.',
+        'Render the selected model-specific scene-review profile with Packwright’s deterministic CPU renderer. All profiles produce bounded original-reference scenes, advisory measurements, an immutable report, individual image resources, and a contact sheet returned as image content.',
       inputSchema: VisualRenderInputSchema,
       outputSchema: VisualRenderResultSchema,
       annotations: {
@@ -691,7 +691,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Repair Visual Draft',
       description:
-        'Create an immutable child revision by changing only named parts, materials, display transforms, or held-item review metadata against the reviewed spec hash.',
+        'Create an immutable child revision by changing only named parts, materials, display transforms, or selected review-profile metadata against the reviewed spec hash.',
       inputSchema: VisualRevisionCreateInputSchema,
       outputSchema: VisualDraftResultSchema,
       annotations: {
@@ -1243,8 +1243,8 @@ function registerPrompts(server: McpServer): void {
             text: [
               `Create a visual draft for project "${projectId}": ${request}`,
               `Requested target: ${target}. Begin with visual_capabilities and disclose whether the result is native, simulated, replacement, or requires_mod.`,
-              'For the supported custom-item slice, author a semantic ModelSpec with named parts and materials, reviewProfile="held_item", and heldItem grip/handedness/action metadata. Call visual_spec_upsert, import textures only when needed, then call visual_compile and visual_render.',
-              'Inspect reviewReady, the immutable held_item@1 report, and its profile-specific contact sheet. Do not call visual_commit. Retain all creative provenance.',
+              'For the supported custom-item compiler slice, author a semantic ModelSpec with named parts and materials, select the review profile that matches the intended presentation, and provide that profile’s semantic metadata. Call visual_spec_upsert, import textures only when needed, then call visual_compile and visual_render.',
+              'Inspect reviewReady, the immutable selected-profile report, and its specialized contact sheet. The profile does not expand compiler support. Do not call visual_commit. Retain all creative provenance.',
             ].join('\n'),
           },
         },
@@ -1274,8 +1274,8 @@ function registerPrompts(server: McpServer): void {
             text: [
               `Visually review project ${projectId}, run ${runId}, revision ${revisionId}. Intended result: ${intent}`,
               `Read packwright://visual/runs/${runId}/revisions/${revisionId}/render-report and ${visualRunContactSheetUri(runId, revisionId)}; inspect individual profile views when a finding is ambiguous.`,
-              'For held_item@1, review every required Steve/Alex first-person, wide-FOV, third-person, neutral, and activated conditional scene. Treat grip, approximate arm/torso intersection, screen coverage, forward-axis, hand-symmetry, and frame-retention measurements as advisory rather than authoritative client evidence.',
-              'Return accept or repair. A failed measurement or reviewReady=false requires repair. Name the exact part, material, display context, held-item metadata field, scene, and metric when available. Do not mutate or commit files.',
+              'Review every required scene defined by the selected profile, including its original Packwright reference geometry. Treat all CPU-rendered fit, overlap, lighting, GUI, pose, scale, hitbox, and frame measurements as advisory rather than authoritative client evidence.',
+              'Return accept or repair. A failed measurement or reviewReady=false requires repair. Name the exact part, material, display context, profile metadata field, scene, and metric when available. Do not mutate or commit files.',
             ].join('\n'),
           },
         },
@@ -1303,8 +1303,8 @@ function registerPrompts(server: McpServer): void {
             type: 'text' as const,
             text: [
               `Repair visual project ${projectId}, run ${runId}, revision ${revisionId}: ${finding}`,
-              'Read the draft spec, immutable profile report, contact sheet, and implicated scene resources. Use visual_revision_create with the current spec SHA and only targeted part, material, display-transform, or held_item metadata repairs.',
-              'Compile and profile-render the child revision, then compare the same held_item@1 scenes and advisory measurements. Do not commit until reviewReady is true and a subsequent visual review explicitly accepts it.',
+              'Read the draft spec, immutable profile report, contact sheet, and implicated scene resources. Use visual_revision_create with the current spec SHA and only targeted part, material, display-transform, or selected-profile metadata repairs.',
+              'Compile and profile-render the child revision, then compare the same selected-profile scenes and advisory measurements. Do not commit until reviewReady is true and a subsequent visual review explicitly accepts it.',
             ].join('\n'),
           },
         },

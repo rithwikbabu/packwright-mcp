@@ -7,6 +7,7 @@ import { sha256Buffer } from '../core/hash.js';
 import { withPathLock } from '../core/locks.js';
 import { isVisualProjectId } from './project.js';
 import { canonicalJsonBytes } from './run-store.js';
+import { isReviewProfileId, type ReviewProfileId } from './review-profile.js';
 
 const CONTENT_ID_PATTERN = /^[a-f0-9]{64}$/u;
 const MATERIAL_PATTERN = /^[a-z][a-z0-9_.-]{0,63}$/u;
@@ -34,7 +35,7 @@ export interface VisualRenderReferences {
 
 export interface VisualRenderReviewReference {
   readonly rendererVersion: string;
-  readonly profileId: 'held_item';
+  readonly profileId: ReviewProfileId;
   readonly profileVersion: number;
   readonly viewSize: number;
   readonly planSha256: string;
@@ -160,7 +161,7 @@ function revisionState(value: unknown, revisionId: string): VisualRevisionState 
       const reviewRecord = reviewValue as Record<string, unknown>;
       if (
         reviewRecord.rendererVersion !== 'packwright-cpu-v2' ||
-        reviewRecord.profileId !== 'held_item' ||
+        !isReviewProfileId(reviewRecord.profileId) ||
         typeof reviewRecord.reviewReady !== 'boolean' ||
         !Array.isArray(reviewRecord.requiredViewIds)
       ) {

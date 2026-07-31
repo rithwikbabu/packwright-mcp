@@ -371,6 +371,17 @@ export const HELD_ITEM_USE_POSES = [
   'aim',
 ] as const;
 
+export const REVIEW_PROFILE_IDS = [
+  'held_item',
+  'block',
+  'placeable',
+  'armor',
+  'head_wearable',
+  'projectile',
+  'gui_item',
+  'entity_model',
+] as const;
+
 export const HeldItemReviewSchema = z
   .object({
     /** Model-space point that should sit in the player's palm. */
@@ -425,6 +436,154 @@ export const HeldItemReviewSchema = z
     }
   });
 
+const HorizontalDirectionSchema = z.enum(['north', 'east', 'south', 'west']);
+const AttachmentSurfaceSchema = z.enum(['floor', 'wall', 'ceiling']);
+const PlayerVariantSchema = z.enum(['steve', 'alex']);
+
+export const BlockReviewSchema = z
+  .object({
+    adjacentBlocks: z.boolean().default(true),
+    lightingChecks: z.boolean().default(true),
+    cullingChecks: z.boolean().default(true),
+  })
+  .strict();
+
+export const PlaceableReviewSchema = z
+  .object({
+    orientations: z
+      .array(HorizontalDirectionSchema)
+      .min(1)
+      .max(4)
+      .default(['north', 'east', 'south', 'west']),
+    attachments: z
+      .array(AttachmentSurfaceSchema)
+      .min(1)
+      .max(3)
+      .default(['floor', 'wall', 'ceiling']),
+    footprint: z
+      .tuple([z.number().positive().max(32), z.number().positive().max(32)])
+      .default([16, 16]),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.orientations).size !== value.orientations.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Placeable orientations must be unique.',
+        path: ['orientations'],
+      });
+    }
+    if (new Set(value.attachments).size !== value.attachments.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Placeable attachments must be unique.',
+        path: ['attachments'],
+      });
+    }
+  });
+
+export const ArmorReviewSchema = z
+  .object({
+    slots: z
+      .array(z.enum(['head', 'chest', 'legs', 'feet']))
+      .min(1)
+      .max(4)
+      .default(['head', 'chest', 'legs', 'feet']),
+    bodyVariants: z.array(PlayerVariantSchema).min(1).max(2).default(['steve', 'alex']),
+    poses: z
+      .array(z.enum(['neutral', 'walking', 'crouching']))
+      .min(1)
+      .max(3)
+      .default(['neutral', 'walking', 'crouching']),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    for (const [field, entries] of [
+      ['slots', value.slots],
+      ['bodyVariants', value.bodyVariants],
+      ['poses', value.poses],
+    ] as const) {
+      if (new Set(entries).size !== entries.length) {
+        context.addIssue({
+          code: 'custom',
+          message: `Armor ${field} must be unique.`,
+          path: [field],
+        });
+      }
+    }
+  });
+
+export const HeadWearableReviewSchema = z
+  .object({
+    bodyVariants: z.array(PlayerVariantSchema).min(1).max(2).default(['steve', 'alex']),
+    firstPersonObstruction: z.boolean().default(true),
+    armorStand: z.boolean().default(true),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.bodyVariants).size !== value.bodyVariants.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Head-wearable body variants must be unique.',
+        path: ['bodyVariants'],
+      });
+    }
+  });
+
+export const ProjectileReviewSchema = z
+  .object({
+    forwardAxis: DirectionVectorSchema.default([0, 0, -1]),
+    inHand: z.boolean().default(true),
+    impact: z.boolean().default(true),
+    stuckDepth: z.number().min(0).max(8).default(2),
+  })
+  .strict();
+
+export const GuiItemReviewSchema = z
+  .object({
+    counts: z.array(z.number().int().min(1).max(99)).min(1).max(3).default([1, 64]),
+    durability: z.boolean().default(true),
+    glint: z.boolean().default(true),
+    tooltip: z.string().min(1).max(128).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.counts).size !== value.counts.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'GUI item counts must be unique.',
+        path: ['counts'],
+      });
+    }
+  });
+
+export const EntityModelReviewSchema = z
+  .object({
+    hitbox: z
+      .tuple([
+        z.number().positive().max(64),
+        z.number().positive().max(64),
+        z.number().positive().max(64),
+      ])
+      .default([8, 16, 8]),
+    animationPoses: z
+      .array(z.enum(['idle', 'walking', 'attacking']))
+      .min(1)
+      .max(3)
+      .default(['idle', 'walking', 'attacking']),
+    playerScaleReference: z.boolean().default(true),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (new Set(value.animationPoses).size !== value.animationPoses.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Entity animation poses must be unique.',
+        path: ['animationPoses'],
+      });
+    }
+  });
+
 export const ModelSpecSchema = z
   .object({
     schemaVersion: z.literal(MODEL_SPEC_SCHEMA_VERSION).default(MODEL_SPEC_SCHEMA_VERSION),
@@ -438,11 +597,37 @@ export const ModelSpecSchema = z
     display: DisplayOverridesSchema.default({}),
     states: z.array(ItemStateSchema).max(128).default([]),
     connection: ItemConnectionIntentSchema.optional(),
-    reviewProfile: z.literal('held_item').default('held_item'),
+    reviewProfile: z.enum(REVIEW_PROFILE_IDS).default('held_item'),
     heldItem: HeldItemReviewSchema.optional(),
+    blockReview: BlockReviewSchema.optional(),
+    placeableReview: PlaceableReviewSchema.optional(),
+    armorReview: ArmorReviewSchema.optional(),
+    headWearableReview: HeadWearableReviewSchema.optional(),
+    projectileReview: ProjectileReviewSchema.optional(),
+    guiItemReview: GuiItemReviewSchema.optional(),
+    entityModelReview: EntityModelReviewSchema.optional(),
   })
   .strict()
   .superRefine((spec, context) => {
+    const reviewFields = {
+      held_item: 'heldItem',
+      block: 'blockReview',
+      placeable: 'placeableReview',
+      armor: 'armorReview',
+      head_wearable: 'headWearableReview',
+      projectile: 'projectileReview',
+      gui_item: 'guiItemReview',
+      entity_model: 'entityModelReview',
+    } as const;
+    for (const [profile, field] of Object.entries(reviewFields)) {
+      if (profile !== spec.reviewProfile && spec[field as keyof typeof spec] !== undefined) {
+        context.addIssue({
+          code: 'custom',
+          message: `${field} is only valid with reviewProfile '${profile}'.`,
+          path: [field],
+        });
+      }
+    }
     const partIds = new Map<string, number>();
     for (const [index, part] of spec.parts.entries()) {
       const previous = partIds.get(part.id);

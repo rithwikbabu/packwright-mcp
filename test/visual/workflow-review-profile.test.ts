@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { createDatapack } from '../../src/core/authoring.js';
 import { sha256Buffer } from '../../src/core/hash.js';
 import {
+  VisualConnectInputSchema,
   VisualProjectAttachInputSchema,
   VisualRenderInputSchema,
   VisualRevisionCreateInputSchema,
@@ -77,6 +78,113 @@ async function renderedFixture() {
 }
 
 describe('visual workflow review-profile evidence', () => {
+  it('round-trips a non-held profile report and invalidates it after profile-metadata repair', async () => {
+    const temporary = await temporaryWorkspace();
+    cleanups.push(temporary.cleanup);
+    await createDatapack(temporary.workspace, {
+      packPath: 'gui-data',
+      namespace: 'arcana',
+      description: 'GUI review fixture',
+    });
+    const workflow = new VisualWorkflow(temporary.workspace, `${temporary.root}/cache`);
+    await workflow.attachProject(
+      VisualProjectAttachInputSchema.parse({
+        id: 'guiitem',
+        datapack: 'gui-data',
+        resourcepack: 'gui-assets',
+      }),
+    );
+    const draft = await workflow.upsertSpec(
+      VisualSpecUpsertInputSchema.parse({
+        projectId: 'guiitem',
+        request: 'A GUI-focused item',
+        spec: {
+          id: 'arcana:gui_item',
+          targetKind: 'item',
+          reviewProfile: 'gui_item',
+          guiItemReview: {
+            counts: [1, 64],
+            durability: true,
+            glint: true,
+            tooltip: 'Arcana GUI Item',
+          },
+          parts: [
+            {
+              id: 'icon',
+              shape: 'cuboid',
+              from: [0, 0, 0],
+              to: [16, 16, 16],
+              material: 'icon',
+            },
+          ],
+          materials: { icon: { color: '#55aaff' } },
+        },
+      }),
+    );
+    const rendered = await workflow.render(
+      VisualRenderInputSchema.parse({
+        projectId: 'guiitem',
+        runId: draft.runId,
+        revisionId: draft.revisionId,
+        viewSize: 32,
+      }),
+    );
+    const reportResource = await workflow.readResource({
+      kind: 'render_report',
+      runId: draft.runId,
+      revisionId: draft.revisionId,
+    });
+    const report = JSON.parse(reportResource.data.toString('utf8')) as {
+      profileId: string;
+      profileVersion: number;
+      reviewReady: boolean;
+      measurements: { metric: string }[];
+    };
+
+    expect(rendered).toMatchObject({ reviewProfile: 'gui_item', profileVersion: 1 });
+    expect(report).toMatchObject({
+      profileId: 'gui_item',
+      profileVersion: 1,
+      reviewReady: true,
+    });
+    expect(new Set(report.measurements.map((entry) => entry.metric))).toEqual(
+      new Set([
+        'frame_retention',
+        'icon_occupancy',
+        'overlay_occlusion',
+        'tooltip_overflow',
+        'state_difference',
+      ]),
+    );
+    await expect(
+      workflow.validateDraft('guiitem', draft.runId, draft.revisionId),
+    ).resolves.toMatchObject({ readiness: { rendered: true, reviewProfile: true } });
+
+    const repaired = await workflow.revise(
+      VisualRevisionCreateInputSchema.parse({
+        projectId: 'guiitem',
+        runId: draft.runId,
+        parentRevisionId: draft.revisionId,
+        expectedSpecSha256: draft.specSha256,
+        instructions: 'Disable the glint review scene.',
+        repairs: [
+          {
+            kind: 'gui_item_review',
+            value: {
+              counts: [1, 64],
+              durability: true,
+              glint: false,
+              tooltip: 'Arcana GUI Item',
+            },
+          },
+        ],
+      }),
+    );
+    expect((await workflow.states.read('guiitem')).revisions[repaired.revisionId]?.render).toBe(
+      undefined,
+    );
+  });
+
   it('round-trips an immutable render report with its revision and view identities', async () => {
     const { workflow, draft, rendered } = await renderedFixture();
     const resource = await workflow.readResource({
@@ -245,5 +353,115 @@ describe('visual workflow review-profile evidence', () => {
     ).rejects.toMatchObject({ code: 'precondition_failed' });
     const validated = await workflow.validateDraft('reviewwand', draft.runId, draft.revisionId);
     expect(validated.readiness).toMatchObject({ rendered: true, reviewProfile: false });
+  });
+
+  it('recomputes canonical evidence and blocks a forged passing report at commit', async () => {
+    const temporary = await temporaryWorkspace();
+    cleanups.push(temporary.cleanup);
+    await createDatapack(temporary.workspace, {
+      packPath: 'forged-data',
+      namespace: 'arcana',
+      description: 'Forged render-report fixture',
+    });
+    const workflow = new VisualWorkflow(temporary.workspace, `${temporary.root}/cache`);
+    await workflow.attachProject(
+      VisualProjectAttachInputSchema.parse({
+        id: 'forgedreport',
+        datapack: 'forged-data',
+        resourcepack: 'forged-assets',
+      }),
+    );
+    const draft = await workflow.upsertSpec(
+      VisualSpecUpsertInputSchema.parse({
+        projectId: 'forgedreport',
+        request: 'A deliberately clipped held item',
+        spec: {
+          ...reviewableItem,
+          id: 'arcana:forged_report',
+          display: {
+            firstperson_righthand: {
+              rotation: [0, -90, 25],
+              translation: [70, 3, 1],
+              scale: [0.68, 0.68, 0.68],
+            },
+          },
+        },
+      }),
+    );
+    const rendered = await workflow.render(
+      VisualRenderInputSchema.parse({
+        projectId: 'forgedreport',
+        runId: draft.runId,
+        revisionId: draft.revisionId,
+        viewSize: 32,
+      }),
+    );
+    expect(rendered.reviewReady).toBe(false);
+    expect(rendered.measurements.some((measurement) => measurement.status === 'failed')).toBe(true);
+    const connected = await workflow.connect(
+      VisualConnectInputSchema.parse({
+        projectId: 'forgedreport',
+        runId: draft.runId,
+        revisionId: draft.revisionId,
+        carrierItem: 'minecraft:stick',
+      }),
+    );
+    const resource = await workflow.readResource({
+      kind: 'render_report',
+      runId: draft.runId,
+      revisionId: draft.revisionId,
+    });
+    const report = JSON.parse(resource.data.toString('utf8')) as {
+      readonly measurements: readonly Record<string, unknown>[];
+      readonly [key: string]: unknown;
+    };
+    const forged = await workflow.runs.putReview(draft.runId, {
+      ...report,
+      reviewReady: true,
+      measurements: report.measurements.map((measurement) => ({
+        ...measurement,
+        status: 'passed',
+      })),
+    });
+    await workflow.states.update('forgedreport', (current) => {
+      const active = current.revisions[draft.revisionId];
+      if (active?.render?.review === undefined) throw new Error('Rendered fixture is missing.');
+      return {
+        ...current,
+        revisions: {
+          ...current.revisions,
+          [draft.revisionId]: {
+            ...active,
+            render: {
+              ...active.render,
+              review: {
+                ...active.render.review,
+                reportSha256: forged.sha256,
+                reviewReady: true,
+              },
+            },
+          },
+        },
+      };
+    });
+
+    await expect(
+      workflow.readResource({
+        kind: 'render_report',
+        runId: draft.runId,
+        revisionId: draft.revisionId,
+      }),
+    ).rejects.toMatchObject({ code: 'precondition_failed' });
+    await expect(
+      workflow.commit(
+        'forgedreport',
+        draft.runId,
+        draft.revisionId,
+        connected.proposalSha256 ?? '',
+      ),
+    ).rejects.toMatchObject({ code: 'precondition_failed' });
+    await expect(
+      workflow.validateDraft('forgedreport', draft.runId, draft.revisionId),
+    ).resolves.toMatchObject({ readiness: { rendered: true, reviewProfile: false } });
   });
 });

@@ -77,7 +77,9 @@ import { MINECRAFT_26_2 } from './core/version.js';
 import { readStableFile } from './core/stable-file.js';
 import { listVisualCapabilities } from './visual/capabilities.js';
 import { createDeterministicZipArchive } from './visual/builder.js';
+import { REVIEW_PROFILE_IDS } from './visual/model-spec.js';
 import { validateResourcePackSnapshot } from './visual/resourcepack-validation.js';
+import { REVIEW_PROFILES } from './visual/review-profile.js';
 import { commitFileTransaction, VISUAL_TRANSACTION_LIMITS } from './visual/transaction.js';
 import { VisualWorkflow, visualDiagnostic } from './visual/workflow.js';
 import {
@@ -802,7 +804,12 @@ export class PackwrightApplication implements PackwrightService {
         ...entry,
         strategies: [...entry.strategies],
       })),
-      reviewProfiles: [{ id: 'held_item', version: 1, targetKind: 'item', support: 'full' }],
+      reviewProfiles: REVIEW_PROFILE_IDS.map((id) => ({
+        id,
+        version: REVIEW_PROFILES[id].version,
+        targetKind: 'item' as const,
+        support: 'full' as const,
+      })),
     });
   }
 
