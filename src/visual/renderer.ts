@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { CLIENT_CAPTURE_LIMITS } from '../minecraft/client-capture-protocol.js';
 import {
   compileItemAsset,
   resolveDisplayTransforms,
@@ -3002,10 +3003,22 @@ function drawNearest(
   }
 }
 
-/** Combines standardized views into a bounded, deterministic review sheet. */
-export function createContactSheet(views: readonly RenderedView[]): RenderedContactSheet {
-  if (views.length === 0 || views.length > MAX_REVIEW_SCENES) {
-    throw new Error(`Contact sheet requires between one and ${String(MAX_REVIEW_SCENES)} views.`);
+interface ContactSheetLayout {
+  readonly columns: number;
+  readonly cellSize: number;
+  readonly inset: number;
+  readonly maximumViews: number;
+  readonly label: string;
+}
+
+function createContactSheetWithLayout(
+  views: readonly RenderedView[],
+  layout: ContactSheetLayout,
+): RenderedContactSheet {
+  if (views.length === 0 || views.length > layout.maximumViews) {
+    throw new Error(
+      `${layout.label} requires between one and ${String(layout.maximumViews)} views.`,
+    );
   }
   const ids = new Set<string>();
   for (const view of views) {
@@ -3015,26 +3028,26 @@ export function createContactSheet(views: readonly RenderedView[]): RenderedCont
     ids.add(view.id);
     validateTexture(view.image, `Render view ${view.id}`);
   }
-  const rows = Math.ceil(views.length / CONTACT_COLUMNS);
-  const width = CONTACT_COLUMNS * CONTACT_CELL_SIZE;
-  const height = rows * CONTACT_CELL_SIZE;
+  const rows = Math.ceil(views.length / layout.columns);
+  const width = layout.columns * layout.cellSize;
+  const height = rows * layout.cellSize;
   const data = Buffer.alloc(width * height * 4);
   fill(data, [18, 20, 25, 255]);
   const placements: ContactSheetPlacement[] = [];
   views.forEach((view, index) => {
-    const column = index % CONTACT_COLUMNS;
-    const row = Math.floor(index / CONTACT_COLUMNS);
-    const cellX = column * CONTACT_CELL_SIZE;
-    const cellY = row * CONTACT_CELL_SIZE;
-    const maximum = CONTACT_CELL_SIZE - CONTACT_INSET * 2;
+    const column = index % layout.columns;
+    const row = Math.floor(index / layout.columns);
+    const cellX = column * layout.cellSize;
+    const cellY = row * layout.cellSize;
+    const maximum = layout.cellSize - layout.inset * 2;
     const scale = Math.min(maximum / view.width, maximum / view.height);
     const targetWidth = Math.max(1, Math.floor(view.width * scale));
     const targetHeight = Math.max(1, Math.floor(view.height * scale));
-    const x = cellX + Math.floor((CONTACT_CELL_SIZE - targetWidth) / 2);
-    const y = cellY + Math.floor((CONTACT_CELL_SIZE - targetHeight) / 2);
+    const x = cellX + Math.floor((layout.cellSize - targetWidth) / 2);
+    const y = cellY + Math.floor((layout.cellSize - targetHeight) / 2);
     drawNearest(data, width, view.image, x, y, targetWidth, targetHeight);
     const marker = colorFromName(view.id);
-    for (let markerX = cellX; markerX < cellX + CONTACT_CELL_SIZE; markerX += 1) {
+    for (let markerX = cellX; markerX < cellX + layout.cellSize; markerX += 1) {
       const offset = (cellY * width + markerX) * 4;
       data[offset] = marker[0];
       data[offset + 1] = marker[1];
@@ -3046,6 +3059,39 @@ export function createContactSheet(views: readonly RenderedView[]): RenderedCont
   const image: PixelImage = { width, height, data };
   const png = encodePng(image, { maxFileBytes: MAX_CONTACT_SHEET_BYTES });
   return { width, height, image, png, sha256: sha256(png), placements };
+}
+
+/** Combines CPU-rendered review views without broadening the 16-scene CPU profile limit. */
+export function createContactSheet(views: readonly RenderedView[]): RenderedContactSheet {
+  return createContactSheetWithLayout(views, {
+    columns: CONTACT_COLUMNS,
+    cellSize: CONTACT_CELL_SIZE,
+    inset: CONTACT_INSET,
+    maximumViews: MAX_REVIEW_SCENES,
+    label: 'Contact sheet',
+  });
+}
+
+/**
+ * Combines protocol-v3 client framebuffers into one payload-safe sheet. Client
+ * plans may contain up to 64 required/conditional scenes, so larger sets use
+ * progressively smaller cells while retaining the CPU sheet's 400px bound.
+ */
+export function createClientCaptureContactSheet(
+  views: readonly RenderedView[],
+): RenderedContactSheet {
+  if (views.length <= MAX_REVIEW_SCENES) return createContactSheet(views);
+  const columns = Math.ceil(Math.sqrt(views.length));
+  const rows = Math.ceil(views.length / columns);
+  const cellSize = Math.floor((CONTACT_COLUMNS * CONTACT_CELL_SIZE) / Math.max(columns, rows));
+  const inset = Math.max(1, Math.floor((CONTACT_INSET * cellSize) / CONTACT_CELL_SIZE));
+  return createContactSheetWithLayout(views, {
+    columns,
+    cellSize,
+    inset,
+    maximumViews: CLIENT_CAPTURE_LIMITS.maxScenes,
+    label: 'Client-capture contact sheet',
+  });
 }
 
 /**

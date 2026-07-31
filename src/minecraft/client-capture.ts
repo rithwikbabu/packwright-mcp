@@ -6,6 +6,7 @@ import {
   mkdir,
   mkdtemp,
   open,
+  readdir,
   realpath,
   rm,
   stat,
@@ -26,6 +27,8 @@ import { runProcess, type ProcessResult } from '../runtime/process.js';
 import { createDeterministicZipArchive } from '../visual/builder.js';
 import type { PackSnapshot } from '../visual/pack-snapshot.js';
 import {
+  CLIENT_CAPTURE_DATAPACK_PROVENANCE_PATH,
+  CLIENT_CAPTURE_RESOURCEPACK_PATH,
   canonicalClientCapturePlanBytes,
   verifyClientCaptureOutput,
   type ClientCaptureEvidence,
@@ -53,6 +56,7 @@ const CAPTURE_TIMEOUT_MINIMUM = 30_000;
 const CAPTURE_TIMEOUT_MAXIMUM = 10 * 60_000;
 const MAX_CAPTURE_MOD_BYTES = 16 * 1024 * 1024;
 const MAX_CAPTURE_RESULT_BYTES = 300 * 1024 * 1024;
+const MAX_STAGED_PACK_BYTES = 512 * 1024 * 1024;
 
 export interface PreparedMinecraftClientCapture {
   readonly runtime: HashedClientRuntimeManifest;
@@ -440,19 +444,46 @@ async function stageCaptureFiles(
       'Resource-pack capture hash changed after planning.',
     );
   }
+  // The capture mod validates the save boundary before asking Minecraft to
+  // create the disposable world. Pre-create only the reserved empty world
+  // container: Minecraft's fresh-level flow accepts an existing empty
+  // directory, while both this launcher and the mod reject any staged world
+  // data or loadable datapack content.
+  const savesDirectory = path.join(gameDirectory, 'saves');
+  const captureSaveDirectory = path.join(savesDirectory, 'packwright-capture');
+  await mkdir(captureSaveDirectory, { recursive: true, mode: 0o700 });
+  const [savesInfo, captureSaveInfo, saveEntries, captureSaveEntries] = await Promise.all([
+    lstat(savesDirectory),
+    lstat(captureSaveDirectory),
+    readdir(savesDirectory),
+    readdir(captureSaveDirectory),
+  ]);
+  if (
+    savesInfo.isSymbolicLink() ||
+    !savesInfo.isDirectory() ||
+    captureSaveInfo.isSymbolicLink() ||
+    !captureSaveInfo.isDirectory() ||
+    saveEntries.length !== 1 ||
+    saveEntries[0] !== 'packwright-capture' ||
+    captureSaveEntries.length !== 0
+  ) {
+    throw new PackwrightError(
+      'precondition_failed',
+      'Disposable client capture save staging was not an empty capture-only directory.',
+    );
+  }
+  const fovDegrees = plan.scenes[0]?.fov ?? 70;
+  // options.txt stores the legacy normalized slider value, not degrees:
+  // -1 = 30 degrees, 0 = 70 degrees, and 1 = 110 degrees. The capture mod
+  // subsequently sets and verifies the exact degree value for every scene.
+  const serializedFov = (fovDegrees - 70) / 40;
   const files = [
     {
-      path: path.join(gameDirectory, 'resourcepacks', 'packwright-proposal.zip'),
+      path: path.join(gameDirectory, ...CLIENT_CAPTURE_RESOURCEPACK_PATH.split('/')),
       data: resourceArchive.data,
     },
     {
-      path: path.join(
-        gameDirectory,
-        'saves',
-        'packwright-capture',
-        'datapacks',
-        'packwright-proposal.zip',
-      ),
+      path: path.join(gameDirectory, ...CLIENT_CAPTURE_DATAPACK_PROVENANCE_PATH.split('/')),
       data: dataArchive.data,
     },
     {
@@ -468,11 +499,16 @@ async function stageCaptureFiles(
       data: Buffer.from(
         [
           'fullscreen:false',
-          'graphicsMode:0',
-          'graphicsApi:opengl',
-          'renderDistance:2',
-          'simulationDistance:5',
+          `preferredGraphicsBackend:${plan.studio.rendererBackend}`,
+          `graphicsPreset:${plan.studio.graphicsMode}`,
+          'renderClouds:false',
+          `renderDistance:${String(plan.studio.renderDistance)}`,
+          `simulationDistance:${String(plan.studio.simulationDistance)}`,
           `guiScale:${String(plan.scenes[0]?.guiScale ?? 2)}`,
+          `fov:${String(serializedFov)}`,
+          'particles:2',
+          `entityShadows:${String(plan.studio.entityShadows)}`,
+          `bobView:${String(plan.studio.viewBobbing)}`,
           'enableVsync:false',
           'pauseOnLostFocus:false',
           '',
@@ -485,6 +521,37 @@ async function stageCaptureFiles(
   for (const file of files) {
     await mkdir(path.dirname(file.path), { recursive: true, mode: 0o700 });
     await writeFile(file.path, file.data, { flag: 'wx', mode: 0o600 });
+  }
+  for (const [relative, expectedSha256] of [
+    [CLIENT_CAPTURE_DATAPACK_PROVENANCE_PATH, plan.provenance.datapackContentSha256],
+    [CLIENT_CAPTURE_RESOURCEPACK_PATH, plan.provenance.resourcepackContentSha256],
+  ] as const) {
+    const staged = await readNoFollow(
+      path.join(gameDirectory, ...relative.split('/')),
+      MAX_STAGED_PACK_BYTES,
+    );
+    if (sha256Buffer(staged) !== expectedSha256) {
+      throw new PackwrightError(
+        'precondition_failed',
+        `Staged capture archive does not match provenance: ${relative}`,
+      );
+    }
+  }
+  const forbiddenLoadableDatapack = path.join(
+    gameDirectory,
+    'saves',
+    'packwright-capture',
+    'datapacks',
+    'packwright-proposal.zip',
+  );
+  try {
+    await lstat(forbiddenLoadableDatapack);
+    throw new PackwrightError(
+      'precondition_failed',
+      "The project datapack was staged in Minecraft's loadable world datapack directory.",
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
 }
 
@@ -523,7 +590,7 @@ function launchArguments(
     `-Dio.netty.native.workdir=${path.join(nativeRoot, 'netty')}`,
     `-Dlog4j.configurationFile=${path.join(input.config.cacheDir, ...logging.cachePath.split('/'))}`,
     '-Dminecraft.launcher.brand=packwright',
-    '-Dminecraft.launcher.version=0.4.1',
+    '-Dminecraft.launcher.version=0.5.0-dev',
     '-Dfabric.side=client',
     `-Dfabric.gameVersion=${runtime.manifest.minecraftVersion}`,
     `-Dfabric.modsFolder=${path.join(gameDirectory, 'mods')}`,
@@ -738,15 +805,19 @@ export async function executeMinecraftClientCapture(
     // cannot be accepted under the pre-launch provenance identity. Injected
     // launchers are an explicit test seam and never carry capture authority.
     if (input.launch === undefined) await verifyRuntimeStayedPinned(input);
-    const evidence = await verifyClientCaptureOutput({
-      plan,
-      outputDirectory,
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
-    });
-    if (evidence.report.runtime.rendererBackend !== MINECRAFT_26_2.clientCapture.graphicsBackend) {
+    let evidence: ClientCaptureEvidence;
+    try {
+      evidence = await verifyClientCaptureOutput({
+        plan,
+        outputDirectory,
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
+    } catch (error) {
+      const stdout = processResult.stdout.trim().slice(-8_192);
+      const stderr = processResult.stderr.trim().slice(-8_192);
       throw new PackwrightError(
         'validation_failed',
-        `Minecraft used ${evidence.report.runtime.rendererBackend}; Packwright 26.2 capture requires ${MINECRAFT_26_2.clientCapture.graphicsBackend}.`,
+        `Minecraft client exited without valid capture protocol output: ${error instanceof Error ? error.message : String(error)}${stdout.length === 0 ? '' : `\nMinecraft stdout tail:\n${stdout}`}${stderr.length === 0 ? '' : `\nMinecraft stderr tail:\n${stderr}`}`,
       );
     }
     const artifacts = await collectEvidenceArtifacts(outputDirectory, evidence);

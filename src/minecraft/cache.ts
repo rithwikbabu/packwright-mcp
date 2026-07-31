@@ -88,7 +88,7 @@ export interface ClientCaptureRuntimeSetupRecord {
   readonly artifacts: number;
   readonly bytes: number;
   readonly loaderVersion: '0.19.3';
-  readonly captureProtocolVersion: 2;
+  readonly captureProtocolVersion: 3;
 }
 
 export interface CachePaths {
@@ -279,8 +279,20 @@ function clientCaptureRuntimeSetupRecord(
   value: unknown,
 ): ClientCaptureRuntimeSetupRecord | undefined {
   const object = asObject(value);
+  const allowedKeys = new Set([
+    'preparedAt',
+    'manifestSha256',
+    'platform',
+    'architecture',
+    'artifacts',
+    'bytes',
+    'loaderVersion',
+    'captureProtocolVersion',
+  ]);
   if (
-    !isIsoTimestamp(object?.preparedAt) ||
+    object === undefined ||
+    Object.keys(object).some((key) => !allowedKeys.has(key)) ||
+    !isIsoTimestamp(object.preparedAt) ||
     typeof object.manifestSha256 !== 'string' ||
     !/^[a-f0-9]{64}$/u.test(object.manifestSha256) ||
     typeof object.platform !== 'string' ||
@@ -294,7 +306,16 @@ function clientCaptureRuntimeSetupRecord(
   ) {
     return undefined;
   }
-  return object as unknown as ClientCaptureRuntimeSetupRecord;
+  return {
+    preparedAt: object.preparedAt,
+    manifestSha256: object.manifestSha256,
+    platform: object.platform,
+    architecture: object.architecture,
+    artifacts: object.artifacts,
+    bytes: object.bytes,
+    loaderVersion: object.loaderVersion,
+    captureProtocolVersion: object.captureProtocolVersion,
+  };
 }
 
 function setupRecord(value: unknown): SetupRecord | undefined {
@@ -314,22 +335,18 @@ function setupRecord(value: unknown): SetupRecord | undefined {
   const clientAssets =
     object.clientAssets === undefined ? undefined : clientAssetsSetupRecord(object.clientAssets);
   if (object.clientAssets !== undefined && clientAssets === undefined) return undefined;
-  const clientCaptureRuntime =
+  const parsedClientCaptureRuntime =
     object.clientCaptureRuntime === undefined
       ? undefined
       : clientCaptureRuntimeSetupRecord(object.clientCaptureRuntime);
-  if (object.clientCaptureRuntime !== undefined && clientCaptureRuntime === undefined) {
-    return undefined;
-  }
+  const clientCaptureRuntime =
+    parsedClientCaptureRuntime !== undefined &&
+    Date.parse(parsedClientCaptureRuntime.preparedAt) <= Date.parse(object.generatedAt)
+      ? parsedClientCaptureRuntime
+      : undefined;
   if (
     clientAssets !== undefined &&
     Date.parse(clientAssets.preparedAt) > Date.parse(object.generatedAt)
-  ) {
-    return undefined;
-  }
-  if (
-    clientCaptureRuntime !== undefined &&
-    Date.parse(clientCaptureRuntime.preparedAt) > Date.parse(object.generatedAt)
   ) {
     return undefined;
   }

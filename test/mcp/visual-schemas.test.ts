@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   ProjectBuildInputSchema,
   TextureImportInputSchema,
+  VisualClientCaptureInputSchema,
   VisualClientCaptureResultSchema,
+  type VisualClientCaptureResult,
   VisualConnectInputSchema,
   VisualDraftIdSchema,
   VisualProjectIdSchema,
@@ -14,7 +16,7 @@ const CONTENT_ID = 'a'.repeat(64);
 const REQUIRED_CAPTURE_VIEW = 'first_person_vanilla--first-person-right-steve';
 const SUPPLEMENTAL_CAPTURE_VIEW = 'first_person_scale_reference--first-person-right-steve';
 
-function captureResult() {
+function captureResult(): VisualClientCaptureResult {
   const file = (name: string) => ({
     path: `visual-runs/${CONTENT_ID}/captures/${name}.png`,
     sha256: CONTENT_ID,
@@ -25,6 +27,8 @@ function captureResult() {
   const view = (name: string, scaleReference: boolean) => ({
     name,
     baseSceneId: 'first-person-right-steve',
+    targetKind: 'held_item' as const,
+    representationSha256: CONTENT_ID,
     viewKind: scaleReference
       ? ('first_person_scale_reference' as const)
       : ('first_person_vanilla' as const),
@@ -40,6 +44,7 @@ function captureResult() {
     uri: `https://example.invalid/${name}`,
   });
   return {
+    protocolVersion: 3 as const,
     ok: true,
     status: 'passed' as const,
     authority: 'authoritative_environment_capture' as const,
@@ -49,15 +54,39 @@ function captureResult() {
     revisionId: CONTENT_ID,
     reviewProfile: 'held_item' as const,
     profileVersion: 1,
+    targetKind: 'held_item' as const,
+    representationSha256: CONTENT_ID,
+    studioSha256: CONTENT_ID,
+    representationStrategy: 'item_stack' as const,
+    representationCapability: 'native' as const,
+    representationDisclosure:
+      'This is the exact vanilla carrier item stack; it does not register a new item type.',
+    proposalBindingStatus: 'implemented' as const,
+    proposalBindingReason: 'The exact held-item representation is implemented by the proposal.',
     clientCaptureSupport: 'limited' as const,
+    clientCaptureStrategies: ['item_stack'],
     captureReady: true,
     contactSheet: file('contact'),
     contactSheetUri: 'https://example.invalid/contact',
-    scaleReferenceContactSheet: file('scale-reference-contact'),
-    scaleReferenceContactSheetUri: 'https://example.invalid/scale-reference-contact',
+    supplementalContactSheet: file('supplemental-contact'),
+    supplementalContactSheetUri: 'https://example.invalid/supplemental-contact',
     views: [view(REQUIRED_CAPTURE_VIEW, false), view(SUPPLEMENTAL_CAPTURE_VIEW, true)],
     requiredViewIds: [REQUIRED_CAPTURE_VIEW],
     supplementalViewIds: [SUPPLEMENTAL_CAPTURE_VIEW],
+    measurements: [
+      {
+        id: 'frame-retention',
+        metric: 'frame_retention' as const,
+        sceneIds: [REQUIRED_CAPTURE_VIEW],
+        authority: 'client_pixels' as const,
+        requiredForReadiness: false,
+        status: 'passed' as const,
+        unit: 'ratio' as const,
+        value: 1,
+        message: 'All authored pixels remain inside the captured framebuffer.',
+        sourcePngSha256s: [CONTENT_ID],
+      },
+    ],
     diagnostics: [],
   };
 }
@@ -230,6 +259,146 @@ describe('visual MCP input schemas', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('accepts only strict declarative capture representations and bounded QA switches', () => {
+    const base = {
+      projectId: 'firestaff',
+      runId: CONTENT_ID,
+      proposalSha256: CONTENT_ID,
+      confirm: true,
+    };
+    const blockRepresentation = {
+      targetKind: 'block',
+      strategy: 'native_block_state',
+      capability: 'replacement',
+      states: {
+        default: { blockState: { id: 'minecraft:stone', properties: {} } },
+      },
+      review: {
+        transparency: false,
+        biomeTintBiomes: [],
+        animatedTextureTicks: [],
+      },
+    };
+
+    expect(
+      VisualClientCaptureInputSchema.parse({
+        ...base,
+        representation: blockRepresentation,
+      }),
+    ).toMatchObject({
+      representation: blockRepresentation,
+      includeDebugHitboxViews: false,
+      includeScaleReferenceViews: false,
+    });
+
+    const displayRigRepresentation = {
+      targetKind: 'placeable',
+      strategy: 'display_rig',
+      capability: 'simulated',
+      states: {
+        default: {
+          displayRig: {
+            nodes: [
+              {
+                id: 'body',
+                kind: 'block_display',
+                position: [0, 64, 0],
+                yaw: 0,
+                pitch: 0,
+                transform: {
+                  translation: [0, 0, 0],
+                  leftRotation: [0, 0, 0],
+                  scale: [1, 1, 1],
+                  rightRotation: [0, 0, 0],
+                },
+                billboard: 'fixed',
+                brightness: { block: 15, sky: 15 },
+                shadow: { radius: 0.5, strength: 1 },
+                interpolation: { duration: 0, startDelta: 0 },
+                blockState: { id: 'minecraft:stone', properties: {} },
+              },
+            ],
+          },
+        },
+      },
+      review: {
+        orientations: ['north', 'east', 'south', 'west'],
+        attachments: ['floor', 'wall', 'ceiling'],
+        placementStates: ['north', 'east', 'south', 'west'].flatMap((orientation) =>
+          ['floor', 'wall', 'ceiling'].map((attachment) => ({
+            orientation,
+            attachment,
+            stateId: 'default',
+          })),
+        ),
+      },
+    };
+    expect(
+      VisualClientCaptureInputSchema.safeParse({
+        ...base,
+        representation: displayRigRepresentation,
+        includeDebugHitboxViews: true,
+        displaySettlingTicks: 2,
+      }).success,
+    ).toBe(true);
+    expect(
+      VisualClientCaptureInputSchema.safeParse({
+        ...base,
+        representation: blockRepresentation,
+        displaySettlingTicks: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      VisualClientCaptureInputSchema.safeParse({
+        ...base,
+        includeDebugHitboxViews: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      VisualClientCaptureInputSchema.safeParse({
+        ...base,
+        representation: blockRepresentation,
+        includeScaleReferenceViews: true,
+      }).success,
+    ).toBe(false);
+    expect(
+      VisualClientCaptureInputSchema.safeParse({
+        ...base,
+        representation: {
+          targetKind: 'block',
+          strategy: 'block_display',
+          capability: 'simulated',
+          states: {
+            default: {
+              blockDisplay: displayRigRepresentation.states.default.displayRig.nodes[0],
+            },
+          },
+          review: {
+            transparency: false,
+            biomeTintBiomes: [],
+            animatedTextureTicks: [],
+          },
+        },
+        displaySettlingTicks: 4,
+      }).success,
+    ).toBe(true);
+
+    for (const forbidden of [
+      { command: 'summon minecraft:pig' },
+      { function: 'example:setup' },
+      { savePath: '/Users/example/world' },
+      { modPath: '/tmp/untrusted.jar' },
+      { credentials: 'secret' },
+    ]) {
+      expect(
+        VisualClientCaptureInputSchema.safeParse({
+          ...base,
+          representation: { ...blockRepresentation, ...forbidden },
+        }).success,
+      ).toBe(false);
+    }
+  });
 });
 
 describe('visual client-capture result schema', () => {
@@ -278,6 +447,27 @@ describe('visual client-capture result schema', () => {
         result.requiredViewIds = [REQUIRED_CAPTURE_VIEW, REQUIRED_CAPTURE_VIEW];
         return result;
       })(),
+      (() => {
+        const result = captureResult();
+        result.views = result.views.map((view) =>
+          view.name === REQUIRED_CAPTURE_VIEW
+            ? { ...view, representationSha256: 'b'.repeat(64) }
+            : view,
+        );
+        return result;
+      })(),
+      (() => {
+        const result = captureResult();
+        result.views = result.views.map((view) =>
+          view.name === REQUIRED_CAPTURE_VIEW ? { ...view, targetKind: 'entity' as const } : view,
+        );
+        return result;
+      })(),
+      (() => {
+        const result = captureResult();
+        result.status = 'failed';
+        return result;
+      })(),
     ];
 
     for (const result of invalidResults) {
@@ -285,20 +475,116 @@ describe('visual client-capture result schema', () => {
     }
   });
 
-  it('requires the scale-reference sheet and URI exactly for supplemental views', () => {
+  it('requires the supplemental sheet and URI exactly for supplemental views', () => {
     const missingSheet = captureResult();
-    delete (missingSheet as Partial<typeof missingSheet>).scaleReferenceContactSheet;
+    delete (missingSheet as Partial<typeof missingSheet>).supplementalContactSheet;
     expect(VisualClientCaptureResultSchema.safeParse(missingSheet).success).toBe(false);
 
     const missingUri = captureResult();
-    delete (missingUri as Partial<typeof missingUri>).scaleReferenceContactSheetUri;
+    delete (missingUri as Partial<typeof missingUri>).supplementalContactSheetUri;
     expect(VisualClientCaptureResultSchema.safeParse(missingUri).success).toBe(false);
 
     const vanillaOnly = captureResult();
     vanillaOnly.views = vanillaOnly.views.filter((view) => view.name === REQUIRED_CAPTURE_VIEW);
     vanillaOnly.supplementalViewIds = [];
-    delete (vanillaOnly as Partial<typeof vanillaOnly>).scaleReferenceContactSheet;
-    delete (vanillaOnly as Partial<typeof vanillaOnly>).scaleReferenceContactSheetUri;
+    delete (vanillaOnly as Partial<typeof vanillaOnly>).supplementalContactSheet;
+    delete (vanillaOnly as Partial<typeof vanillaOnly>).supplementalContactSheetUri;
     expect(VisualClientCaptureResultSchema.safeParse(vanillaOnly).success).toBe(true);
+  });
+
+  it('classifies debug hitbox frames as supplemental augmented QA only', () => {
+    const result = {
+      ...captureResult(),
+      targetKind: 'entity' as const,
+      proposalBindingStatus: 'capture_only' as const,
+      proposalBindingReason:
+        'The exact entity representation is capture evidence and is not implemented by this proposal.',
+      views: captureResult().views.map((view) => ({
+        ...view,
+        targetKind: 'entity' as const,
+        ...(view.name === SUPPLEMENTAL_CAPTURE_VIEW
+          ? {
+              viewKind: 'debug_hitbox_reference' as const,
+              authority: 'augmented_qa_reference' as const,
+              requiredForAuthority: false,
+            }
+          : { viewKind: 'minecraft_vanilla' as const }),
+      })),
+    };
+    expect(VisualClientCaptureResultSchema.safeParse(result).success).toBe(true);
+
+    const invalid = {
+      ...result,
+      views: result.views.map((view) =>
+        view.viewKind === 'debug_hitbox_reference'
+          ? {
+              ...view,
+              authority: 'authoritative_environment_capture' as const,
+              requiredForAuthority: true,
+            }
+          : view,
+      ),
+      requiredViewIds: [REQUIRED_CAPTURE_VIEW, SUPPLEMENTAL_CAPTURE_VIEW],
+      supplementalViewIds: [],
+      supplementalContactSheet: undefined,
+      supplementalContactSheetUri: undefined,
+    };
+    expect(VisualClientCaptureResultSchema.safeParse(invalid).success).toBe(false);
+  });
+
+  it('classifies measurement controls as supplemental augmented QA only', () => {
+    const controlView = 'measurement_control--block-hero';
+    const result = {
+      ...captureResult(),
+      reviewProfile: 'block' as const,
+      targetKind: 'block' as const,
+      representationStrategy: 'native_block_state' as const,
+      representationCapability: 'replacement' as const,
+      proposalBindingStatus: 'capture_only' as const,
+      proposalBindingReason:
+        'The exact block representation is capture evidence and is not implemented by this proposal.',
+      clientCaptureStrategies: ['native_block_state'],
+      views: captureResult().views.map((view) =>
+        view.name === SUPPLEMENTAL_CAPTURE_VIEW
+          ? {
+              ...view,
+              name: controlView,
+              baseSceneId: 'block-hero',
+              targetKind: 'block' as const,
+              viewKind: 'measurement_control' as const,
+              authority: 'augmented_qa_reference' as const,
+              requiredForAuthority: false,
+            }
+          : {
+              ...view,
+              name: 'block-hero',
+              baseSceneId: 'block-hero',
+              targetKind: 'block' as const,
+              viewKind: 'minecraft_vanilla' as const,
+            },
+      ),
+      requiredViewIds: ['block-hero'],
+      supplementalViewIds: [controlView],
+    };
+
+    expect(VisualClientCaptureResultSchema.safeParse(result).success).toBe(true);
+
+    const invalid = {
+      ...result,
+      views: result.views.map((view) =>
+        view.viewKind === 'measurement_control'
+          ? {
+              ...view,
+              authority: 'authoritative_environment_capture' as const,
+              requiredForAuthority: true,
+            }
+          : view,
+      ),
+      requiredViewIds: ['block-hero', controlView],
+      supplementalViewIds: [],
+      supplementalContactSheet: undefined,
+      supplementalContactSheetUri: undefined,
+    };
+    expect(VisualClientCaptureResultSchema.safeParse(invalid).success).toBe(false);
   });
 });

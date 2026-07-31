@@ -12,6 +12,8 @@ import {
   getCacheStatus,
   loadReferenceCache,
   setupVersion,
+  type ClientAssetsSetupRecord,
+  type ClientCaptureRuntimeSetupRecord,
   type SetupRecord,
 } from '../../src/minecraft/cache.js';
 
@@ -24,6 +26,31 @@ function validSetupRecord(): SetupRecord {
     generatedAt: GENERATED_AT,
     serverSha1: MINECRAFT_26_2.artifacts.serverSha1,
     versionManifestUrl: VERSION_MANIFEST_URL,
+  };
+}
+
+function validClientAssetsSetupRecord(): ClientAssetsSetupRecord {
+  return {
+    preparedAt: GENERATED_AT,
+    versionMetadataSha1: MINECRAFT_26_2.resourcePack.artifacts.versionMetadataSha1,
+    clientSha1: '1'.repeat(40),
+    clientSize: 1,
+    assetIndexId: '26',
+    assetIndexSha1: '2'.repeat(40),
+    assetIndexSize: 1,
+  };
+}
+
+function validClientCaptureRuntimeSetupRecord(): ClientCaptureRuntimeSetupRecord {
+  return {
+    preparedAt: GENERATED_AT,
+    manifestSha256: '3'.repeat(64),
+    platform: 'darwin',
+    architecture: 'arm64',
+    artifacts: 1,
+    bytes: 1,
+    loaderVersion: MINECRAFT_26_2.clientCapture.loader.version,
+    captureProtocolVersion: MINECRAFT_26_2.clientCapture.protocolVersion,
   };
 }
 
@@ -93,6 +120,64 @@ describe('Minecraft validation cache trust', () => {
     expect(status.acceptedEula).toBe(false);
     expect(status.record).toBeUndefined();
     expect(status.jarVerified).toBe(false);
+    expect(status.ready).toBe(false);
+  });
+
+  it.each([
+    {
+      name: 'an earlier capture protocol version',
+      changes: { captureProtocolVersion: 2 },
+    },
+    {
+      name: 'a preparation timestamp after server setup generation',
+      changes: { preparedAt: '2026-07-31T00:00:00.000Z' },
+    },
+    {
+      name: 'an unapproved executable field',
+      changes: { command: 'function attacker:bootstrap' },
+    },
+  ])('drops optional client capture runtime data with $name', async ({ changes }) => {
+    const paths = cachePaths(cacheDir);
+    const base = validSetupRecord();
+    const clientAssets = validClientAssetsSetupRecord();
+    await writeJson(paths.setupRecord, {
+      ...base,
+      clientAssets,
+      clientCaptureRuntime: {
+        ...validClientCaptureRuntimeSetupRecord(),
+        ...changes,
+      },
+    });
+    await writeJson(paths.commandsReport, { children: {} });
+    await writeJson(paths.registriesReport, {});
+
+    const status = await getCacheStatus(cacheDir);
+
+    expect(status).toMatchObject({
+      acceptedEula: true,
+      commands: true,
+      registries: true,
+      record: {
+        ...base,
+        clientAssets,
+      },
+    });
+    expect(status.record?.clientCaptureRuntime).toBeUndefined();
+    expect(status.clientAssets?.selected).toBe(true);
+  });
+
+  it('still rejects a forged server setup when optional capture runtime data is valid', async () => {
+    const paths = cachePaths(cacheDir);
+    await writeJson(paths.setupRecord, {
+      ...validSetupRecord(),
+      serverSha1: '0'.repeat(40),
+      clientCaptureRuntime: validClientCaptureRuntimeSetupRecord(),
+    });
+
+    const status = await getCacheStatus(cacheDir);
+
+    expect(status.acceptedEula).toBe(false);
+    expect(status.record).toBeUndefined();
     expect(status.ready).toBe(false);
   });
 

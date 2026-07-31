@@ -6,7 +6,13 @@
   "client": [
     "AbstractContainerScreenAccessor",
     "AbstractClientPlayerMixin",
+    "BlockDisplayAccessor",
+    "CameraAccessor",
+    "CameraMixin",
+    "DisplayAccessor",
     "GameRendererMixin",
+    "InteractionAccessor",
+    "ItemDisplayAccessor",
     "ItemInHandRendererAccessor",
     "ItemInHandRendererMixin",
     "MinecraftMixin",

@@ -58,6 +58,8 @@ export type VisualResourceInput =
         | 'binding'
         | 'client_capture_report'
         | 'client_contact_sheet'
+        | 'client_supplemental_sheet'
+        /** @deprecated Protocol-v2 scale-only resource alias. */
         | 'client_scale_reference_sheet';
       readonly runId: string;
       readonly revisionId: string;

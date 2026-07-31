@@ -2,9 +2,19 @@ import { Client } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { sha256Buffer } from '../../src/core/hash.js';
 import { MAX_MCP_PAYLOAD_BYTES } from '../../src/core/limits.js';
 import { createPackwrightMcpServer } from '../../src/mcp/register.js';
 import type { PackwrightService } from '../../src/mcp/service.js';
+import {
+  visualRunClientCaptureContactSheetUri,
+  visualRunClientCaptureReportUri,
+  visualRunClientCaptureSupplementalSheetUri,
+  visualRunClientCaptureViewUri,
+} from '../../src/mcp/visual-uris.js';
+import { encodePng } from '../../src/visual/png.js';
+import { createClientCaptureContactSheet, solidTexture } from '../../src/visual/renderer.js';
+import { canonicalJsonBytes } from '../../src/visual/run-store.js';
 
 const unused = (): Promise<never> => Promise.reject(new Error('Unexpected service method call'));
 
@@ -113,7 +123,14 @@ describe('Packwright MCP registration', () => {
       additionalProperties: false,
     });
     expect(reviewProfiles?.items?.required).toEqual(
-      expect.arrayContaining(['id', 'version', 'targetKind', 'support', 'clientCaptureSupport']),
+      expect.arrayContaining([
+        'id',
+        'version',
+        'targetKind',
+        'support',
+        'clientCaptureSupport',
+        'clientCaptureStrategies',
+      ]),
     );
 
     const renderSchema = tools.tools.find((tool) => tool.name === 'visual_render')?.outputSchema as
@@ -162,8 +179,19 @@ describe('Packwright MCP registration', () => {
     expect(captureInputSchema?.properties?.includeScaleReferenceViews).toMatchObject({
       type: 'boolean',
     });
+    expect(captureInputSchema?.properties?.includeDebugHitboxViews).toMatchObject({
+      type: 'boolean',
+    });
+    expect(captureInputSchema?.properties?.representation).toBeDefined();
     expect(captureOutputSchema?.required).toEqual(
-      expect.arrayContaining(['authorityScope', 'requiredViewIds', 'supplementalViewIds']),
+      expect.arrayContaining([
+        'protocolVersion',
+        'authorityScope',
+        'clientCaptureStrategies',
+        'requiredViewIds',
+        'supplementalViewIds',
+        'measurements',
+      ]),
     );
     expect(captureOutputSchema?.properties?.authorityScope).toMatchObject({
       type: 'string',
@@ -173,6 +201,8 @@ describe('Packwright MCP registration', () => {
       expect.arrayContaining([
         'name',
         'baseSceneId',
+        'targetKind',
+        'representationSha256',
         'viewKind',
         'authority',
         'requiredForAuthority',
@@ -194,6 +224,7 @@ describe('Packwright MCP registration', () => {
       'visual-binding-proposal',
       'visual-client-capture-report',
       'visual-client-contact-sheet',
+      'visual-client-supplemental-sheet',
       'visual-client-scale-reference-sheet',
       'visual-render-view',
       'visual-client-capture-view',
@@ -271,6 +302,7 @@ describe('Packwright MCP registration', () => {
       ...service,
       captureVisual: () =>
         Promise.resolve({
+          protocolVersion: 3,
           ok: true,
           status: 'passed',
           authority: 'authoritative_environment_capture',
@@ -280,7 +312,16 @@ describe('Packwright MCP registration', () => {
           revisionId: identity,
           reviewProfile: 'held_item',
           profileVersion: 1,
+          targetKind: 'held_item',
+          representationSha256: identity,
+          studioSha256: identity,
+          representationStrategy: 'item_stack',
+          representationCapability: 'native',
+          proposalBindingStatus: 'implemented',
+          proposalBindingReason:
+            'The exact held-item representation is implemented by the proposal.',
           clientCaptureSupport: 'limited',
+          clientCaptureStrategies: ['item_stack'],
           captureReady: true,
           planSha256: identity,
           reportSha256: identity,
@@ -293,9 +334,49 @@ describe('Packwright MCP registration', () => {
             role: 'render',
           },
           contactSheetUri: `packwright://visual-runs/${identity}/revisions/${identity}/client-contact-sheet`,
-          views: [],
-          requiredViewIds: [],
-          supplementalViewIds: [],
+          supplementalContactSheet: {
+            path: `visual-runs/${identity}/captures/supplemental-${identity}.png`,
+            sha256: identity,
+            size: 64,
+            mediaType: 'image/png',
+            role: 'render',
+          },
+          supplementalContactSheetUri: `packwright://visual-runs/${identity}/revisions/${identity}/client-supplemental-sheet`,
+          views: [
+            {
+              name: 'neutral',
+              baseSceneId: 'neutral',
+              targetKind: 'held_item',
+              representationSha256: identity,
+              viewKind: 'minecraft_vanilla',
+              authority: 'authoritative_environment_capture',
+              requiredForAuthority: true,
+              width: 1280,
+              height: 720,
+              sourceSha256: identity,
+              normalizedSha256: identity,
+              bytes: 64,
+              uri: `packwright://visual-runs/${identity}/revisions/${identity}/client-capture/neutral`,
+            },
+            {
+              name: 'measurement_control--neutral',
+              baseSceneId: 'neutral',
+              targetKind: 'held_item',
+              representationSha256: identity,
+              viewKind: 'measurement_control',
+              authority: 'augmented_qa_reference',
+              requiredForAuthority: false,
+              width: 1280,
+              height: 720,
+              sourceSha256: identity,
+              normalizedSha256: identity,
+              bytes: 64,
+              uri: `packwright://visual-runs/${identity}/revisions/${identity}/client-capture/measurement_control--neutral`,
+            },
+          ],
+          requiredViewIds: ['neutral'],
+          supplementalViewIds: ['measurement_control--neutral'],
+          measurements: [],
           diagnostics: [],
         }),
       readVisualResource: () =>
@@ -337,6 +418,260 @@ describe('Packwright MCP registration', () => {
     expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(
       MAX_MCP_PAYLOAD_BYTES,
     );
+  });
+
+  it('serves protocol-v3 authoritative and supplemental capture evidence as distinct resources', async () => {
+    const runId = 'a'.repeat(64);
+    const revisionId = 'b'.repeat(64);
+    const representationSha256 = 'c'.repeat(64);
+    const authoritativeViewId = 'entity_turntable_front';
+    const supplementalViewId = 'entity_turntable_front_hitbox';
+    const authoritativeImage = solidTexture(8, 8, [220, 48, 48, 255]);
+    const supplementalImage = solidTexture(8, 8, [48, 96, 220, 255]);
+    const authoritativePng = encodePng(authoritativeImage);
+    const supplementalPng = encodePng(supplementalImage);
+    const authoritativeView = {
+      id: authoritativeViewId,
+      width: authoritativeImage.width,
+      height: authoritativeImage.height,
+      image: authoritativeImage,
+      png: authoritativePng,
+      sha256: sha256Buffer(authoritativePng),
+    };
+    const supplementalView = {
+      id: supplementalViewId,
+      width: supplementalImage.width,
+      height: supplementalImage.height,
+      image: supplementalImage,
+      png: supplementalPng,
+      sha256: sha256Buffer(supplementalPng),
+    };
+    const authoritativeSheet = createClientCaptureContactSheet([authoritativeView]);
+    const supplementalSheet = createClientCaptureContactSheet([supplementalView]);
+
+    expect(authoritativeSheet.placements.map((placement) => placement.viewId)).toEqual([
+      authoritativeViewId,
+    ]);
+    expect(authoritativeSheet.placements).not.toContainEqual(
+      expect.objectContaining({ viewId: supplementalViewId }),
+    );
+    expect(supplementalSheet.placements.map((placement) => placement.viewId)).toEqual([
+      supplementalViewId,
+    ]);
+
+    const evidence = {
+      schemaVersion: 3,
+      kind: 'packwright.minecraft-client-capture-evidence',
+      authority: 'authoritative_environment_capture',
+      authorityScope: 'required_views_only',
+      proposalBindingStatus: 'capture_only',
+      plan: {
+        protocolVersion: 3,
+        provenance: {
+          representation: {
+            targetKind: 'entity',
+            strategy: 'display_rig',
+            capability: 'simulated',
+          },
+          representationSha256,
+        },
+        scenes: [
+          {
+            id: authoritativeViewId,
+            baseSceneId: authoritativeViewId,
+            targetKind: 'entity',
+            representationSha256,
+            viewKind: 'minecraft_vanilla',
+            requiredForAuthority: true,
+          },
+          {
+            id: supplementalViewId,
+            baseSceneId: authoritativeViewId,
+            targetKind: 'entity',
+            representationSha256,
+            viewKind: 'debug_hitbox_reference',
+            requiredForAuthority: false,
+          },
+        ],
+      },
+      report: {
+        status: 'complete',
+        views: [
+          { sceneId: authoritativeViewId, pngSha256: authoritativeView.sha256 },
+          { sceneId: supplementalViewId, pngSha256: supplementalView.sha256 },
+        ],
+      },
+      views: [
+        {
+          id: authoritativeViewId,
+          baseSceneId: authoritativeViewId,
+          targetKind: 'entity',
+          representationSha256,
+          viewKind: 'minecraft_vanilla',
+          authority: 'authoritative_environment_capture',
+          requiredForAuthority: true,
+          label: authoritativeViewId,
+          sourceSha256: authoritativeView.sha256,
+          normalizedSha256: authoritativeView.sha256,
+          width: authoritativeView.width,
+          height: authoritativeView.height,
+          bytes: authoritativePng.length,
+        },
+        {
+          id: supplementalViewId,
+          baseSceneId: authoritativeViewId,
+          targetKind: 'entity',
+          representationSha256,
+          viewKind: 'debug_hitbox_reference',
+          authority: 'augmented_qa_reference',
+          requiredForAuthority: false,
+          label: supplementalViewId,
+          sourceSha256: supplementalView.sha256,
+          normalizedSha256: supplementalView.sha256,
+          width: supplementalView.width,
+          height: supplementalView.height,
+          bytes: supplementalPng.length,
+        },
+      ],
+      contactSheet: {
+        label: 'authoritative-contact',
+        sha256: authoritativeSheet.sha256,
+        width: authoritativeSheet.width,
+        height: authoritativeSheet.height,
+        bytes: authoritativeSheet.png.length,
+      },
+      supplementalContactSheet: {
+        label: 'supplemental-contact',
+        sha256: supplementalSheet.sha256,
+        width: supplementalSheet.width,
+        height: supplementalSheet.height,
+        bytes: supplementalSheet.png.length,
+      },
+    };
+    const evidenceBytes = canonicalJsonBytes(evidence);
+    const requestedResources: Parameters<PackwrightService['readVisualResource']>[0][] = [];
+    const captureResourceService: PackwrightService = {
+      ...service,
+      readVisualResource: (input) => {
+        requestedResources.push(input);
+        if (input.kind === 'client_capture_report') {
+          return Promise.resolve({
+            mimeType: 'application/json',
+            encoding: 'utf8',
+            data: evidenceBytes.toString('utf8'),
+            sha256: sha256Buffer(evidenceBytes),
+          });
+        }
+        const png =
+          input.kind === 'client_contact_sheet'
+            ? authoritativeSheet.png
+            : input.kind === 'client_supplemental_sheet'
+              ? supplementalSheet.png
+              : input.kind === 'client_view' && input.view === authoritativeViewId
+                ? authoritativePng
+                : input.kind === 'client_view' && input.view === supplementalViewId
+                  ? supplementalPng
+                  : undefined;
+        if (png === undefined) {
+          return Promise.reject(new Error(`Unexpected visual resource: ${input.kind}`));
+        }
+        return Promise.resolve({
+          mimeType: 'image/png',
+          encoding: 'base64',
+          data: png.toString('base64'),
+          sha256: sha256Buffer(png),
+        });
+      },
+    };
+    const server = createPackwrightMcpServer(captureResourceService);
+    const client = new Client({ name: 'packwright-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    closeCallbacks.push(
+      () => client.close(),
+      () => server.close(),
+    );
+
+    const reportResource = await client.readResource({
+      uri: visualRunClientCaptureReportUri(runId, revisionId),
+    });
+    const authoritativeSheetResource = await client.readResource({
+      uri: visualRunClientCaptureContactSheetUri(runId, revisionId),
+    });
+    const supplementalSheetResource = await client.readResource({
+      uri: visualRunClientCaptureSupplementalSheetUri(runId, revisionId),
+    });
+    const authoritativeViewResource = await client.readResource({
+      uri: visualRunClientCaptureViewUri(runId, revisionId, authoritativeViewId),
+    });
+    const supplementalViewResource = await client.readResource({
+      uri: visualRunClientCaptureViewUri(runId, revisionId, supplementalViewId),
+    });
+
+    const reportContent = reportResource.contents[0];
+    if (reportContent === undefined || !('text' in reportContent)) {
+      throw new Error('Expected the protocol-v3 report as canonical JSON text.');
+    }
+    expect(reportContent.text).toBe(evidenceBytes.toString('utf8'));
+    const parsedEvidence = JSON.parse(reportContent.text) as typeof evidence;
+    expect(
+      parsedEvidence.views.filter((view) => view.requiredForAuthority).map((view) => view.id),
+    ).toEqual([authoritativeViewId]);
+    expect(
+      parsedEvidence.views.filter((view) => !view.requiredForAuthority).map((view) => view.id),
+    ).toEqual([supplementalViewId]);
+    expect(parsedEvidence.contactSheet.sha256).toBe(authoritativeSheet.sha256);
+    expect(parsedEvidence.supplementalContactSheet.sha256).toBe(supplementalSheet.sha256);
+    expect(parsedEvidence.contactSheet.sha256).not.toBe(
+      parsedEvidence.supplementalContactSheet.sha256,
+    );
+    expect(parsedEvidence.views).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: authoritativeViewId,
+          authority: 'authoritative_environment_capture',
+          requiredForAuthority: true,
+        }),
+        expect.objectContaining({
+          id: supplementalViewId,
+          authority: 'augmented_qa_reference',
+          requiredForAuthority: false,
+        }),
+      ]),
+    );
+
+    const resourcePng = (resource: typeof authoritativeSheetResource): Buffer => {
+      const content = resource.contents[0];
+      if (content === undefined || !('blob' in content)) {
+        throw new Error('Expected a PNG blob resource.');
+      }
+      return Buffer.from(content.blob, 'base64');
+    };
+    expect(resourcePng(authoritativeSheetResource)).toEqual(authoritativeSheet.png);
+    expect(resourcePng(supplementalSheetResource)).toEqual(supplementalSheet.png);
+    const authoritativeEvidenceView = parsedEvidence.views.find(
+      (view) => view.id === authoritativeViewId,
+    );
+    const supplementalEvidenceView = parsedEvidence.views.find(
+      (view) => view.id === supplementalViewId,
+    );
+    expect(sha256Buffer(resourcePng(authoritativeViewResource))).toBe(
+      authoritativeEvidenceView?.normalizedSha256,
+    );
+    expect(sha256Buffer(resourcePng(supplementalViewResource))).toBe(
+      supplementalEvidenceView?.normalizedSha256,
+    );
+    expect(resourcePng(supplementalViewResource)).not.toEqual(
+      resourcePng(authoritativeViewResource),
+    );
+    expect(requestedResources).toEqual([
+      { kind: 'client_capture_report', runId, revisionId },
+      { kind: 'client_contact_sheet', runId, revisionId },
+      { kind: 'client_supplemental_sheet', runId, revisionId },
+      { kind: 'client_view', runId, revisionId, view: authoritativeViewId },
+      { kind: 'client_view', runId, revisionId, view: supplementalViewId },
+    ]);
   });
 
   it('also bounds oversized service errors', async () => {

@@ -18,6 +18,7 @@ import {
 import type {
   ClientCaptureCompleteReport,
   ClientCapturePlan,
+  ClientCaptureRepresentation,
   ClientCaptureViewAuthority,
   ClientCaptureViewKind,
 } from '../minecraft/client-capture-protocol.js';
@@ -48,7 +49,7 @@ import { VisualConnectInputSchema } from '../mcp/visual-schemas.js';
 import {
   visualRunClientCaptureContactSheetUri,
   visualRunClientCaptureReportUri,
-  visualRunClientCaptureScaleReferenceSheetUri,
+  visualRunClientCaptureSupplementalSheetUri,
   visualRunClientCaptureViewUri,
   visualRunContactSheetUri,
   visualRunRenderReportUri,
@@ -76,7 +77,7 @@ import {
 } from './project.js';
 import {
   createBoundedClientPreview,
-  createContactSheet,
+  createClientCaptureContactSheet,
   renderCompiledItemAsset,
   solidTexture,
   type RenderedView,
@@ -107,7 +108,10 @@ import {
   type VisualRevisionState,
 } from './workflow-state.js';
 import { parseModelSpec, type ModelSpec } from './model-spec.js';
-import { clientCaptureReviewSupport } from './client-capture-support.js';
+import {
+  clientCaptureReviewSupport,
+  clientCaptureSupportDescriptor,
+} from './client-capture-support.js';
 import {
   clientCaptureComponentLiterals,
   createVisualClientCapturePlan,
@@ -241,10 +245,11 @@ interface StoredRenderProfileReport {
 }
 
 interface StoredClientCaptureEvidence {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly kind: 'packwright.minecraft-client-capture-evidence';
   readonly authority: 'authoritative_environment_capture';
   readonly authorityScope: 'required_views_only';
+  readonly proposalBindingStatus: 'implemented' | 'capture_only';
   readonly plan: ClientCapturePlan;
   readonly report: ClientCaptureCompleteReport;
   readonly sourceReportSha256: string;
@@ -263,6 +268,8 @@ interface StoredClientCaptureEvidence {
   readonly views: readonly {
     readonly id: string;
     readonly baseSceneId: string;
+    readonly targetKind: ClientCapturePlan['provenance']['representation']['targetKind'];
+    readonly representationSha256: string;
     readonly viewKind: ClientCaptureViewKind;
     readonly authority: ClientCaptureViewAuthority;
     readonly requiredForAuthority: boolean;
@@ -280,7 +287,7 @@ interface StoredClientCaptureEvidence {
     readonly height: number;
     readonly bytes: number;
   }>;
-  readonly scaleReferenceContactSheet?:
+  readonly supplementalContactSheet?:
     | Readonly<{
         readonly label: string;
         readonly sha256: string;
@@ -289,6 +296,84 @@ interface StoredClientCaptureEvidence {
         readonly bytes: number;
       }>
     | undefined;
+}
+
+function clientCaptureProposalBindingStatus(
+  representation: ClientCaptureRepresentation,
+  binding: ItemBindingProposal,
+): 'implemented' | 'capture_only' {
+  if (representation.strategy !== 'item_stack') return 'capture_only';
+  const states = Object.values(representation.states);
+  const renderedState = states.length === 1 ? states[0] : undefined;
+  if (renderedState === undefined) {
+    throw new Error(
+      'Minecraft client-capture requires exactly one rendered item state matching the compiled proposal binding.',
+    );
+  }
+  if (
+    renderedState.itemStack.itemId !== binding.itemStack.id ||
+    renderedState.itemStack.count !== binding.itemStack.count ||
+    !canonicalJsonBytes(renderedState.itemStack.components).equals(
+      canonicalJsonBytes(clientCaptureComponentLiterals(binding)),
+    )
+  ) {
+    throw new Error(
+      'Minecraft client-capture requires exactly one rendered item state matching the compiled proposal binding.',
+    );
+  }
+  return 'implemented';
+}
+
+/** Fail closed before commit when evidence covers a capture-only representation. */
+export function assertClientCaptureProposalBindingCanAuthorizeCommit(
+  status: 'implemented' | 'capture_only',
+): void {
+  if (status !== 'implemented') {
+    throw new PackwrightError(
+      'precondition_failed',
+      'This Minecraft capture is representation QA only. The current item compiler proposal does not implement the captured block, headwear, entity, or placeable representation.',
+    );
+  }
+}
+
+/**
+ * Recover the bounded settling interval that is part of a display representation's
+ * authoritative scene contract. Supplemental measurement controls intentionally use
+ * zero settling ticks and can sort before the gameplay scenes, so they must never be
+ * used to reconstruct or authorize a display capture plan.
+ */
+export function clientCaptureDisplaySettlingTicksForVerification(
+  strategy: ClientCaptureRepresentation['strategy'],
+  scenes: readonly Readonly<{
+    requiredForAuthority: boolean;
+    settlingTicks: number;
+  }>[],
+): number | undefined {
+  if (strategy !== 'display_rig' && strategy !== 'block_display') return undefined;
+  const authoritativeScenes = scenes.filter((scene) => scene.requiredForAuthority);
+  const firstAuthoritativeScene = authoritativeScenes[0];
+  if (firstAuthoritativeScene === undefined) {
+    throw new Error('Minecraft display capture has no authoritative settled scene.');
+  }
+  const settlingTicks = new Set(authoritativeScenes.map((scene) => scene.settlingTicks));
+  if (
+    settlingTicks.size !== 1 ||
+    authoritativeScenes.some(
+      (scene) =>
+        !Number.isInteger(scene.settlingTicks) ||
+        scene.settlingTicks < 2 ||
+        scene.settlingTicks > 40,
+    )
+  ) {
+    throw new Error(
+      'Minecraft display capture authoritative scenes must share one settling interval from 2 through 40 ticks.',
+    );
+  }
+  return firstAuthoritativeScene.settlingTicks;
+}
+
+function requireProposalImplementingClientCapture(evidence: StoredClientCaptureEvidence): void {
+  assertClientCaptureProposalBindingCanAuthorizeCommit(evidence.proposalBindingStatus);
 }
 
 const CAPTURE_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u;
@@ -324,10 +409,12 @@ function parseStoredClientCaptureEvidence(value: unknown): StoredClientCaptureEv
   }
   const record = value as Record<string, unknown>;
   if (
-    record.schemaVersion !== 2 ||
+    record.schemaVersion !== 3 ||
     record.kind !== 'packwright.minecraft-client-capture-evidence' ||
     record.authority !== 'authoritative_environment_capture' ||
     record.authorityScope !== 'required_views_only' ||
+    (record.proposalBindingStatus !== 'implemented' &&
+      record.proposalBindingStatus !== 'capture_only') ||
     typeof record.sourceReportSha256 !== 'string' ||
     !SHA256_PATTERN.test(record.sourceReportSha256) ||
     typeof record.completionSha256 !== 'string' ||
@@ -337,6 +424,11 @@ function parseStoredClientCaptureEvidence(value: unknown): StoredClientCaptureEv
     throw new Error('Stored client-capture evidence identity is invalid.');
   }
   const plan = parseClientCapturePlan(record.plan);
+  const expectedProposalBindingStatus =
+    plan.provenance.representation.strategy === 'item_stack' ? 'implemented' : 'capture_only';
+  if (record.proposalBindingStatus !== expectedProposalBindingStatus) {
+    throw new Error('Stored client-capture proposal-binding scope is invalid.');
+  }
   const parsedReport = parseClientCaptureReport(record.report, plan);
   if (parsedReport.status !== 'complete') {
     throw new Error('Stored client-capture evidence contains a failed report.');
@@ -353,6 +445,8 @@ function parseStoredClientCaptureEvidence(value: unknown): StoredClientCaptureEv
       !CAPTURE_LABEL_PATTERN.test(entry.id) ||
       planned === undefined ||
       entry.baseSceneId !== planned.baseSceneId ||
+      entry.targetKind !== planned.targetKind ||
+      entry.representationSha256 !== planned.representationSha256 ||
       entry.viewKind !== planned.viewKind ||
       entry.authority !== clientCaptureViewAuthority(planned) ||
       entry.requiredForAuthority !== planned.requiredForAuthority ||
@@ -374,6 +468,8 @@ function parseStoredClientCaptureEvidence(value: unknown): StoredClientCaptureEv
     return {
       id: entry.id,
       baseSceneId: planned.baseSceneId,
+      targetKind: planned.targetKind,
+      representationSha256: planned.representationSha256,
       viewKind: planned.viewKind,
       authority: clientCaptureViewAuthority(planned),
       requiredForAuthority: planned.requiredForAuthority,
@@ -405,20 +501,20 @@ function parseStoredClientCaptureEvidence(value: unknown): StoredClientCaptureEv
   ) {
     throw new Error('Stored client-capture contact-sheet dimensions are invalid.');
   }
-  const scaleReferenceContactSheet = (() => {
-    if (record.scaleReferenceContactSheet === undefined) return undefined;
+  const supplementalContactSheet = (() => {
+    if (record.supplementalContactSheet === undefined) return undefined;
     const reference = captureBlobReference(
-      record.scaleReferenceContactSheet,
-      'scale-reference contact sheet',
+      record.supplementalContactSheet,
+      'supplemental contact sheet',
     );
-    const value = record.scaleReferenceContactSheet as Record<string, unknown>;
+    const value = record.supplementalContactSheet as Record<string, unknown>;
     if (
       !Number.isSafeInteger(value.width) ||
       (value.width as number) <= 0 ||
       !Number.isSafeInteger(value.height) ||
       (value.height as number) <= 0
     ) {
-      throw new Error('Stored client-capture scale-reference sheet dimensions are invalid.');
+      throw new Error('Stored client-capture supplemental sheet dimensions are invalid.');
     }
     return {
       ...reference,
@@ -427,16 +523,17 @@ function parseStoredClientCaptureEvidence(value: unknown): StoredClientCaptureEv
     };
   })();
   const hasSupplementalViews = plan.scenes.some((scene) => !scene.requiredForAuthority);
-  if (hasSupplementalViews !== (scaleReferenceContactSheet !== undefined)) {
+  if (hasSupplementalViews !== (supplementalContactSheet !== undefined)) {
     throw new Error(
-      'Stored client-capture scale-reference sheet does not match its supplemental views.',
+      'Stored client-capture supplemental sheet does not match its supplemental views.',
     );
   }
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: 'packwright.minecraft-client-capture-evidence',
     authority: 'authoritative_environment_capture',
     authorityScope: 'required_views_only',
+    proposalBindingStatus: expectedProposalBindingStatus,
     plan,
     report: parsedReport,
     sourceReportSha256: record.sourceReportSha256,
@@ -450,7 +547,7 @@ function parseStoredClientCaptureEvidence(value: unknown): StoredClientCaptureEv
       width: contactValue.width as number,
       height: contactValue.height as number,
     },
-    ...(scaleReferenceContactSheet === undefined ? {} : { scaleReferenceContactSheet }),
+    ...(supplementalContactSheet === undefined ? {} : { supplementalContactSheet }),
   };
 }
 
@@ -511,6 +608,126 @@ function artifactDiagnostic(code: string, message: string, target?: string): Vis
     message,
     ...(target === undefined ? {} : { target }),
   };
+}
+
+export interface ClientCaptureAuthorityMeasurementSummary {
+  readonly ready: boolean;
+  readonly failed: readonly string[];
+  readonly warnings: readonly string[];
+  readonly skipped: readonly string[];
+}
+
+function authoritativeClientMeasurementIds(plan: {
+  readonly scenes: readonly {
+    readonly id?: string;
+    readonly requiredForAuthority: boolean;
+    readonly comparisonSceneIds?: readonly string[];
+    readonly measurementIntents: readonly {
+      readonly id: string;
+      readonly requiredForReadiness: boolean;
+      readonly sourceSceneIds?: readonly string[] | undefined;
+    }[];
+  }[];
+}): ReadonlySet<string> {
+  const requiredSceneIds = new Set(
+    plan.scenes
+      .filter((scene) => scene.requiredForAuthority && scene.id !== undefined)
+      .flatMap((scene) => (scene.id === undefined ? [] : [scene.id])),
+  );
+  return new Set(
+    plan.scenes.flatMap((scene) => {
+      if (!scene.requiredForAuthority) return [];
+      return scene.measurementIntents
+        .filter((measurement) => {
+          if (!measurement.requiredForReadiness) return false;
+          const sourceSceneIds =
+            measurement.sourceSceneIds ??
+            (scene.id === undefined ? [] : [scene.id, ...(scene.comparisonSceneIds ?? [])]);
+          return (
+            sourceSceneIds.length > 0 &&
+            sourceSceneIds.every((sceneId) => sceneId === scene.id || requiredSceneIds.has(sceneId))
+          );
+        })
+        .map((measurement) => measurement.id);
+    }),
+  );
+}
+
+/** Supplemental comparison inputs remain advisory even when paired to a required scene. */
+export function summarizeClientCaptureAuthorityMeasurements(
+  plan: {
+    readonly scenes: readonly {
+      readonly id?: string;
+      readonly requiredForAuthority: boolean;
+      readonly comparisonSceneIds?: readonly string[];
+      readonly measurementIntents: readonly {
+        readonly id: string;
+        readonly requiredForReadiness: boolean;
+        readonly sourceSceneIds?: readonly string[] | undefined;
+      }[];
+    }[];
+  },
+  measurements: readonly Pick<
+    ClientCaptureCompleteReport['measurements'][number],
+    'id' | 'status'
+  >[],
+): ClientCaptureAuthorityMeasurementSummary {
+  const requiredMeasurementIds = authoritativeClientMeasurementIds(plan);
+  const statusIds = (status: 'failed' | 'warning' | 'skipped'): string[] =>
+    measurements
+      .filter(
+        (measurement) =>
+          requiredMeasurementIds.has(measurement.id) && measurement.status === status,
+      )
+      .map((measurement) => measurement.id)
+      .sort(compareVisualStrings);
+  const failed = statusIds('failed');
+  const skipped = statusIds('skipped');
+  return {
+    ready: failed.length === 0 && skipped.length === 0,
+    failed,
+    warnings: statusIds('warning'),
+    skipped,
+  };
+}
+
+function clientCaptureMeasurementDiagnostics(
+  plan: ClientCapturePlan,
+  report: ClientCaptureCompleteReport,
+): readonly Diagnostic[] {
+  const requiredMeasurementIds = authoritativeClientMeasurementIds(plan);
+  return report.measurements
+    .filter((measurement) => measurement.status !== 'passed')
+    .map((measurement) => {
+      const required = requiredMeasurementIds.has(measurement.id);
+      const failure =
+        required && (measurement.status === 'failed' || measurement.status === 'skipped');
+      return {
+        engine: 'minecraft-client',
+        authority: required ? ('authoritative' as const) : ('advisory' as const),
+        severity: failure
+          ? ('error' as const)
+          : measurement.status === 'warning' || measurement.status === 'failed'
+            ? ('warning' as const)
+            : ('information' as const),
+        code: `minecraft.client_capture.measurement.${measurement.metric}.${measurement.status}`,
+        message: `${required ? 'Readiness-critical' : 'Best-effort'} client-pixel measurement '${measurement.id}': ${measurement.message}`,
+      };
+    });
+}
+
+function requireClientCaptureAuthorityMeasurements(evidence: StoredClientCaptureEvidence): void {
+  const summary = summarizeClientCaptureAuthorityMeasurements(
+    evidence.plan,
+    evidence.report.measurements,
+  );
+  if (!summary.ready) {
+    const blockers = [...summary.failed, ...summary.skipped].sort(compareVisualStrings);
+    throw new PackwrightError(
+      'validation_failed',
+      `Minecraft client capture has failed or skipped readiness-critical client-pixel measurements: ${blockers.join(', ')}. Repair and recapture before committing.`,
+    );
+  }
 }
 
 function reviewMeasurementDiagnostic(
@@ -1647,8 +1864,11 @@ export class VisualWorkflow {
     const plan = stored.plan;
     const report = stored.report;
     if (
+      reference.protocolVersion !== 3 ||
       plan.planSha256 !== reference.planSha256 ||
-      report.runtime.rendererBackend !== MINECRAFT_26_2.clientCapture.graphicsBackend ||
+      plan.provenance.representation.targetKind !== reference.targetKind ||
+      plan.provenance.representationSha256 !== reference.representationSha256 ||
+      report.identity.studioSha256 !== reference.studioSha256 ||
       stored.sourceReportSha256 !== reference.sourceReportSha256 ||
       stored.sourceReport.sha256 !== stored.sourceReportSha256 ||
       stored.completion.sha256 !== stored.completionSha256
@@ -1682,20 +1902,19 @@ export class VisualWorkflow {
     const proposalBytes = proposalArtifact.contents['proposal.json'];
     if (proposalBytes === undefined) throw new Error('Client-capture proposal is unavailable.');
     const proposal = proposalValue(JSON.parse(proposalBytes.toString('utf8')));
+    const proposalBindingStatus = clientCaptureProposalBindingStatus(
+      provenance.representation,
+      proposal.binding,
+    );
     if (
       proposal.projectId !== loaded.project.manifest.id ||
       proposal.runId !== record.runId ||
       proposal.revisionId !== record.revisionId ||
       proposal.compiledArtifactId !== record.compiledArtifactId ||
       proposal.manifestSha256 !== loaded.project.manifestSha256 ||
-      provenance.itemStack.itemId !== proposal.binding.itemStack.id ||
-      provenance.itemStack.count !== proposal.binding.itemStack.count ||
-      provenance.itemStack.command !== proposal.binding.giveCommand ||
-      !canonicalJsonBytes(provenance.itemStack.components).equals(
-        canonicalJsonBytes(clientCaptureComponentLiterals(proposal.binding)),
-      )
+      stored.proposalBindingStatus !== proposalBindingStatus
     ) {
-      throw new Error('Minecraft client-capture item stack or proposal is stale.');
+      throw new Error('Minecraft client-capture representation or proposal is stale.');
     }
 
     const overlay = await this.readProposalOverlay(
@@ -1732,6 +1951,10 @@ export class VisualWorkflow {
 
     const firstScene = plan.scenes[0];
     if (firstScene === undefined) throw new Error('Minecraft client-capture plan has no scenes.');
+    const displaySettlingTicks = clientCaptureDisplaySettlingTicksForVerification(
+      plan.provenance.representation.strategy,
+      plan.scenes,
+    );
     const expectedPlan = createVisualClientCapturePlan({
       spec: loaded.spec,
       width: firstScene.resolution.width,
@@ -1740,6 +1963,11 @@ export class VisualWorkflow {
       includeScaleReferenceViews: plan.scenes.some(
         (scene) => scene.viewKind === 'first_person_scale_reference',
       ),
+      includeDebugHitboxViews: plan.scenes.some(
+        (scene) => scene.viewKind === 'debug_hitbox_reference',
+      ),
+      ...(displaySettlingTicks === undefined ? {} : { displaySettlingTicks }),
+      representation: plan.provenance.representation,
       provenance,
       execution: plan.execution,
     });
@@ -1804,7 +2032,7 @@ export class VisualWorkflow {
     const storedViewMap = new Map(stored.views.map((view) => [view.id, view] as const));
     const reportViewMap = new Map(report.views.map((view) => [view.sceneId, view] as const));
     const authoritativeRenderedViews: RenderedView[] = [];
-    const scaleReferenceRenderedViews: RenderedView[] = [];
+    const supplementalRenderedViews: RenderedView[] = [];
     if (
       storedViewMap.size !== plan.scenes.length ||
       reportViewMap.size !== plan.scenes.length ||
@@ -1822,6 +2050,8 @@ export class VisualWorkflow {
         storedView === undefined ||
         reported === undefined ||
         storedView.baseSceneId !== scene.baseSceneId ||
+        storedView.targetKind !== scene.targetKind ||
+        storedView.representationSha256 !== scene.representationSha256 ||
         storedView.viewKind !== scene.viewKind ||
         storedView.authority !== clientCaptureViewAuthority(scene) ||
         storedView.requiredForAuthority !== scene.requiredForAuthority ||
@@ -1865,7 +2095,7 @@ export class VisualWorkflow {
       if (scene.requiredForAuthority) {
         authoritativeRenderedViews.push(renderedView);
       } else {
-        scaleReferenceRenderedViews.push(renderedView);
+        supplementalRenderedViews.push(renderedView);
       }
     }
 
@@ -1875,7 +2105,7 @@ export class VisualWorkflow {
       stored.contactSheet.label,
       stored.contactSheet.sha256,
     );
-    const canonicalContact = createContactSheet(authoritativeRenderedViews);
+    const canonicalContact = createClientCaptureContactSheet(authoritativeRenderedViews);
     if (
       stored.contactSheet.label !== reference.contactSheet.label ||
       stored.contactSheet.sha256 !== reference.contactSheet.sha256 ||
@@ -1889,38 +2119,38 @@ export class VisualWorkflow {
     ) {
       throw new Error('Minecraft client-capture contact sheet failed verification.');
     }
-    if (scaleReferenceRenderedViews.length === 0) {
+    if (supplementalRenderedViews.length === 0) {
       if (
-        stored.scaleReferenceContactSheet !== undefined ||
-        reference.scaleReferenceContactSheet !== undefined
+        stored.supplementalContactSheet !== undefined ||
+        reference.supplementalContactSheet !== undefined
       ) {
-        throw new Error('Minecraft client-capture has an unexpected scale-reference sheet.');
+        throw new Error('Minecraft client-capture has an unexpected supplemental sheet.');
       }
     } else {
-      const storedScaleReference = stored.scaleReferenceContactSheet;
-      const indexedScaleReference = reference.scaleReferenceContactSheet;
-      if (storedScaleReference === undefined || indexedScaleReference === undefined) {
-        throw new Error('Minecraft client-capture scale-reference sheet is missing.');
+      const storedSupplemental = stored.supplementalContactSheet;
+      const indexedSupplemental = reference.supplementalContactSheet;
+      if (storedSupplemental === undefined || indexedSupplemental === undefined) {
+        throw new Error('Minecraft client-capture supplemental sheet is missing.');
       }
-      const scaleReference = await this.runs.readPng(
+      const supplemental = await this.runs.readPng(
         record.runId,
         'capture',
-        storedScaleReference.label,
-        storedScaleReference.sha256,
+        storedSupplemental.label,
+        storedSupplemental.sha256,
       );
-      const canonicalScaleReference = createContactSheet(scaleReferenceRenderedViews);
+      const canonicalSupplemental = createClientCaptureContactSheet(supplementalRenderedViews);
       if (
-        storedScaleReference.label !== indexedScaleReference.label ||
-        storedScaleReference.sha256 !== indexedScaleReference.sha256 ||
-        storedScaleReference.width !== indexedScaleReference.width ||
-        storedScaleReference.height !== indexedScaleReference.height ||
-        storedScaleReference.bytes !== indexedScaleReference.bytes ||
-        scaleReference.sha256 !== canonicalScaleReference.sha256 ||
-        scaleReference.width !== canonicalScaleReference.width ||
-        scaleReference.height !== canonicalScaleReference.height ||
-        scaleReference.bytes !== canonicalScaleReference.png.length
+        storedSupplemental.label !== indexedSupplemental.label ||
+        storedSupplemental.sha256 !== indexedSupplemental.sha256 ||
+        storedSupplemental.width !== indexedSupplemental.width ||
+        storedSupplemental.height !== indexedSupplemental.height ||
+        storedSupplemental.bytes !== indexedSupplemental.bytes ||
+        supplemental.sha256 !== canonicalSupplemental.sha256 ||
+        supplemental.width !== canonicalSupplemental.width ||
+        supplemental.height !== canonicalSupplemental.height ||
+        supplemental.bytes !== canonicalSupplemental.png.length
       ) {
-        throw new Error('Minecraft client-capture scale-reference sheet failed verification.');
+        throw new Error('Minecraft client-capture supplemental sheet failed verification.');
       }
     }
     return stored;
@@ -2721,8 +2951,23 @@ export class VisualWorkflow {
     }
     const prepared = await this.ensureCompiled(loaded, signal);
     const profile = resolveReviewProfile(loaded.spec, 128);
-    const captureSupport = clientCaptureReviewSupport(profile.profileId);
+    const captureDescriptor = clientCaptureSupportDescriptor(profile.profileId);
+    const captureSupport = captureDescriptor.support;
+    const targetKind = captureDescriptor.targetKind;
+    if (input.includeScaleReferenceViews && profile.profileId !== 'held_item') {
+      throw new PackwrightError(
+        'invalid_content',
+        `Scale-reference QA views are valid only for held_item, not '${profile.profileId}'.`,
+      );
+    }
+    if (input.includeDebugHitboxViews && targetKind !== 'entity' && targetKind !== 'placeable') {
+      throw new PackwrightError(
+        'invalid_content',
+        `Debug-hitbox QA views are valid only for entity_model or placeable, not '${profile.profileId}'.`,
+      );
+    }
     const base = {
+      protocolVersion: 3 as const,
       authority: 'authoritative_environment_capture' as const,
       authorityScope: 'required_views_only' as const,
       projectId: input.projectId,
@@ -2730,9 +2975,19 @@ export class VisualWorkflow {
       revisionId: prepared.record.revisionId,
       reviewProfile: profile.profileId,
       profileVersion: profile.profileVersion,
+      ...(targetKind === undefined ? {} : { targetKind }),
       clientCaptureSupport: captureSupport,
+      clientCaptureStrategies: [...captureDescriptor.strategies],
+      ...(captureDescriptor.limitation === undefined &&
+      captureDescriptor.rejectionReason === undefined
+        ? {}
+        : {
+            clientCaptureLimitation:
+              captureDescriptor.limitation ?? captureDescriptor.rejectionReason,
+          }),
       requiredViewIds: [],
       supplementalViewIds: [],
+      measurements: [],
     };
     if (captureSupport === 'unsupported') {
       return {
@@ -2747,7 +3002,7 @@ export class VisualWorkflow {
             authority: 'authoritative',
             severity: 'error',
             code: 'minecraft.client_capture.profile_unsupported',
-            message: `Review profile '${profile.profileId}' has no truthful official-client capture implementation for the current custom-item compiler.`,
+            message: `Review profile '${profile.profileId}' has no truthful official-client capture implementation: ${captureDescriptor.rejectionReason ?? 'unsupported representation'}`,
           },
         ],
       };
@@ -2787,6 +3042,10 @@ export class VisualWorkflow {
         'The client-capture proposal does not match the selected immutable revision.',
       );
     }
+    const requestedProposalBindingStatus =
+      input.representation === undefined
+        ? 'implemented'
+        : clientCaptureProposalBindingStatus(input.representation, proposal.binding);
 
     const capturePreflight = await preflightMinecraftClientCapture(this.config, signal);
     if (!capturePreflight.ready || capturePreflight.prepared === undefined) {
@@ -2844,6 +3103,11 @@ export class VisualWorkflow {
             height: input.resolution.height,
             guiScale: input.guiScale,
             includeScaleReferenceViews: input.includeScaleReferenceViews,
+            includeDebugHitboxViews: input.includeDebugHitboxViews,
+            ...(input.displaySettlingTicks === undefined
+              ? {}
+              : { displaySettlingTicks: input.displaySettlingTicks }),
+            ...(input.representation === undefined ? {} : { representation: input.representation }),
             execution,
             provenance: {
               projectId: input.projectId,
@@ -2896,11 +3160,20 @@ export class VisualWorkflow {
       };
     }
 
+    const authorityMeasurements = summarizeClientCaptureAuthorityMeasurements(
+      executed.plan,
+      executed.evidence.report.measurements,
+    );
+    const measurementDiagnostics = clientCaptureMeasurementDiagnostics(
+      executed.plan,
+      executed.evidence.report,
+    );
+
     const prefix = `c${prepared.record.revisionId.slice(0, 6)}`;
     const views: Record<string, VisualPngReference> = {};
     const plannedScenesById = new Map(executed.plan.scenes.map((scene) => [scene.id, scene]));
     const authoritativeRenderedViews: RenderedView[] = [];
-    const scaleReferenceRenderedViews: RenderedView[] = [];
+    const supplementalRenderedViews: RenderedView[] = [];
     const storedViews: StoredClientCaptureEvidence['views'][number][] = [];
     for (const view of executed.evidence.views) {
       const scene = plannedScenesById.get(view.sceneId);
@@ -2940,11 +3213,13 @@ export class VisualWorkflow {
       if (scene.requiredForAuthority) {
         authoritativeRenderedViews.push(renderedView);
       } else {
-        scaleReferenceRenderedViews.push(renderedView);
+        supplementalRenderedViews.push(renderedView);
       }
       storedViews.push({
         id: view.sceneId,
         baseSceneId: scene.baseSceneId,
+        targetKind: scene.targetKind,
+        representationSha256: scene.representationSha256,
         viewKind: scene.viewKind,
         authority: clientCaptureViewAuthority(scene),
         requiredForAuthority: scene.requiredForAuthority,
@@ -2956,7 +3231,7 @@ export class VisualWorkflow {
         bytes: stored.bytes,
       });
     }
-    const contactSheet = createContactSheet(authoritativeRenderedViews);
+    const contactSheet = createClientCaptureContactSheet(authoritativeRenderedViews);
     const contactLabel = `${prefix}-contact`;
     const storedContact = await this.runs.putCapture(input.runId, contactLabel, contactSheet.png, {
       signal,
@@ -2971,32 +3246,32 @@ export class VisualWorkflow {
       sourceSha256: storedContact.sourceSha256,
       strippedMetadata: storedContact.strippedMetadata,
     };
-    const scaleReferenceContactSheet =
-      scaleReferenceRenderedViews.length === 0
+    const supplementalContactSheet =
+      supplementalRenderedViews.length === 0
         ? undefined
-        : createContactSheet(scaleReferenceRenderedViews);
-    const scaleReferenceContactLabel = `${prefix}-scale-reference`;
-    const storedScaleReferenceContact =
-      scaleReferenceContactSheet === undefined
+        : createClientCaptureContactSheet(supplementalRenderedViews);
+    const supplementalContactLabel = `${prefix}-supplemental`;
+    const storedSupplementalContact =
+      supplementalContactSheet === undefined
         ? undefined
         : await this.runs.putCapture(
             input.runId,
-            scaleReferenceContactLabel,
-            scaleReferenceContactSheet.png,
+            supplementalContactLabel,
+            supplementalContactSheet.png,
             { signal },
           );
-    const scaleReferenceContactReference: VisualPngReference | undefined =
-      storedScaleReferenceContact === undefined
+    const supplementalContactReference: VisualPngReference | undefined =
+      storedSupplementalContact === undefined
         ? undefined
         : {
-            label: scaleReferenceContactLabel,
-            sha256: storedScaleReferenceContact.sha256,
-            width: storedScaleReferenceContact.width,
-            height: storedScaleReferenceContact.height,
-            bytes: storedScaleReferenceContact.bytes,
+            label: supplementalContactLabel,
+            sha256: storedSupplementalContact.sha256,
+            width: storedSupplementalContact.width,
+            height: storedSupplementalContact.height,
+            bytes: storedSupplementalContact.bytes,
             source: 'generated',
-            sourceSha256: storedScaleReferenceContact.sourceSha256,
-            strippedMetadata: storedScaleReferenceContact.strippedMetadata,
+            sourceSha256: storedSupplementalContact.sourceSha256,
+            strippedMetadata: storedSupplementalContact.strippedMetadata,
           };
     const logBytes = executed.artifacts[executed.evidence.log.path];
     if (logBytes === undefined) throw new Error('Verified Minecraft client log is unavailable.');
@@ -3027,10 +3302,11 @@ export class VisualWorkflow {
       throw new Error('Stored Minecraft capture protocol hash changed.');
     }
     const storedEvidenceValue: StoredClientCaptureEvidence = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'packwright.minecraft-client-capture-evidence',
       authority: 'authoritative_environment_capture',
       authorityScope: 'required_views_only',
+      proposalBindingStatus: requestedProposalBindingStatus,
       plan: executed.plan,
       report: executed.evidence.report,
       sourceReportSha256: executed.evidence.reportArtifact.sha256,
@@ -3054,15 +3330,15 @@ export class VisualWorkflow {
         height: storedContact.height,
         bytes: storedContact.bytes,
       },
-      ...(storedScaleReferenceContact === undefined
+      ...(storedSupplementalContact === undefined
         ? {}
         : {
-            scaleReferenceContactSheet: {
-              label: scaleReferenceContactLabel,
-              sha256: storedScaleReferenceContact.sha256,
-              width: storedScaleReferenceContact.width,
-              height: storedScaleReferenceContact.height,
-              bytes: storedScaleReferenceContact.bytes,
+            supplementalContactSheet: {
+              label: supplementalContactLabel,
+              sha256: storedSupplementalContact.sha256,
+              width: storedSupplementalContact.width,
+              height: storedSupplementalContact.height,
+              bytes: storedSupplementalContact.bytes,
             },
           }),
     };
@@ -3082,11 +3358,16 @@ export class VisualWorkflow {
       return replaceRevisionRecord(current, {
         ...active,
         clientCapture: {
+          protocolVersion: 3,
           authority: 'authoritative_environment_capture',
           authorityScope: 'required_views_only',
+          proposalBindingStatus: requestedProposalBindingStatus,
           rendererVersion: 'minecraft-client-26.2',
           profileId: profile.profileId,
           profileVersion: profile.profileVersion,
+          targetKind: executed.plan.provenance.representation.targetKind,
+          representationSha256: executed.plan.provenance.representationSha256,
+          studioSha256: executed.evidence.report.identity.studioSha256,
           planSha256: executed.plan.planSha256,
           reportSha256: storedEvidence.sha256,
           sourceReportSha256: executed.evidence.reportArtifact.sha256,
@@ -3102,9 +3383,9 @@ export class VisualWorkflow {
           captureModSha256: captureRuntime.captureMod.sha256,
           log: { label: logLabel, sha256: storedLog.sha256, bytes: storedLog.bytes },
           contactSheet: contactReference,
-          ...(scaleReferenceContactReference === undefined
+          ...(supplementalContactReference === undefined
             ? {}
-            : { scaleReferenceContactSheet: scaleReferenceContactReference }),
+            : { supplementalContactSheet: supplementalContactReference }),
           views,
           requiredViewIds: executed.plan.scenes
             .filter((scene) => scene.requiredForAuthority)
@@ -3124,24 +3405,35 @@ export class VisualWorkflow {
     const contactPath = `visual-runs/${input.runId}/captures/${contactLabel}-${storedContact.sha256}.png`;
     return {
       ...base,
-      ok: true,
-      status: 'passed',
-      captureReady: true,
+      ok: authorityMeasurements.ready,
+      status: authorityMeasurements.ready ? 'passed' : 'failed',
+      captureReady: authorityMeasurements.ready,
+      targetKind: executed.plan.provenance.representation.targetKind,
+      representationSha256: executed.plan.provenance.representationSha256,
+      studioSha256: executed.evidence.report.identity.studioSha256,
+      representationStrategy: executed.plan.provenance.representation.strategy,
+      representationCapability: executed.plan.provenance.representation.capability,
+      representationDisclosure: captureDescriptor.disclosure,
+      proposalBindingStatus: requestedProposalBindingStatus,
+      proposalBindingReason:
+        requestedProposalBindingStatus === 'implemented'
+          ? 'The exact item-stack representation is implemented by the hash-bound compiler proposal.'
+          : 'This is representation QA evidence only; the current item compiler proposal does not implement the captured target.',
       planSha256: executed.plan.planSha256,
       reportSha256: storedEvidence.sha256,
       reportUri: visualRunClientCaptureReportUri(input.runId, record.revisionId),
       contactSheet: asVisualFile(contactPath, contactSheet.png, 'image/png', 'render'),
       contactSheetUri: visualRunClientCaptureContactSheetUri(input.runId, record.revisionId),
-      ...(scaleReferenceContactSheet === undefined || storedScaleReferenceContact === undefined
+      ...(supplementalContactSheet === undefined || storedSupplementalContact === undefined
         ? {}
         : {
-            scaleReferenceContactSheet: asVisualFile(
-              `visual-runs/${input.runId}/captures/${scaleReferenceContactLabel}-${storedScaleReferenceContact.sha256}.png`,
-              scaleReferenceContactSheet.png,
+            supplementalContactSheet: asVisualFile(
+              `visual-runs/${input.runId}/captures/${supplementalContactLabel}-${storedSupplementalContact.sha256}.png`,
+              supplementalContactSheet.png,
               'image/png',
               'render',
             ),
-            scaleReferenceContactSheetUri: visualRunClientCaptureScaleReferenceSheetUri(
+            supplementalContactSheetUri: visualRunClientCaptureSupplementalSheetUri(
               input.runId,
               record.revisionId,
             ),
@@ -3156,6 +3448,8 @@ export class VisualWorkflow {
         return {
           name: view.sceneId,
           baseSceneId: scene.baseSceneId,
+          targetKind: scene.targetKind,
+          representationSha256: scene.representationSha256,
           viewKind: scene.viewKind,
           authority: clientCaptureViewAuthority(scene),
           requiredForAuthority: scene.requiredForAuthority,
@@ -3174,7 +3468,8 @@ export class VisualWorkflow {
         .filter((scene) => !scene.requiredForAuthority)
         .map((scene) => scene.id),
       environment: executed.evidence.report.runtime,
-      diagnostics: [],
+      measurements: executed.evidence.report.measurements,
+      diagnostics: [...measurementDiagnostics],
     };
   }
 
@@ -3402,14 +3697,21 @@ export class VisualWorkflow {
           },
         );
       }
+      let verifiedClientCapture: StoredClientCaptureEvidence;
       try {
-        await this.verifyClientCaptureEvidence(loaded, loaded.record, signal);
+        verifiedClientCapture = await this.verifyClientCaptureEvidence(
+          loaded,
+          loaded.record,
+          signal,
+        );
       } catch (error) {
         throw new PackwrightError(
           'precondition_failed',
           `The accepted Minecraft client-capture evidence failed verification: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
+      requireProposalImplementingClientCapture(verifiedClientCapture);
+      requireClientCaptureAuthorityMeasurements(verifiedClientCapture);
       acceptedClientCapture = loaded.record.clientCapture;
     } else if (expectedClientCaptureReportSha256 !== undefined) {
       if (loaded.record.clientCapture?.reportSha256 !== expectedClientCaptureReportSha256) {
@@ -3418,12 +3720,24 @@ export class VisualWorkflow {
           'The supplied Minecraft client-capture report is not current for this revision.',
         );
       }
-      await this.verifyClientCaptureEvidence(loaded, loaded.record, signal);
+      const verifiedClientCapture = await this.verifyClientCaptureEvidence(
+        loaded,
+        loaded.record,
+        signal,
+      );
+      requireProposalImplementingClientCapture(verifiedClientCapture);
+      requireClientCaptureAuthorityMeasurements(verifiedClientCapture);
       acceptedClientCapture = loaded.record.clientCapture;
     } else if (loaded.record.clientCapture !== undefined) {
       // Advisory/test-harness callers may omit the explicit acceptance hash,
       // but an existing verified capture must still be bound into the receipt.
-      await this.verifyClientCaptureEvidence(loaded, loaded.record, signal);
+      const verifiedClientCapture = await this.verifyClientCaptureEvidence(
+        loaded,
+        loaded.record,
+        signal,
+      );
+      requireProposalImplementingClientCapture(verifiedClientCapture);
+      requireClientCaptureAuthorityMeasurements(verifiedClientCapture);
       acceptedClientCapture = loaded.record.clientCapture;
     }
     const artifact = await this.runs.readCompiled(runId, proposalSha256);
@@ -3840,8 +4154,39 @@ export class VisualWorkflow {
     let clientCaptured = false;
     if (loaded.record.clientCapture !== undefined) {
       try {
-        await this.verifyClientCaptureEvidence(loaded);
-        clientCaptured = true;
+        const evidence = await this.verifyClientCaptureEvidence(loaded);
+        const authorityMeasurements = summarizeClientCaptureAuthorityMeasurements(
+          evidence.plan,
+          evidence.report.measurements,
+        );
+        clientCaptured =
+          evidence.proposalBindingStatus === 'implemented' && authorityMeasurements.ready;
+        if (evidence.proposalBindingStatus === 'capture_only') {
+          diagnostics.push({
+            engine: 'packwright.visual',
+            authority: 'advisory',
+            severity: 'information',
+            code: 'visual.client_capture.capture_only',
+            message:
+              'Minecraft framebuffer evidence is valid for representation QA, but it cannot authorize this item compiler proposal because the proposal does not implement the captured target.',
+            target: loaded.spec.id,
+          });
+        }
+        diagnostics.push(
+          ...clientCaptureMeasurementDiagnostics(evidence.plan, evidence.report).map((entry) => ({
+            engine: 'packwright.visual' as const,
+            authority: entry.severity === 'error' ? ('structural' as const) : ('advisory' as const),
+            severity:
+              entry.severity === 'error'
+                ? ('error' as const)
+                : entry.severity === 'warning'
+                  ? ('warning' as const)
+                  : ('information' as const),
+            code: entry.code,
+            message: entry.message,
+            target: loaded.spec.id,
+          })),
+        );
       } catch (error) {
         diagnostics.push(
           artifactDiagnostic(
@@ -4126,6 +4471,7 @@ export class VisualWorkflow {
             | 'binding'
             | 'client_capture_report'
             | 'client_contact_sheet'
+            | 'client_supplemental_sheet'
             | 'client_scale_reference_sheet';
           readonly runId: string;
           readonly revisionId: string;
@@ -4160,6 +4506,7 @@ export class VisualWorkflow {
     if (
       input.kind === 'client_capture_report' ||
       input.kind === 'client_contact_sheet' ||
+      input.kind === 'client_supplemental_sheet' ||
       input.kind === 'client_scale_reference_sheet' ||
       input.kind === 'client_view'
     ) {
@@ -4178,9 +4525,12 @@ export class VisualWorkflow {
       const reference =
         input.kind === 'client_contact_sheet'
           ? states.record.clientCapture?.contactSheet
-          : input.kind === 'client_scale_reference_sheet'
-            ? states.record.clientCapture?.scaleReferenceContactSheet
-            : states.record.clientCapture?.views['view' in input ? input.view : ''];
+          : input.kind === 'client_supplemental_sheet'
+            ? states.record.clientCapture?.supplementalContactSheet
+            : input.kind === 'client_scale_reference_sheet'
+              ? // eslint-disable-next-line @typescript-eslint/no-deprecated -- protocol-v2 read compatibility
+                states.record.clientCapture?.scaleReferenceContactSheet
+              : states.record.clientCapture?.views['view' in input ? input.view : ''];
       if (reference === undefined) {
         throw new PackwrightError(
           'not_found',

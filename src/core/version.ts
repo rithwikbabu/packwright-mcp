@@ -154,7 +154,7 @@ export interface ClientCaptureLibraryProfile {
 }
 
 export interface ClientCaptureProfile {
-  readonly protocolVersion: 2;
+  readonly protocolVersion: 3;
   readonly authority: 'authoritative_environment_capture';
   readonly authorityScope: 'required_views_only';
   readonly javaMajor: 25;
@@ -168,7 +168,7 @@ export interface ClientCaptureProfile {
   readonly captureMod: {
     readonly id: 'packwright_capture';
     readonly version: string;
-    readonly protocolVersion: 2;
+    readonly protocolVersion: 3;
     /** Package-relative, immutable distribution path. */
     readonly runtimePath: string;
     readonly sha256: string;
@@ -477,7 +477,7 @@ const fabricLibrary = (
   });
 
 export const MINECRAFT_26_2_CLIENT_CAPTURE: ClientCaptureProfile = Object.freeze({
-  protocolVersion: 2,
+  protocolVersion: 3,
   authority: 'authoritative_environment_capture',
   authorityScope: 'required_views_only',
   javaMajor: 25,
@@ -533,11 +533,11 @@ export const MINECRAFT_26_2_CLIENT_CAPTURE: ClientCaptureProfile = Object.freeze
   }),
   captureMod: Object.freeze({
     id: 'packwright_capture',
-    version: '0.4.1',
-    protocolVersion: 2,
-    runtimePath: 'capture-mod/runtime/packwright-capture-mod-0.4.1.jar',
-    sha256: '7c4b5674969cc2a08d29cd9843906655470d284a13120caa65c85c6ebed7b042',
-    size: 99_897,
+    version: '0.5.0-dev',
+    protocolVersion: 3,
+    runtimePath: 'capture-mod/runtime/packwright-capture-mod-0.5.0-dev.jar',
+    sha256: '7b84fae8a9a080742fb982cdad6d144a07f621303e0f995006e3c0a6af3562d4',
+    size: 263_539,
   }),
   reviewProfiles: CLIENT_CAPTURE_REVIEW_SUPPORT,
   redistributableMinecraftArtifacts: false,

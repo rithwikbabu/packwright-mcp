@@ -18,10 +18,10 @@ concurrency:
 
 jobs:
   vanilla:
-    name: Minecraft Java Edition 26.2
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    environment: minecraft-integration
+    name: Minecraft Java Edition 26.2 server and client
+    runs-on: [self-hosted, macOS, packwright-client-capture]
+    timeout-minutes: 180
+    environment: minecraft-client-capture
     steps:
       - name: Require explicit EULA acceptance
         if: ${{ inputs.accept_minecraft_eula != true }}
@@ -31,6 +31,24 @@ jobs:
 
       - name: Check out repository
         uses: actions/checkout@v6
+
+      - name: Require a trusted interactive macOS graphical session
+        shell: bash
+        run: |
+          if [[ "$(uname -s)" != "Darwin" ]]; then
+            echo "Official client capture requires a trusted macOS runner." >&2
+            exit 1
+          fi
+          runner_user="$(id -un)"
+          console_user="$(stat -f '%Su' /dev/console)"
+          if [[ "$console_user" != "$runner_user" ]]; then
+            echo "Runner user '$runner_user' is not the active graphical console user '$console_user'." >&2
+            exit 1
+          fi
+          if ! launchctl print "gui/$(id -u)" >/dev/null 2>&1; then
+            echo "Runner has no active Aqua graphical bootstrap session." >&2
+            exit 1
+          fi
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -51,14 +69,15 @@ jobs:
         working-directory: capture-mod
         run: |
           ./gradlew --no-daemon clean test build
-          cmp build/libs/packwright-capture-mod-0.4.1.jar runtime/packwright-capture-mod-0.4.1.jar
+          cmp build/libs/packwright-capture-mod-0.5.0-dev.jar runtime/packwright-capture-mod-0.5.0-dev.jar
         env:
           GRADLE_USER_HOME: ${{ runner.temp }}/packwright-gradle
 
-      - name: Run explicit setup and vanilla fixture tests
+      - name: Run explicit server and official-client acceptance tests
         run: npm run test:minecraft
         env:
           PACKWRIGHT_CACHE_DIR: ${{ runner.temp }}/packwright-cache
           PACKWRIGHT_ACCEPT_MINECRAFT_EULA: ${{ inputs.accept_minecraft_eula }}
+          PACKWRIGHT_RUN_CLIENT_CAPTURE: 'true'
 
       # Never upload the cache, server jar, generated vanilla data, or logs as artifacts.

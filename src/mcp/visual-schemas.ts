@@ -1,6 +1,11 @@
 import { z } from 'zod/v4';
 
 import { MAX_MCP_PAYLOAD_BYTES } from '../core/limits.js';
+import {
+  ClientCaptureMeasurementSchema,
+  ClientCaptureRepresentationSchema,
+  ClientCaptureRuntimeSchema,
+} from '../minecraft/client-capture-protocol.js';
 import { VISUAL_TARGETS } from '../visual/capabilities.js';
 import {
   ArmorReviewSchema,
@@ -126,6 +131,12 @@ export const VisualCapabilitiesResultSchema = z.strictObject({
       targetKind: z.literal('item'),
       support: z.literal('full'),
       clientCaptureSupport: z.enum(['full', 'limited', 'unsupported']),
+      clientCaptureTargetKind: z
+        .enum(['held_item', 'gui_item', 'block', 'headwear', 'entity', 'placeable'])
+        .optional(),
+      clientCaptureStrategies: z.array(z.string().min(1).max(64)),
+      clientCaptureLimitation: z.string().min(1).max(4096).optional(),
+      clientCaptureDisclosure: z.string().min(1).max(4096).optional(),
     }),
   ),
 });
@@ -439,12 +450,86 @@ export const VisualClientCaptureInputSchema = z
       })
       .default({ width: 1280, height: 720 }),
     guiScale: z.number().int().min(0).max(8).default(2),
+    representation: ClientCaptureRepresentationSchema.optional().describe(
+      'Exact declarative Minecraft representation to stage for block, headwear, entity, or placeable capture. It must match the selected review profile and is hash-bound into the protocol report.',
+    ),
     includeScaleReferenceViews: z.boolean().default(false),
+    includeDebugHitboxViews: z
+      .boolean()
+      .default(false)
+      .describe(
+        'Add separately classified F3+B-style hitbox inspection frames for supported entity/placeable representations. These frames are supplemental QA evidence and never satisfy authority.',
+      ),
+    displaySettlingTicks: z
+      .number()
+      .int()
+      .min(2)
+      .max(40)
+      .optional()
+      .describe(
+        'Bounded post-spawn/update settling interval for display_rig or block_display representations. Omission uses two ticks; supplying it for another strategy is rejected.',
+      ),
+  })
+  .superRefine((value, context) => {
+    if (
+      value.displaySettlingTicks !== undefined &&
+      value.representation?.strategy !== 'display_rig' &&
+      value.representation?.strategy !== 'block_display'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['displaySettlingTicks'],
+        message:
+          'displaySettlingTicks is valid only for a display_rig or block_display representation',
+      });
+    }
+    if (
+      value.includeDebugHitboxViews &&
+      value.representation?.targetKind !== 'entity' &&
+      value.representation?.targetKind !== 'placeable'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['includeDebugHitboxViews'],
+        message: 'Debug hitbox views require an explicit entity or placeable representation',
+      });
+    }
+    if (
+      value.includeScaleReferenceViews &&
+      value.representation !== undefined &&
+      value.representation.targetKind !== 'held_item'
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['includeScaleReferenceViews'],
+        message: 'Injected scale-reference views are supported only for held-item capture',
+      });
+    }
   })
   .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
 
+const ClientCaptureTargetKindSchema = z.enum([
+  'held_item',
+  'gui_item',
+  'block',
+  'headwear',
+  'entity',
+  'placeable',
+]);
+
+const ClientCaptureViewKindSchema = z.enum([
+  'minecraft_vanilla',
+  'first_person_vanilla',
+  'first_person_scale_reference',
+  'debug_hitbox_reference',
+  'comparison_reference',
+  'world_scale_reference',
+  'measurement_control',
+]);
+
 export const VisualClientCaptureResultSchema = z
   .strictObject({
+    protocolVersion: z.literal(3),
     ok: z.boolean(),
     status: z.enum(['passed', 'failed', 'setup_required', 'cancelled', 'timeout']),
     authority: z.literal('authoritative_environment_capture'),
@@ -454,24 +539,43 @@ export const VisualClientCaptureResultSchema = z
     revisionId: VisualDraftIdSchema,
     reviewProfile: z.enum(REVIEW_PROFILE_IDS),
     profileVersion: z.number().int().positive(),
+    targetKind: ClientCaptureTargetKindSchema.optional(),
+    representationSha256: Sha256Schema.optional(),
+    studioSha256: Sha256Schema.optional(),
+    representationStrategy: z
+      .enum([
+        'item_stack',
+        'native_block_state',
+        'block_display',
+        'equippable_head',
+        'native_entity',
+        'display_rig',
+        'native_placeable_block',
+        'native_placeable_entity',
+      ])
+      .optional(),
+    representationCapability: z.enum(['native', 'replacement', 'simulated']).optional(),
+    representationDisclosure: z.string().min(1).max(4096).optional(),
+    proposalBindingStatus: z.enum(['implemented', 'capture_only']).optional(),
+    proposalBindingReason: z.string().min(1).max(4096).optional(),
     clientCaptureSupport: z.enum(['full', 'limited', 'unsupported']),
+    clientCaptureStrategies: z.array(z.string().min(1).max(64)),
+    clientCaptureLimitation: z.string().min(1).max(4096).optional(),
     captureReady: z.boolean(),
     planSha256: Sha256Schema.optional(),
     reportSha256: Sha256Schema.optional(),
     reportUri: z.url().optional(),
     contactSheet: VisualFileSchema.optional(),
     contactSheetUri: z.url().optional(),
-    scaleReferenceContactSheet: VisualFileSchema.optional(),
-    scaleReferenceContactSheetUri: z.url().optional(),
+    supplementalContactSheet: VisualFileSchema.optional(),
+    supplementalContactSheetUri: z.url().optional(),
     views: z.array(
       z.strictObject({
         name: z.string().min(1).max(128),
         baseSceneId: z.string().min(1).max(64),
-        viewKind: z.enum([
-          'minecraft_vanilla',
-          'first_person_vanilla',
-          'first_person_scale_reference',
-        ]),
+        targetKind: ClientCaptureTargetKindSchema,
+        representationSha256: Sha256Schema,
+        viewKind: ClientCaptureViewKindSchema,
         authority: z.enum(['authoritative_environment_capture', 'augmented_qa_reference']),
         requiredForAuthority: z.boolean(),
         width: z.number().int().positive(),
@@ -484,19 +588,19 @@ export const VisualClientCaptureResultSchema = z
     ),
     requiredViewIds: z.array(z.string().min(1).max(128)),
     supplementalViewIds: z.array(z.string().min(1).max(128)),
-    environment: z
-      .strictObject({
-        rendererBackend: z.enum(['opengl', 'vulkan']),
-        operatingSystem: z.string().min(1).max(512),
-        javaVersion: z.string().min(1).max(512),
-        gpuVendor: z.string().min(1).max(512),
-        gpuRenderer: z.string().min(1).max(512),
-        driverVersion: z.string().min(1).max(512),
-      })
-      .optional(),
+    environment: ClientCaptureRuntimeSchema.optional(),
+    measurements: z.array(ClientCaptureMeasurementSchema),
     diagnostics: z.array(DiagnosticSchema),
   })
   .superRefine((value, context) => {
+    const passed = value.status === 'passed';
+    if (value.ok !== passed || value.captureReady !== passed) {
+      context.addIssue({
+        code: 'custom',
+        path: ['captureReady'],
+        message: 'Only a passed client capture can be ok and capture-ready',
+      });
+    }
     const requiredIds = new Set(value.requiredViewIds);
     const supplementalIds = new Set(value.supplementalViewIds);
     const viewIds = new Set(value.views.map((view) => view.name));
@@ -524,13 +628,36 @@ export const VisualClientCaptureResultSchema = z
     }
 
     for (const [index, view] of value.views.entries()) {
-      const isScaleReference = view.viewKind === 'first_person_scale_reference';
-      const expectedAuthority = isScaleReference
+      const isAugmented =
+        view.viewKind === 'first_person_scale_reference' ||
+        view.viewKind === 'debug_hitbox_reference' ||
+        view.viewKind === 'comparison_reference' ||
+        view.viewKind === 'world_scale_reference' ||
+        view.viewKind === 'measurement_control';
+      const expectedAuthority = isAugmented
         ? 'augmented_qa_reference'
         : 'authoritative_environment_capture';
-      const expectedRequired = !isScaleReference;
+      const expectedRequired = !isAugmented;
       const inRequired = requiredIds.has(view.name);
       const inSupplemental = supplementalIds.has(view.name);
+
+      if (value.targetKind === undefined || view.targetKind !== value.targetKind) {
+        context.addIssue({
+          code: 'custom',
+          path: ['views', index, 'targetKind'],
+          message: 'View target kind does not match the capture result target kind',
+        });
+      }
+      if (
+        value.representationSha256 !== undefined &&
+        view.representationSha256 !== value.representationSha256
+      ) {
+        context.addIssue({
+          code: 'custom',
+          path: ['views', index, 'representationSha256'],
+          message: 'View representation hash does not match the capture result',
+        });
+      }
 
       if (view.authority !== expectedAuthority) {
         context.addIssue({
@@ -581,19 +708,49 @@ export const VisualClientCaptureResultSchema = z
       }
     }
 
-    const hasScaleReferenceSheet = value.scaleReferenceContactSheet !== undefined;
-    const hasScaleReferenceSheetUri = value.scaleReferenceContactSheetUri !== undefined;
-    const expectsScaleReferenceSheet = value.supplementalViewIds.length > 0;
+    const hasSupplementalSheet = value.supplementalContactSheet !== undefined;
+    const hasSupplementalSheetUri = value.supplementalContactSheetUri !== undefined;
+    const expectsSupplementalSheet = value.supplementalViewIds.length > 0;
     if (
-      hasScaleReferenceSheet !== hasScaleReferenceSheetUri ||
-      hasScaleReferenceSheet !== expectsScaleReferenceSheet
+      hasSupplementalSheet !== hasSupplementalSheetUri ||
+      hasSupplementalSheet !== expectsSupplementalSheet
     ) {
       context.addIssue({
         code: 'custom',
-        path: ['scaleReferenceContactSheet'],
+        path: ['supplementalContactSheet'],
         message:
-          'Scale-reference contact sheet and URI must both exist exactly when supplemental views exist',
+          'Supplemental contact sheet and URI must both exist exactly when supplemental views exist',
       });
+    }
+    if (
+      value.status === 'passed' &&
+      (value.representationSha256 === undefined ||
+        value.targetKind === undefined ||
+        value.representationStrategy === undefined ||
+        value.representationCapability === undefined ||
+        value.proposalBindingStatus === undefined ||
+        value.proposalBindingReason === undefined ||
+        value.studioSha256 === undefined ||
+        value.views.length === 0)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['representationSha256'],
+        message: 'A passed capture must bind a representation and at least one completed view',
+      });
+    }
+    if (value.status === 'passed' && value.targetKind !== undefined) {
+      const expectedProposalBindingStatus =
+        value.targetKind === 'held_item' || value.targetKind === 'gui_item'
+          ? 'implemented'
+          : 'capture_only';
+      if (value.proposalBindingStatus !== expectedProposalBindingStatus) {
+        context.addIssue({
+          code: 'custom',
+          path: ['proposalBindingStatus'],
+          message: `Target '${value.targetKind}' must report proposal binding '${expectedProposalBindingStatus}'`,
+        });
+      }
     }
   });
 

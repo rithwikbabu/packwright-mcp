@@ -46,11 +46,17 @@ export interface VisualRenderReviewReference {
 }
 
 export interface VisualClientCaptureReferences {
+  readonly protocolVersion: 2 | 3;
   readonly authority: 'authoritative_environment_capture';
   readonly authorityScope: 'required_views_only';
+  readonly proposalBindingStatus?: 'implemented' | 'capture_only' | undefined;
   readonly rendererVersion: 'minecraft-client-26.2';
   readonly profileId: ReviewProfileId;
   readonly profileVersion: number;
+  readonly targetKind?:
+    'held_item' | 'gui_item' | 'block' | 'headwear' | 'entity' | 'placeable' | undefined;
+  readonly representationSha256?: string | undefined;
+  readonly studioSha256?: string | undefined;
   readonly planSha256: string;
   readonly reportSha256: string;
   readonly sourceReportSha256: string;
@@ -66,6 +72,8 @@ export interface VisualClientCaptureReferences {
   readonly captureModSha256: string;
   readonly log: Readonly<{ label: string; sha256: string; bytes: number }>;
   readonly contactSheet: VisualPngReference;
+  readonly supplementalContactSheet?: VisualPngReference | undefined;
+  /** @deprecated Protocol-v2 compatibility field. */
   readonly scaleReferenceContactSheet?: VisualPngReference | undefined;
   readonly views: Readonly<Record<string, VisualPngReference>>;
   readonly requiredViewIds: readonly string[];
@@ -91,7 +99,9 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
     throw new Error('Visual workflow client capture is invalid.');
   }
   const record = value as Record<string, unknown>;
+  const protocolVersion = record.protocolVersion === undefined ? 2 : record.protocolVersion;
   if (
+    (protocolVersion !== 2 && protocolVersion !== 3) ||
     record.authority !== 'authoritative_environment_capture' ||
     record.authorityScope !== 'required_views_only' ||
     record.rendererVersion !== 'minecraft-client-26.2' ||
@@ -101,6 +111,48 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
     !/^[a-f0-9]{40}$/u.test(record.clientJarSha1)
   ) {
     throw new Error('Visual workflow client-capture identity is invalid.');
+  }
+  const targetKind = record.targetKind;
+  const validTargetKind =
+    targetKind === 'held_item' ||
+    targetKind === 'gui_item' ||
+    targetKind === 'block' ||
+    targetKind === 'headwear' ||
+    targetKind === 'entity' ||
+    targetKind === 'placeable';
+  const representationSha256 =
+    record.representationSha256 === undefined
+      ? undefined
+      : contentId(record.representationSha256, 'client-capture representation hash');
+  const studioSha256 =
+    record.studioSha256 === undefined
+      ? undefined
+      : contentId(record.studioSha256, 'client-capture studio hash');
+  const expectedTargetKind =
+    record.profileId === 'held_item' || record.profileId === 'gui_item'
+      ? record.profileId
+      : record.profileId === 'block'
+        ? 'block'
+        : record.profileId === 'head_wearable'
+          ? 'headwear'
+          : record.profileId === 'entity_model'
+            ? 'entity'
+            : record.profileId === 'placeable'
+              ? 'placeable'
+              : undefined;
+  const proposalBindingStatus = record.proposalBindingStatus;
+  const expectedProposalBindingStatus =
+    targetKind === 'held_item' || targetKind === 'gui_item' ? 'implemented' : 'capture_only';
+  if (
+    protocolVersion === 3 &&
+    (!validTargetKind ||
+      targetKind !== expectedTargetKind ||
+      representationSha256 === undefined ||
+      studioSha256 === undefined ||
+      proposalBindingStatus !== expectedProposalBindingStatus ||
+      record.scaleReferenceContactSheet !== undefined)
+  ) {
+    throw new Error('Visual workflow protocol-v3 representation identity is invalid.');
   }
   const viewsValue = record.views;
   if (viewsValue === null || typeof viewsValue !== 'object' || Array.isArray(viewsValue)) {
@@ -127,11 +179,11 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
   const scaleReferenceValue =
     record.supplementalViewIds === undefined ? [] : record.supplementalViewIds;
   if (!Array.isArray(scaleReferenceValue)) {
-    throw new Error('Visual workflow scale-reference client-capture views are invalid.');
+    throw new Error('Visual workflow supplemental client-capture views are invalid.');
   }
   const supplementalViewIds = scaleReferenceValue.map((view) => {
     if (typeof view !== 'string' || !VIEW_PATTERN.test(view) || views[view] === undefined) {
-      throw new Error('Visual workflow scale-reference client-capture view is invalid or missing.');
+      throw new Error('Visual workflow supplemental client-capture view is invalid or missing.');
     }
     return view;
   });
@@ -139,7 +191,7 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
     new Set(supplementalViewIds).size !== supplementalViewIds.length ||
     supplementalViewIds.some((view) => requiredViewIds.includes(view))
   ) {
-    throw new Error('Visual workflow scale-reference client-capture views are duplicated.');
+    throw new Error('Visual workflow supplemental client-capture views are duplicated.');
   }
   const classifiedViewIds = new Set([...requiredViewIds, ...supplementalViewIds]);
   if (
@@ -148,21 +200,32 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
   ) {
     throw new Error('Visual workflow client-capture views are not completely classified.');
   }
-  const scaleReferenceContactSheet =
-    record.scaleReferenceContactSheet === undefined
+  const supplementalContactSheetValue =
+    protocolVersion === 3 ? record.supplementalContactSheet : record.scaleReferenceContactSheet;
+  const supplementalContactSheet =
+    supplementalContactSheetValue === undefined
       ? undefined
-      : pngReference(record.scaleReferenceContactSheet);
-  if (supplementalViewIds.length > 0 !== (scaleReferenceContactSheet !== undefined)) {
+      : pngReference(supplementalContactSheetValue);
+  if (supplementalViewIds.length > 0 !== (supplementalContactSheet !== undefined)) {
     throw new Error(
-      'Visual workflow scale-reference contact sheet does not match its supplemental views.',
+      'Visual workflow supplemental contact sheet does not match its supplemental views.',
     );
   }
   return {
+    protocolVersion,
     authority: record.authority,
     authorityScope: record.authorityScope,
     rendererVersion: record.rendererVersion,
     profileId: record.profileId,
     profileVersion: positiveInteger(record.profileVersion, 'client-capture profile version'),
+    ...(protocolVersion === 3
+      ? {
+          targetKind: targetKind as NonNullable<VisualClientCaptureReferences['targetKind']>,
+          representationSha256,
+          studioSha256,
+          proposalBindingStatus: proposalBindingStatus as 'implemented' | 'capture_only',
+        }
+      : {}),
     planSha256: contentId(record.planSha256, 'client-capture plan hash'),
     reportSha256: contentId(record.reportSha256, 'client-capture report hash'),
     specSha256: contentId(record.specSha256, 'client-capture spec hash'),
@@ -198,7 +261,11 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
       };
     })(),
     contactSheet: pngReference(record.contactSheet),
-    ...(scaleReferenceContactSheet === undefined ? {} : { scaleReferenceContactSheet }),
+    ...(supplementalContactSheet === undefined
+      ? {}
+      : protocolVersion === 3
+        ? { supplementalContactSheet }
+        : { scaleReferenceContactSheet: supplementalContactSheet }),
     views,
     requiredViewIds,
     supplementalViewIds,

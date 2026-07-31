@@ -3,6 +3,7 @@
 import { Command, InvalidArgumentError, Option } from 'commander';
 import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server/stdio';
 
+import { visualClientCaptureSummaryText } from './cli-output.js';
 import { resolveRuntimeConfig, type RuntimeConfigOverrides } from './config.js';
 import { isPackwrightError } from './core/errors.js';
 import { isValidResourceId } from './core/identifiers.js';
@@ -11,6 +12,7 @@ import { runDoctor } from './doctor.js';
 import { setupVersion } from './minecraft/cache.js';
 import { createPackwrightMcpServer } from './mcp/register.js';
 import type { PackwrightServiceContext } from './mcp/service.js';
+import { VisualClientCaptureInputSchema } from './mcp/visual-schemas.js';
 import { PackwrightApplication } from './service.js';
 
 interface GlobalOptions {
@@ -43,6 +45,14 @@ function sha256(value: string): string {
     throw new InvalidArgumentError('Expected a lowercase SHA-256 digest.');
   }
   return value;
+}
+
+function jsonValue(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    throw new InvalidArgumentError('Expected valid JSON.');
+  }
 }
 
 function globalOptions(command: Command): GlobalOptions {
@@ -267,9 +277,24 @@ export function createCli(): Command {
     .option('--height <pixels>', 'framebuffer height from 360 to 1080', integer, 720)
     .option('--gui-scale <scale>', 'Minecraft GUI scale from 0 to 8', nonNegativeInteger, 2)
     .option(
+      '--representation-json <json>',
+      'strict declarative block, headwear, entity, or placeable representation (no paths or commands)',
+      jsonValue,
+    )
+    .option(
       '--include-scale-reference-views',
       'add separately labeled, non-WYSIWYG first-person scale-reference views',
       false,
+    )
+    .option(
+      '--include-debug-hitbox-views',
+      'add separately labeled, augmented QA-only hitbox inspection views',
+      false,
+    )
+    .option(
+      '--display-settling-ticks <ticks>',
+      'display-rig/block-display post-update settling ticks from 2 to 40 (default 2)',
+      integer,
     )
     .action(
       async (
@@ -283,7 +308,10 @@ export function createCli(): Command {
           width: number;
           height: number;
           guiScale: number;
+          representationJson?: unknown;
           includeScaleReferenceViews: boolean;
+          includeDebugHitboxViews: boolean;
+          displaySettlingTicks?: number;
         },
         command: Command,
       ) => {
@@ -304,38 +332,37 @@ export function createCli(): Command {
         const application = await PackwrightApplication.open(config);
         const abort = installAbortHandlers();
         try {
+          const parsedInput = VisualClientCaptureInputSchema.safeParse({
+            projectId,
+            runId: local.run,
+            ...(local.revision === undefined ? {} : { revisionId: local.revision }),
+            proposalSha256: local.proposalSha256,
+            confirm: true,
+            timeoutMs: local.timeoutMs,
+            resolution: { width: local.width, height: local.height },
+            guiScale: local.guiScale,
+            ...(local.representationJson === undefined
+              ? {}
+              : { representation: local.representationJson }),
+            includeScaleReferenceViews: local.includeScaleReferenceViews,
+            includeDebugHitboxViews: local.includeDebugHitboxViews,
+            ...(local.displaySettlingTicks === undefined
+              ? {}
+              : { displaySettlingTicks: local.displaySettlingTicks }),
+          });
+          if (!parsedInput.success) {
+            throw new InvalidArgumentError(
+              `Invalid capture input: ${parsedInput.error.issues.map((issue) => issue.message).join('; ')}`,
+            );
+          }
           const result = await application.captureVisual(
-            {
-              projectId,
-              runId: local.run,
-              ...(local.revision === undefined ? {} : { revisionId: local.revision }),
-              proposalSha256: local.proposalSha256,
-              confirm: true,
-              timeoutMs: local.timeoutMs,
-              resolution: { width: local.width, height: local.height },
-              guiScale: local.guiScale,
-              includeScaleReferenceViews: local.includeScaleReferenceViews,
-            },
+            parsedInput.data,
             operationContext(abort.controller.signal),
           );
           emitResult(
             result,
             options.json ?? false,
-            [
-              `${result.status.toUpperCase()}: ${String(result.views.length)} Minecraft framebuffer views`,
-              `Authoritative vanilla views: ${String(result.requiredViewIds.length)}`,
-              `Supplemental scale-reference views: ${String(result.supplementalViewIds.length)}`,
-              ...(result.reportSha256 === undefined
-                ? []
-                : [`Accepted report SHA-256: ${result.reportSha256}`]),
-              ...(result.reportUri === undefined ? [] : [`Report: ${result.reportUri}`]),
-              ...(result.contactSheetUri === undefined
-                ? []
-                : [`Authoritative vanilla contact sheet: ${result.contactSheetUri}`]),
-              ...(result.scaleReferenceContactSheetUri === undefined
-                ? []
-                : [`Optional scale-reference QA sheet: ${result.scaleReferenceContactSheetUri}`]),
-            ],
+            visualClientCaptureSummaryText(result),
             result.diagnostics,
           );
           if (!result.ok) process.exitCode = result.status === 'setup_required' ? 2 : 1;
