@@ -1,7 +1,7 @@
 {
   "name": "@rithwikbabu/packwright-mcp",
   "version": "0.4.0",
-  "description": "A local-first MCP visual compiler and official-client capture harness for paired Minecraft Java datapacks and resource packs.",
+  "description": "Packwright compiles, renders, validates, and captures paired Minecraft Java packs.",
   "type": "module",
   "bin": {
     "packwright-mcp": "dist/cli.js"
