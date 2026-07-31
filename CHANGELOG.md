@@ -4,6 +4,25 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-31
+
+### Added
+
+- Extended official Minecraft 26.2 client capture to native block-state bindings, simulated `block_display` models, equippable head items and equipment layers, supported vanilla entity variants/components, and strict declarative placeable display rigs.
+- Added protocol-v3 representation bindings, deterministic disposable studio fixtures, live client readbacks, framebuffer-derived measurements, exact observed-fixture hashes, and target-specific block, headwear, entity, and placeable scene profiles.
+- Added conditional captures for block state and tint matrices, transparency and light stress, camera overlays and equipment compatibility, supported entity states, and placeable attachments and interpolation declarations.
+
+### Changed
+
+- Client evidence now binds the exact representation strategy, state/components/equipment or display transforms, proposed pack snapshots, runtime and renderer settings, studio environment, camera and animation state, framebuffer source, and every artifact hash.
+- Blocks, headwear, entities, and placeables report honest native, simulated, limited, or unsupported capabilities. Their current compiler integration is `capture_only` and cannot authorize an item-compiler commit.
+- Actual Minecraft OpenGL rendering is authoritative for required gameplay/world frames. CPU renders remain advisory, while debug hitboxes, bare-head controls, measurement controls, injected comparisons, and other inspection aids are supplemental QA only.
+
+### Security
+
+- Display rigs accept only strict declarative manifests compiled into allow-listed setup actions with bounded post-spawn settling; arbitrary commands, functions, saves, mod paths, executable content, credentials, and unapproved paths fail before launch.
+- Protocol-v3 verification rejects stale proposal/report bindings, incomplete required/supplemental partitions, missing runtime or renderer bindings, artifact tampering, and any attempt to substitute augmented QA evidence for an authoritative frame.
+
 ## [0.4.1] - 2026-07-31
 
 ### Changed
@@ -140,7 +159,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Excluded Spyglass from runtime dependencies because its current dependency tree contains an unfixed critical archive-extraction advisory; external use requires explicit operator configuration.
 
-[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.2.0...v0.3.0

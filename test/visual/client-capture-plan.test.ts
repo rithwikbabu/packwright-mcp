@@ -452,7 +452,7 @@ describe('visual client-capture scene lowering', () => {
         representation,
         representationSha256,
         client: { jarSha1: '3'.repeat(40), jarSha256: '4'.repeat(64) },
-        captureMod: { id: 'packwright_capture', version: '0.5.0-dev', sha256: '5'.repeat(64) },
+        captureMod: { id: 'packwright_capture', version: '0.5.0', sha256: '5'.repeat(64) },
       },
       execution: {
         executionId: 'block-transparency-matrix',
@@ -670,7 +670,7 @@ describe('visual client-capture scene lowering', () => {
         representation,
         representationSha256,
         client: { jarSha1: '3'.repeat(40), jarSha256: '4'.repeat(64) },
-        captureMod: { id: 'packwright_capture', version: '0.5.0-dev', sha256: '5'.repeat(64) },
+        captureMod: { id: 'packwright_capture', version: '0.5.0', sha256: '5'.repeat(64) },
       },
       execution: {
         executionId: 'headwear-chest-compatibility',
@@ -886,7 +886,7 @@ describe('visual client-capture scene lowering', () => {
         representation,
         representationSha256,
         client: { jarSha1: '3'.repeat(40), jarSha256: '4'.repeat(64) },
-        captureMod: { id: 'packwright_capture', version: '0.5.0-dev', sha256: '5'.repeat(64) },
+        captureMod: { id: 'packwright_capture', version: '0.5.0', sha256: '5'.repeat(64) },
       },
       execution: {
         executionId: 'native-entity-variant-matrix',
@@ -1143,7 +1143,7 @@ describe('visual client-capture scene lowering', () => {
         client: { jarSha1: '3'.repeat(40), jarSha256: '4'.repeat(64) },
         captureMod: {
           id: 'packwright_capture',
-          version: '0.5.0-dev',
+          version: '0.5.0',
           sha256: '5'.repeat(64),
         },
       },

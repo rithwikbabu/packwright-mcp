@@ -48,7 +48,7 @@ Generic MCP client configuration:
       "command": "npx",
       "args": [
         "-y",
-        "@rithwikbabu/packwright-mcp@0.4.1",
+        "@rithwikbabu/packwright-mcp@0.5.0",
         "serve",
         "--workspace",
         "/absolute/path/to/datapacks"
@@ -65,7 +65,7 @@ The workspace can instead be passed through the environment:
   "mcpServers": {
     "packwright": {
       "command": "npx",
-      "args": ["-y", "@rithwikbabu/packwright-mcp@0.4.1"],
+      "args": ["-y", "@rithwikbabu/packwright-mcp@0.5.0"],
       "env": {
         "PACKWRIGHT_WORKSPACE": "/absolute/path/to/datapacks"
       }

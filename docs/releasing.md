@@ -75,7 +75,7 @@ The MCP Registry is a metadata registry and may remain in preview. Re-check its 
 
 Release and ordinary CI jobs must never download Minecraft jars, assets, libraries, natives, or generated vanilla data. Only a manually approved integration workflow or local release gate may run setup, and no workflow may upload the cache, jars, assets, generated registries, decompiled sources, full logs, or framebuffer captures.
 
-The npm package includes one original Packwright artifact at `capture-mod/runtime/packwright-capture-mod-0.5.0-dev.jar`. It is built from the MIT-licensed source under `capture-mod/` and must not contain Minecraft classes/assets, Fabric Loader, Fabric API, ASM, Sponge Mixin, or other downloaded launcher components. `package.json.files` allow-lists only that exact runtime JAR plus its Packwright license/readme. Before changing it, a maintainer must:
+The npm package includes one original Packwright artifact at `capture-mod/runtime/packwright-capture-mod-0.5.0.jar`. It is built from the MIT-licensed source under `capture-mod/` and must not contain Minecraft classes/assets, Fabric Loader, Fabric API, ASM, Sponge Mixin, or other downloaded launcher components. `package.json.files` allow-lists only that exact runtime JAR plus its Packwright license/readme. Before changing it, a maintainer must:
 
 1. Accept the Minecraft EULA and build the capture-mod source in an isolated local environment with Java 25 and the pinned Gradle/Loom configuration.
 2. Run the capture-mod unit tests and inspect the resulting JAR entry list for only Packwright classes/resources and normal JAR metadata.
