@@ -158,6 +158,21 @@ describe('paired visual workflow', () => {
     );
     expect(connected.ok).toBe(true);
     expect(connected.proposalSha256).toMatch(/^[a-f0-9]{64}$/u);
+    const authoritativeWorkflow = new VisualWorkflow(temporary.workspace, {
+      workspaceRoot: temporary.root,
+      cacheDir: path.join(temporary.root, 'cache'),
+      javaCommand: 'java',
+      readOnly: false,
+      offline: true,
+    });
+    await expect(
+      authoritativeWorkflow.commit(
+        'firestaff',
+        draft.runId,
+        repaired.revisionId,
+        connected.proposalSha256 ?? '',
+      ),
+    ).rejects.toMatchObject({ code: 'precondition_required' });
     const originalStateUpdate = workflow.states.update.bind(workflow.states);
     let stateUpdates = 0;
     const failedCacheWrite = vi

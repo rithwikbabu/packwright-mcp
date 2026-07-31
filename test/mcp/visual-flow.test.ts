@@ -247,6 +247,10 @@ describe('visual MCP flow', () => {
         runId,
         revisionId,
         includeVanilla: false,
+        // This transport-only CPU-preview fixture intentionally has no opted-in
+        // graphical Minecraft runtime. Production validation requires client
+        // evidence by default for profiles that support it.
+        requireClientCapture: false,
       },
     });
     expect(validated.isError).not.toBe(true);
@@ -255,6 +259,7 @@ describe('visual MCP flow', () => {
     if (!Array.isArray(validation.layers)) throw new Error('Expected visual validation layers.');
     expect(validation.layers).toContainEqual({ name: 'asset_graph', status: 'passed' });
     expect(validation.layers).toContainEqual({ name: 'review_profile', status: 'passed' });
+    expect(validation.layers).toContainEqual({ name: 'client_capture', status: 'skipped' });
     expect(validation.layers).toContainEqual({ name: 'vanilla_commands', status: 'skipped' });
   });
 });

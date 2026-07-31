@@ -8,12 +8,29 @@ import { withPathLock } from '../core/locks.js';
 import { inspectDatapack } from '../core/project.js';
 import { readStableFile, snapshotStableFile } from '../core/stable-file.js';
 import type { Diagnostic } from '../core/types.js';
-import { createResourcePackMetadata } from '../core/version.js';
+import { createResourcePackMetadata, MINECRAFT_26_2 } from '../core/version.js';
 import type { Workspace } from '../core/workspace.js';
+import type { RuntimeConfig } from '../config.js';
+import {
+  executeMinecraftClientCapture,
+  preflightMinecraftClientCapture,
+} from '../minecraft/client-capture.js';
+import type {
+  ClientCaptureCompleteReport,
+  ClientCapturePlan,
+} from '../minecraft/client-capture-protocol.js';
+import {
+  parseClientCaptureCompletionSentinelBytes,
+  parseClientCapturePlan,
+  parseClientCaptureReport,
+  parseClientCaptureReportBytes,
+} from '../minecraft/client-capture-protocol.js';
 import type {
   TextureImportInput,
   VisualAssetInspectResult,
   VisualCommitResult,
+  VisualClientCaptureInput,
+  VisualClientCaptureResult,
   VisualConnectInput,
   VisualDraftResult,
   VisualFileSchema,
@@ -26,6 +43,9 @@ import type {
 } from '../mcp/visual-schemas.js';
 import { VisualConnectInputSchema } from '../mcp/visual-schemas.js';
 import {
+  visualRunClientCaptureContactSheetUri,
+  visualRunClientCaptureReportUri,
+  visualRunClientCaptureViewUri,
   visualRunContactSheetUri,
   visualRunRenderReportUri,
   visualRunViewUri,
@@ -40,7 +60,7 @@ import {
   type CompiledItemAsset,
   type ItemBindingProposal,
 } from './compiler.js';
-import { decodePng, encodePng, type PixelImage } from './png.js';
+import { decodePng, encodePng, normalizePng, type PixelImage } from './png.js';
 import {
   attachVisualProject as attachVisualProjectManifest,
   inspectVisualProject,
@@ -50,7 +70,14 @@ import {
   type VisualProjectInspection,
   type VisualProjectManifest,
 } from './project.js';
-import { renderCompiledItemAsset, solidTexture, type Rgba } from './renderer.js';
+import {
+  createBoundedClientPreview,
+  createContactSheet,
+  renderCompiledItemAsset,
+  solidTexture,
+  type RenderedView,
+  type Rgba,
+} from './renderer.js';
 import {
   MAX_REVIEW_MEASUREMENTS,
   MAX_REVIEW_SCENES,
@@ -76,6 +103,13 @@ import {
   type VisualRevisionState,
 } from './workflow-state.js';
 import { parseModelSpec, type ModelSpec } from './model-spec.js';
+import { clientCaptureReviewSupport } from './client-capture-support.js';
+import {
+  clientCaptureComponentLiterals,
+  createVisualClientCapturePlan,
+} from './client-capture-plan.js';
+import { applyPackSnapshotOverlay, readConfinedPackSnapshot } from './pack-snapshot.js';
+import { createDeterministicZipArchive } from './builder.js';
 
 type VisualFile = z.infer<typeof VisualFileSchema>;
 
@@ -123,6 +157,17 @@ interface VisualCommitReceipt {
   readonly proposalSha256: string;
   readonly manifestSha256: string;
   readonly transactionId: string;
+  readonly clientCapture?: Readonly<{
+    readonly authority: 'authoritative_environment_capture';
+    readonly evidenceSha256: string;
+    readonly sourceReportSha256: string;
+    readonly planSha256: string;
+    readonly clientJarSha256: string;
+    readonly captureModSha256: string;
+    readonly datapackContentSha256: string;
+    readonly resourcepackContentSha256: string;
+    readonly runtimeManifestSha256: string;
+  }>;
   readonly files: readonly {
     readonly path: string;
     readonly sha256: string;
@@ -153,6 +198,7 @@ interface VisualArtifactReadiness {
   readonly reviewProfile: boolean;
   readonly binding: boolean;
   readonly committed: boolean;
+  readonly clientCaptured: boolean;
 }
 
 interface VerifiedVisualArtifacts {
@@ -187,6 +233,158 @@ interface StoredRenderProfileReport {
     readonly sha256: string;
   }[];
   readonly measurements: readonly ReviewMeasurementResult[];
+}
+
+interface StoredClientCaptureEvidence {
+  readonly schemaVersion: 1;
+  readonly kind: 'packwright.minecraft-client-capture-evidence';
+  readonly authority: 'authoritative_environment_capture';
+  readonly plan: ClientCapturePlan;
+  readonly report: ClientCaptureCompleteReport;
+  readonly sourceReportSha256: string;
+  readonly completionSha256: string;
+  readonly sourceReport: Readonly<{
+    readonly label: string;
+    readonly sha256: string;
+    readonly bytes: number;
+  }>;
+  readonly completion: Readonly<{
+    readonly label: string;
+    readonly sha256: string;
+    readonly bytes: number;
+  }>;
+  readonly log: Readonly<{ label: string; sha256: string; bytes: number }>;
+  readonly views: readonly {
+    readonly id: string;
+    readonly label: string;
+    readonly sourceSha256: string;
+    readonly normalizedSha256: string;
+    readonly width: number;
+    readonly height: number;
+    readonly bytes: number;
+  }[];
+  readonly contactSheet: Readonly<{
+    readonly label: string;
+    readonly sha256: string;
+    readonly width: number;
+    readonly height: number;
+    readonly bytes: number;
+  }>;
+}
+
+const CAPTURE_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/u;
+
+function captureBlobReference(
+  value: unknown,
+  label: string,
+): Readonly<{ label: string; sha256: string; bytes: number }> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`Stored client-capture ${label} reference is invalid.`);
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.label !== 'string' ||
+    !CAPTURE_LABEL_PATTERN.test(record.label) ||
+    typeof record.sha256 !== 'string' ||
+    !SHA256_PATTERN.test(record.sha256) ||
+    !Number.isSafeInteger(record.bytes) ||
+    (record.bytes as number) <= 0
+  ) {
+    throw new Error(`Stored client-capture ${label} reference is invalid.`);
+  }
+  return {
+    label: record.label,
+    sha256: record.sha256,
+    bytes: record.bytes as number,
+  };
+}
+
+function parseStoredClientCaptureEvidence(value: unknown): StoredClientCaptureEvidence {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Stored client-capture evidence is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    record.kind !== 'packwright.minecraft-client-capture-evidence' ||
+    record.authority !== 'authoritative_environment_capture' ||
+    typeof record.sourceReportSha256 !== 'string' ||
+    !SHA256_PATTERN.test(record.sourceReportSha256) ||
+    typeof record.completionSha256 !== 'string' ||
+    !SHA256_PATTERN.test(record.completionSha256) ||
+    !Array.isArray(record.views)
+  ) {
+    throw new Error('Stored client-capture evidence identity is invalid.');
+  }
+  const plan = parseClientCapturePlan(record.plan);
+  const parsedReport = parseClientCaptureReport(record.report, plan);
+  if (parsedReport.status !== 'complete') {
+    throw new Error('Stored client-capture evidence contains a failed report.');
+  }
+  const views = record.views.map((entryValue) => {
+    if (entryValue === null || typeof entryValue !== 'object' || Array.isArray(entryValue)) {
+      throw new Error('Stored client-capture view reference is invalid.');
+    }
+    const entry = entryValue as Record<string, unknown>;
+    if (
+      typeof entry.id !== 'string' ||
+      !CAPTURE_LABEL_PATTERN.test(entry.id) ||
+      typeof entry.label !== 'string' ||
+      !CAPTURE_LABEL_PATTERN.test(entry.label) ||
+      typeof entry.sourceSha256 !== 'string' ||
+      !SHA256_PATTERN.test(entry.sourceSha256) ||
+      typeof entry.normalizedSha256 !== 'string' ||
+      !SHA256_PATTERN.test(entry.normalizedSha256) ||
+      !Number.isSafeInteger(entry.width) ||
+      (entry.width as number) <= 0 ||
+      !Number.isSafeInteger(entry.height) ||
+      (entry.height as number) <= 0 ||
+      !Number.isSafeInteger(entry.bytes) ||
+      (entry.bytes as number) <= 0
+    ) {
+      throw new Error('Stored client-capture view reference is invalid.');
+    }
+    return {
+      id: entry.id,
+      label: entry.label,
+      sourceSha256: entry.sourceSha256,
+      normalizedSha256: entry.normalizedSha256,
+      width: entry.width as number,
+      height: entry.height as number,
+      bytes: entry.bytes as number,
+    };
+  });
+  if (new Set(views.map((view) => view.id)).size !== views.length) {
+    throw new Error('Stored client-capture evidence contains duplicate views.');
+  }
+  const contactSheet = captureBlobReference(record.contactSheet, 'contact sheet');
+  const contactValue = record.contactSheet as Record<string, unknown>;
+  if (
+    !Number.isSafeInteger(contactValue.width) ||
+    (contactValue.width as number) <= 0 ||
+    !Number.isSafeInteger(contactValue.height) ||
+    (contactValue.height as number) <= 0
+  ) {
+    throw new Error('Stored client-capture contact-sheet dimensions are invalid.');
+  }
+  return {
+    schemaVersion: 1,
+    kind: 'packwright.minecraft-client-capture-evidence',
+    authority: 'authoritative_environment_capture',
+    plan,
+    report: parsedReport,
+    sourceReportSha256: record.sourceReportSha256,
+    completionSha256: record.completionSha256,
+    sourceReport: captureBlobReference(record.sourceReport, 'source report'),
+    completion: captureBlobReference(record.completion, 'completion sentinel'),
+    log: captureBlobReference(record.log, 'log'),
+    views,
+    contactSheet: {
+      ...contactSheet,
+      width: contactValue.width as number,
+      height: contactValue.height as number,
+    },
+  };
 }
 
 export interface VisualProposalOverlay {
@@ -708,6 +906,7 @@ function createVisualCommitReceipt(
   project: VisualProjectInspection,
   proposalSha256: string,
   proposal: CommitProposal,
+  clientCapture?: VisualRevisionState['clientCapture'],
 ): VisualCommitReceipt {
   return {
     schemaVersion: 1,
@@ -719,6 +918,21 @@ function createVisualCommitReceipt(
     proposalSha256,
     manifestSha256: project.manifestSha256,
     transactionId: `visual-${proposalSha256}`,
+    ...(clientCapture === undefined
+      ? {}
+      : {
+          clientCapture: {
+            authority: clientCapture.authority,
+            evidenceSha256: clientCapture.reportSha256,
+            sourceReportSha256: clientCapture.sourceReportSha256,
+            planSha256: clientCapture.planSha256,
+            clientJarSha256: clientCapture.clientJarSha256,
+            captureModSha256: clientCapture.captureModSha256,
+            datapackContentSha256: clientCapture.datapackContentSha256,
+            resourcepackContentSha256: clientCapture.resourcepackContentSha256,
+            runtimeManifestSha256: clientCapture.runtimeManifestSha256,
+          },
+        }),
     files: proposal.files.map((file) => ({
       path: packDestination(project.manifest, file.pack, file.path),
       sha256: file.sha256,
@@ -881,6 +1095,9 @@ function visualCommitResult(
     runId: proposal.runId,
     revisionId: proposal.revisionId,
     transactionId: receipt.transactionId,
+    ...(receipt.clientCapture === undefined
+      ? {}
+      : { clientCaptureReportSha256: receipt.clientCapture.evidenceSha256 }),
     files: proposal.files.map((file) => ({
       path: packDestination(project.manifest, file.pack, file.path),
       sha256: file.sha256,
@@ -961,12 +1178,29 @@ function outputFiles(
 
 export class VisualWorkflow {
   readonly workspace: Workspace;
+  readonly config: RuntimeConfig;
   readonly runs: VisualRunStore;
   readonly states: VisualWorkflowStateStore;
   readonly operationLockRoot: string;
+  readonly requireAuthoritativeClientCapture: boolean;
 
-  constructor(workspace: Workspace, cacheDir: string) {
+  constructor(workspace: Workspace, config: RuntimeConfig | string) {
     this.workspace = workspace;
+    this.config =
+      typeof config === 'string'
+        ? {
+            workspaceRoot: workspace.root,
+            javaCommand: 'java',
+            cacheDir: config,
+            readOnly: false,
+            offline: true,
+          }
+        : config;
+    // The string overload is retained for the isolated, offline workflow unit
+    // harness. Real application instances always receive RuntimeConfig and use
+    // Minecraft client evidence as the acceptance authority where supported.
+    this.requireAuthoritativeClientCapture = typeof config !== 'string';
+    const cacheDir = this.config.cacheDir;
     this.runs = new VisualRunStore(cacheDir);
     this.states = new VisualWorkflowStateStore(cacheDir, workspace.root);
     this.operationLockRoot = path.join(
@@ -1023,6 +1257,7 @@ export class VisualWorkflow {
       project,
       proposalSha256,
       proposal,
+      record.clientCapture,
     );
     const verified = await verifyVisualCommitReceipt(
       this.workspace,
@@ -1310,6 +1545,261 @@ export class VisualWorkflow {
       throw new Error('Render-profile readiness does not match its measurements.');
     }
     return report;
+  }
+
+  private async verifyClientCaptureEvidence(
+    loaded: LoadedRevision,
+    record: VisualRevisionState = loaded.record,
+    signal?: AbortSignal,
+  ): Promise<StoredClientCaptureEvidence> {
+    const reference = record.clientCapture;
+    if (
+      reference === undefined ||
+      record.compiledArtifactId === undefined ||
+      record.proposalArtifactId === undefined
+    ) {
+      throw new Error('Minecraft client-capture evidence is not available for this revision.');
+    }
+    const reviewProfile = resolveReviewProfile(loaded.spec, 128);
+    if (
+      clientCaptureReviewSupport(reviewProfile.profileId) === 'unsupported' ||
+      reference.profileId !== reviewProfile.profileId ||
+      reference.profileVersion !== reviewProfile.profileVersion ||
+      reference.specSha256 !== record.specSha256 ||
+      reference.compiledArtifactId !== record.compiledArtifactId ||
+      reference.proposalArtifactId !== record.proposalArtifactId ||
+      reference.manifestSha256 !== loaded.project.manifestSha256
+    ) {
+      throw new Error('Minecraft client-capture identity is stale.');
+    }
+
+    abortIfNeeded(signal);
+    const storedArtifact = await this.runs.readReview(record.runId, reference.reportSha256);
+    const stored = parseStoredClientCaptureEvidence(storedArtifact.value);
+    const plan = stored.plan;
+    const report = stored.report;
+    if (
+      plan.planSha256 !== reference.planSha256 ||
+      report.runtime.rendererBackend !== MINECRAFT_26_2.clientCapture.graphicsBackend ||
+      stored.sourceReportSha256 !== reference.sourceReportSha256 ||
+      stored.sourceReport.sha256 !== stored.sourceReportSha256 ||
+      stored.completion.sha256 !== stored.completionSha256
+    ) {
+      throw new Error('Minecraft client-capture protocol identity is stale.');
+    }
+
+    const provenance = plan.provenance;
+    if (
+      provenance.projectId !== loaded.project.manifest.id ||
+      provenance.runId !== record.runId ||
+      provenance.revisionId !== record.revisionId ||
+      provenance.specSha256 !== record.specSha256 ||
+      provenance.compiledArtifactId !== record.compiledArtifactId ||
+      provenance.proposalArtifactId !== record.proposalArtifactId ||
+      provenance.projectManifestSha256 !== loaded.project.manifestSha256 ||
+      provenance.datapackContentSha256 !== reference.datapackContentSha256 ||
+      provenance.resourcepackContentSha256 !== reference.resourcepackContentSha256 ||
+      provenance.runtimeManifestSha256 !== reference.runtimeManifestSha256 ||
+      provenance.client.jarSha1 !== reference.clientJarSha1 ||
+      provenance.client.jarSha256 !== reference.clientJarSha256 ||
+      provenance.captureMod.id !== MINECRAFT_26_2.clientCapture.captureMod.id ||
+      provenance.captureMod.version !== MINECRAFT_26_2.clientCapture.captureMod.version ||
+      provenance.captureMod.sha256 !== MINECRAFT_26_2.clientCapture.captureMod.sha256 ||
+      reference.captureModSha256 !== MINECRAFT_26_2.clientCapture.captureMod.sha256
+    ) {
+      throw new Error('Minecraft client-capture provenance does not match this revision.');
+    }
+
+    const proposalArtifact = await this.runs.readCompiled(record.runId, record.proposalArtifactId);
+    const proposalBytes = proposalArtifact.contents['proposal.json'];
+    if (proposalBytes === undefined) throw new Error('Client-capture proposal is unavailable.');
+    const proposal = proposalValue(JSON.parse(proposalBytes.toString('utf8')));
+    if (
+      proposal.projectId !== loaded.project.manifest.id ||
+      proposal.runId !== record.runId ||
+      proposal.revisionId !== record.revisionId ||
+      proposal.compiledArtifactId !== record.compiledArtifactId ||
+      proposal.manifestSha256 !== loaded.project.manifestSha256 ||
+      provenance.itemStack.itemId !== proposal.binding.itemStack.id ||
+      provenance.itemStack.count !== proposal.binding.itemStack.count ||
+      provenance.itemStack.command !== proposal.binding.giveCommand ||
+      !canonicalJsonBytes(provenance.itemStack.components).equals(
+        canonicalJsonBytes(clientCaptureComponentLiterals(proposal.binding)),
+      )
+    ) {
+      throw new Error('Minecraft client-capture item stack or proposal is stale.');
+    }
+
+    const overlay = await this.readProposalOverlay(
+      loaded.project.manifest.id,
+      record.runId,
+      record.revisionId,
+    );
+    const [datapackSource, resourcepackSource] = await Promise.all([
+      readConfinedPackSnapshot(this.workspace, loaded.project.manifest.datapack, signal),
+      readConfinedPackSnapshot(this.workspace, loaded.project.manifest.resourcepack, signal),
+    ]);
+    const datapack = applyPackSnapshotOverlay(
+      datapackSource,
+      overlay.files
+        .filter((file) => file.pack === 'datapack')
+        .map((file) => ({ path: file.path, data: file.data })),
+    );
+    const resourcepack = applyPackSnapshotOverlay(
+      resourcepackSource,
+      overlay.files
+        .filter((file) => file.pack === 'resourcepack')
+        .map((file) => ({ path: file.path, data: file.data })),
+    );
+    const [datapackArchive, resourcepackArchive] = await Promise.all([
+      createDeterministicZipArchive(datapack.entries),
+      createDeterministicZipArchive(resourcepack.entries),
+    ]);
+    if (
+      datapackArchive.sha256 !== provenance.datapackContentSha256 ||
+      resourcepackArchive.sha256 !== provenance.resourcepackContentSha256
+    ) {
+      throw new Error('Paired-pack content changed after the Minecraft client capture.');
+    }
+
+    const firstScene = plan.scenes[0];
+    if (firstScene === undefined) throw new Error('Minecraft client-capture plan has no scenes.');
+    const expectedPlan = createVisualClientCapturePlan({
+      spec: loaded.spec,
+      width: firstScene.resolution.width,
+      height: firstScene.resolution.height,
+      guiScale: firstScene.guiScale,
+      provenance,
+      execution: plan.execution,
+    });
+    if (
+      expectedPlan.planSha256 !== plan.planSha256 ||
+      !canonicalJsonBytes(expectedPlan.scenes).equals(canonicalJsonBytes(plan.scenes)) ||
+      !canonicalJsonBytes(reference.requiredViewIds).equals(
+        canonicalJsonBytes(plan.scenes.map((scene) => scene.id)),
+      )
+    ) {
+      throw new Error('Minecraft client-capture scene plan is stale.');
+    }
+
+    const [sourceReport, completion, log] = await Promise.all([
+      this.runs.readCaptureBlob(
+        record.runId,
+        stored.sourceReport.label,
+        'json',
+        stored.sourceReport.sha256,
+      ),
+      this.runs.readCaptureBlob(
+        record.runId,
+        stored.completion.label,
+        'json',
+        stored.completion.sha256,
+      ),
+      this.runs.readCaptureBlob(record.runId, stored.log.label, 'log', stored.log.sha256),
+    ]);
+    if (
+      sourceReport.bytes !== stored.sourceReport.bytes ||
+      completion.bytes !== stored.completion.bytes ||
+      log.bytes !== stored.log.bytes ||
+      stored.log.sha256 !== reference.log.sha256 ||
+      stored.log.label !== reference.log.label ||
+      stored.log.bytes !== reference.log.bytes
+    ) {
+      throw new Error('Minecraft client-capture source artifact metadata is stale.');
+    }
+    const parsedSourceReport = parseClientCaptureReportBytes(sourceReport.data, plan);
+    const sentinel = parseClientCaptureCompletionSentinelBytes(completion.data, plan);
+    if (
+      parsedSourceReport.status !== 'complete' ||
+      !canonicalJsonBytes(parsedSourceReport).equals(canonicalJsonBytes(report)) ||
+      sentinel.report.sha256 !== stored.sourceReportSha256 ||
+      sentinel.report.bytes !== sourceReport.bytes ||
+      sha256Buffer(sourceReport.data) !== stored.sourceReportSha256 ||
+      sha256Buffer(log.data) !== report.log.sha256 ||
+      log.bytes !== report.log.bytes
+    ) {
+      throw new Error('Minecraft client-capture report, sentinel, or log failed verification.');
+    }
+
+    const storedViewMap = new Map(stored.views.map((view) => [view.id, view] as const));
+    const reportViewMap = new Map(report.views.map((view) => [view.sceneId, view] as const));
+    const renderedViews: RenderedView[] = [];
+    if (
+      storedViewMap.size !== plan.scenes.length ||
+      reportViewMap.size !== plan.scenes.length ||
+      Object.keys(reference.views).length !== plan.scenes.length
+    ) {
+      throw new Error('Minecraft client-capture view index is incomplete.');
+    }
+    for (const scene of plan.scenes) {
+      abortIfNeeded(signal);
+      const indexed = reference.views[scene.id];
+      const storedView = storedViewMap.get(scene.id);
+      const reported = reportViewMap.get(scene.id);
+      if (
+        indexed === undefined ||
+        storedView === undefined ||
+        reported === undefined ||
+        indexed.source !== 'captured' ||
+        indexed.sourceSha256 !== storedView.sourceSha256 ||
+        indexed.sha256 !== storedView.normalizedSha256 ||
+        indexed.label !== storedView.label ||
+        indexed.width !== storedView.width ||
+        indexed.height !== storedView.height ||
+        indexed.bytes !== storedView.bytes ||
+        reported.pngSha256 !== storedView.sourceSha256
+      ) {
+        throw new Error(`Minecraft client-capture view is stale: ${scene.id}`);
+      }
+      const [raw, normalized] = await Promise.all([
+        this.runs.readCaptureBlob(record.runId, storedView.label, 'png', storedView.sourceSha256),
+        this.runs.readPng(record.runId, 'capture', storedView.label, storedView.normalizedSha256),
+      ]);
+      const canonical = normalizePng(raw.data);
+      if (
+        raw.bytes !== reported.bytes ||
+        canonical.sourceSha256 !== reported.pngSha256 ||
+        canonical.sha256 !== normalized.sha256 ||
+        canonical.png.length !== normalized.bytes ||
+        canonical.image.width !== reported.width ||
+        canonical.image.height !== reported.height ||
+        normalized.width !== storedView.width ||
+        normalized.height !== storedView.height ||
+        normalized.bytes !== storedView.bytes
+      ) {
+        throw new Error(`Minecraft framebuffer PNG failed verification: ${scene.id}`);
+      }
+      renderedViews.push({
+        id: scene.id,
+        width: canonical.image.width,
+        height: canonical.image.height,
+        image: canonical.image,
+        png: raw.data,
+        sha256: canonical.sourceSha256,
+      });
+    }
+
+    const contact = await this.runs.readPng(
+      record.runId,
+      'capture',
+      stored.contactSheet.label,
+      stored.contactSheet.sha256,
+    );
+    const canonicalContact = createContactSheet(renderedViews);
+    if (
+      stored.contactSheet.label !== reference.contactSheet.label ||
+      stored.contactSheet.sha256 !== reference.contactSheet.sha256 ||
+      stored.contactSheet.width !== reference.contactSheet.width ||
+      stored.contactSheet.height !== reference.contactSheet.height ||
+      stored.contactSheet.bytes !== reference.contactSheet.bytes ||
+      contact.sha256 !== canonicalContact.sha256 ||
+      contact.width !== canonicalContact.width ||
+      contact.height !== canonicalContact.height ||
+      contact.bytes !== canonicalContact.png.length
+    ) {
+      throw new Error('Minecraft client-capture contact sheet failed verification.');
+    }
+    return stored;
   }
 
   private async readExternalResource(
@@ -2087,6 +2577,391 @@ export class VisualWorkflow {
     };
   }
 
+  async capture(
+    input: VisualClientCaptureInput,
+    signal?: AbortSignal,
+  ): Promise<VisualClientCaptureResult> {
+    return this.withProjectMutationLock(input.projectId, () => this.captureUnlocked(input, signal));
+  }
+
+  private async captureUnlocked(
+    input: VisualClientCaptureInput,
+    signal?: AbortSignal,
+  ): Promise<VisualClientCaptureResult> {
+    const loaded = await this.loadRevision(input.projectId, input.runId, input.revisionId);
+    if (loaded.record.committedTransactionId !== undefined) {
+      throw new PackwrightError(
+        'precondition_failed',
+        'A committed immutable revision cannot be recaptured; create a child revision first.',
+      );
+    }
+    const prepared = await this.ensureCompiled(loaded, signal);
+    const profile = resolveReviewProfile(loaded.spec, 128);
+    const captureSupport = clientCaptureReviewSupport(profile.profileId);
+    const base = {
+      authority: 'authoritative_environment_capture' as const,
+      projectId: input.projectId,
+      runId: input.runId,
+      revisionId: prepared.record.revisionId,
+      reviewProfile: profile.profileId,
+      profileVersion: profile.profileVersion,
+      clientCaptureSupport: captureSupport,
+    };
+    if (captureSupport === 'unsupported') {
+      return {
+        ...base,
+        ok: false,
+        status: 'failed',
+        captureReady: false,
+        views: [],
+        diagnostics: [
+          {
+            engine: 'minecraft-client',
+            authority: 'authoritative',
+            severity: 'error',
+            code: 'minecraft.client_capture.profile_unsupported',
+            message: `Review profile '${profile.profileId}' has no truthful official-client capture implementation for the current custom-item compiler.`,
+          },
+        ],
+      };
+    }
+    if (prepared.record.proposalArtifactId !== input.proposalSha256) {
+      throw new PackwrightError(
+        'precondition_failed',
+        'The selected proposal is not current for this visual revision.',
+      );
+    }
+    const overlay = await this.readProposalOverlay(
+      input.projectId,
+      input.runId,
+      prepared.record.revisionId,
+    );
+    if (overlay.proposalSha256 !== input.proposalSha256) {
+      throw new PackwrightError(
+        'precondition_failed',
+        'The proposal changed during capture setup.',
+      );
+    }
+    const proposalArtifact = await this.runs.readCompiled(input.runId, input.proposalSha256);
+    const proposalBytes = proposalArtifact.contents['proposal.json'];
+    if (proposalBytes === undefined) {
+      throw new PackwrightError('invalid_content', 'Visual proposal artifact has no manifest.');
+    }
+    const proposal = proposalValue(JSON.parse(proposalBytes.toString('utf8')));
+    if (
+      proposal.projectId !== input.projectId ||
+      proposal.runId !== input.runId ||
+      proposal.revisionId !== prepared.record.revisionId ||
+      proposal.compiledArtifactId !== prepared.record.compiledArtifactId ||
+      proposal.manifestSha256 !== loaded.project.manifestSha256
+    ) {
+      throw new PackwrightError(
+        'precondition_failed',
+        'The client-capture proposal does not match the selected immutable revision.',
+      );
+    }
+
+    const capturePreflight = await preflightMinecraftClientCapture(this.config, signal);
+    if (!capturePreflight.ready || capturePreflight.prepared === undefined) {
+      return {
+        ...base,
+        ok: false,
+        status: 'setup_required',
+        captureReady: false,
+        views: [],
+        diagnostics: capturePreflight.messages.map((message) => ({
+          engine: 'minecraft-client',
+          authority: 'authoritative' as const,
+          severity: 'error' as const,
+          code: 'minecraft.client_capture.setup_required',
+          message,
+        })),
+      };
+    }
+
+    const [datapackSource, resourcepackSource] = await Promise.all([
+      readConfinedPackSnapshot(this.workspace, loaded.project.manifest.datapack, signal),
+      readConfinedPackSnapshot(this.workspace, loaded.project.manifest.resourcepack, signal),
+    ]);
+    const datapack = applyPackSnapshotOverlay(
+      datapackSource,
+      overlay.files
+        .filter((file) => file.pack === 'datapack')
+        .map((file) => ({ path: file.path, data: file.data })),
+    );
+    const resourcepack = applyPackSnapshotOverlay(
+      resourcepackSource,
+      overlay.files
+        .filter((file) => file.pack === 'resourcepack')
+        .map((file) => ({ path: file.path, data: file.data })),
+    );
+    const [datapackArchive, resourcepackArchive] = await Promise.all([
+      createDeterministicZipArchive(datapack.entries),
+      createDeterministicZipArchive(resourcepack.entries),
+    ]);
+    const compiledArtifactId = prepared.record.compiledArtifactId;
+    const captureRuntime = capturePreflight.prepared;
+    let executed: Awaited<ReturnType<typeof executeMinecraftClientCapture>>;
+    try {
+      executed = await executeMinecraftClientCapture({
+        config: this.config,
+        prepared: captureRuntime,
+        datapack,
+        resourcepack,
+        timeoutMs: input.timeoutMs,
+        ...(signal === undefined ? {} : { signal }),
+        createPlan: (execution) =>
+          createVisualClientCapturePlan({
+            spec: loaded.spec,
+            width: input.resolution.width,
+            height: input.resolution.height,
+            guiScale: input.guiScale,
+            execution,
+            provenance: {
+              projectId: input.projectId,
+              runId: input.runId,
+              revisionId: prepared.record.revisionId,
+              specSha256: prepared.record.specSha256,
+              compiledArtifactId,
+              proposalArtifactId: input.proposalSha256,
+              projectManifestSha256: loaded.project.manifestSha256,
+              datapackContentSha256: datapackArchive.sha256,
+              resourcepackContentSha256: resourcepackArchive.sha256,
+              runtimeManifestSha256: captureRuntime.runtime.sha256,
+              itemStack: {
+                itemId: proposal.binding.itemStack.id,
+                count: proposal.binding.itemStack.count,
+                command: proposal.binding.giveCommand,
+                components: clientCaptureComponentLiterals(proposal.binding),
+              },
+              client: captureRuntime.client,
+              captureMod: {
+                id: captureRuntime.captureMod.id,
+                version: captureRuntime.captureMod.version,
+                sha256: captureRuntime.captureMod.sha256,
+              },
+            },
+          }),
+      });
+    } catch (error) {
+      const status =
+        error instanceof PackwrightError && error.code === 'cancelled'
+          ? 'cancelled'
+          : error instanceof PackwrightError && error.details?.status === 'timeout'
+            ? 'timeout'
+            : 'failed';
+      return {
+        ...base,
+        ok: false,
+        status,
+        captureReady: false,
+        views: [],
+        diagnostics: [
+          {
+            engine: 'minecraft-client',
+            authority: 'authoritative',
+            severity: 'error',
+            code: `minecraft.client_capture.${status}`,
+            message: error instanceof Error ? error.message : String(error),
+          },
+        ],
+      };
+    }
+
+    const prefix = `c${prepared.record.revisionId.slice(0, 6)}`;
+    const views: Record<string, VisualPngReference> = {};
+    const renderedViews: RenderedView[] = [];
+    const storedViews: StoredClientCaptureEvidence['views'][number][] = [];
+    for (const view of executed.evidence.views) {
+      const raw = executed.artifacts[view.path];
+      if (raw === undefined) throw new Error(`Verified client view is unavailable: ${view.path}`);
+      const label = `${prefix}-${view.sceneId}`.slice(0, 64).replace(/-$/u, '0');
+      const [source, stored] = await Promise.all([
+        this.runs.putCaptureBlob(input.runId, label, 'png', raw, signal),
+        this.runs.putCapture(input.runId, label, raw, { signal }),
+      ]);
+      if (source.sha256 !== view.pngSha256 || stored.sourceSha256 !== view.pngSha256) {
+        throw new Error(`Stored client framebuffer hash changed: ${view.sceneId}`);
+      }
+      const reference: VisualPngReference = {
+        label,
+        sha256: stored.sha256,
+        width: stored.width,
+        height: stored.height,
+        bytes: stored.bytes,
+        source: 'captured',
+        sourceSha256: source.sha256,
+        strippedMetadata: stored.strippedMetadata,
+      };
+      views[view.sceneId] = reference;
+      const image = decodePng(raw);
+      renderedViews.push({
+        id: view.sceneId,
+        width: image.width,
+        height: image.height,
+        image,
+        png: raw,
+        sha256: view.pngSha256,
+      });
+      storedViews.push({
+        id: view.sceneId,
+        label,
+        sourceSha256: source.sha256,
+        normalizedSha256: stored.sha256,
+        width: stored.width,
+        height: stored.height,
+        bytes: stored.bytes,
+      });
+    }
+    const contactSheet = createContactSheet(renderedViews);
+    const contactLabel = `${prefix}-contact`;
+    const storedContact = await this.runs.putCapture(input.runId, contactLabel, contactSheet.png, {
+      signal,
+    });
+    const contactReference: VisualPngReference = {
+      label: contactLabel,
+      sha256: storedContact.sha256,
+      width: storedContact.width,
+      height: storedContact.height,
+      bytes: storedContact.bytes,
+      source: 'generated',
+      sourceSha256: storedContact.sourceSha256,
+      strippedMetadata: storedContact.strippedMetadata,
+    };
+    const logBytes = executed.artifacts[executed.evidence.log.path];
+    if (logBytes === undefined) throw new Error('Verified Minecraft client log is unavailable.');
+    const logLabel = `${prefix}-minecraft-log`;
+    const storedLog = await this.runs.putCaptureBlob(
+      input.runId,
+      logLabel,
+      'log',
+      logBytes,
+      signal,
+    );
+    if (storedLog.sha256 !== executed.evidence.log.sha256) {
+      throw new Error('Stored Minecraft client log hash changed.');
+    }
+    const sourceReportBytes = executed.artifacts[executed.evidence.reportArtifact.path];
+    const completionBytes = executed.artifacts[executed.evidence.completion.path];
+    if (sourceReportBytes === undefined || completionBytes === undefined) {
+      throw new Error('Verified Minecraft capture protocol artifacts are unavailable.');
+    }
+    const [storedSourceReport, storedCompletion] = await Promise.all([
+      this.runs.putCaptureBlob(input.runId, `${prefix}-report`, 'json', sourceReportBytes, signal),
+      this.runs.putCaptureBlob(input.runId, `${prefix}-complete`, 'json', completionBytes, signal),
+    ]);
+    if (
+      storedSourceReport.sha256 !== executed.evidence.reportArtifact.sha256 ||
+      storedCompletion.sha256 !== executed.evidence.completion.sha256
+    ) {
+      throw new Error('Stored Minecraft capture protocol hash changed.');
+    }
+    const storedEvidenceValue: StoredClientCaptureEvidence = {
+      schemaVersion: 1,
+      kind: 'packwright.minecraft-client-capture-evidence',
+      authority: 'authoritative_environment_capture',
+      plan: executed.plan,
+      report: executed.evidence.report,
+      sourceReportSha256: executed.evidence.reportArtifact.sha256,
+      completionSha256: executed.evidence.completion.sha256,
+      sourceReport: {
+        label: storedSourceReport.label,
+        sha256: storedSourceReport.sha256,
+        bytes: storedSourceReport.bytes,
+      },
+      completion: {
+        label: storedCompletion.label,
+        sha256: storedCompletion.sha256,
+        bytes: storedCompletion.bytes,
+      },
+      log: { label: logLabel, sha256: storedLog.sha256, bytes: storedLog.bytes },
+      views: storedViews,
+      contactSheet: {
+        label: contactLabel,
+        sha256: storedContact.sha256,
+        width: storedContact.width,
+        height: storedContact.height,
+        bytes: storedContact.bytes,
+      },
+    };
+    const storedEvidence = await this.runs.putReview(input.runId, storedEvidenceValue, signal);
+    const nextState = await this.states.update(input.projectId, (current) => {
+      const active = currentRevision(current, input.runId, prepared.record.revisionId);
+      if (
+        active.specSha256 !== prepared.record.specSha256 ||
+        active.compiledArtifactId !== compiledArtifactId ||
+        active.proposalArtifactId !== input.proposalSha256
+      ) {
+        throw new PackwrightError(
+          'precondition_failed',
+          'Visual inputs changed while Minecraft was capturing the proposal.',
+        );
+      }
+      return replaceRevisionRecord(current, {
+        ...active,
+        clientCapture: {
+          authority: 'authoritative_environment_capture',
+          rendererVersion: 'minecraft-client-26.2',
+          profileId: profile.profileId,
+          profileVersion: profile.profileVersion,
+          planSha256: executed.plan.planSha256,
+          reportSha256: storedEvidence.sha256,
+          sourceReportSha256: executed.evidence.reportArtifact.sha256,
+          specSha256: prepared.record.specSha256,
+          compiledArtifactId,
+          proposalArtifactId: input.proposalSha256,
+          manifestSha256: loaded.project.manifestSha256,
+          datapackContentSha256: datapackArchive.sha256,
+          resourcepackContentSha256: resourcepackArchive.sha256,
+          runtimeManifestSha256: captureRuntime.runtime.sha256,
+          clientJarSha1: captureRuntime.client.jarSha1,
+          clientJarSha256: captureRuntime.client.jarSha256,
+          captureModSha256: captureRuntime.captureMod.sha256,
+          log: { label: logLabel, sha256: storedLog.sha256, bytes: storedLog.bytes },
+          contactSheet: contactReference,
+          views,
+          requiredViewIds: executed.plan.scenes.map((scene) => scene.id),
+        },
+      });
+    });
+    const record = currentRevision(nextState, input.runId, prepared.record.revisionId);
+    await this.verifyClientCaptureEvidence(
+      { project: loaded.project, state: nextState, record, spec: loaded.spec },
+      record,
+      signal,
+    );
+    const contactPath = `visual-runs/${input.runId}/captures/${contactLabel}-${storedContact.sha256}.png`;
+    return {
+      ...base,
+      ok: true,
+      status: 'passed',
+      captureReady: true,
+      planSha256: executed.plan.planSha256,
+      reportSha256: storedEvidence.sha256,
+      reportUri: visualRunClientCaptureReportUri(input.runId, record.revisionId),
+      contactSheet: asVisualFile(contactPath, contactSheet.png, 'image/png', 'render'),
+      contactSheetUri: visualRunClientCaptureContactSheetUri(input.runId, record.revisionId),
+      views: executed.evidence.views.map((view) => {
+        const reference = views[view.sceneId];
+        const raw = executed.artifacts[view.path];
+        if (reference === undefined || raw === undefined) {
+          throw new Error(`Stored capture view is unavailable: ${view.sceneId}`);
+        }
+        return {
+          name: view.sceneId,
+          width: view.width,
+          height: view.height,
+          sourceSha256: view.pngSha256,
+          normalizedSha256: reference.sha256,
+          bytes: reference.bytes,
+          uri: visualRunClientCaptureViewUri(input.runId, record.revisionId, view.sceneId),
+        };
+      }),
+      environment: executed.evidence.report.runtime,
+      diagnostics: [],
+    };
+  }
+
   async revise(input: VisualRevisionCreateInput, signal?: AbortSignal): Promise<VisualDraftResult> {
     return this.withProjectMutationLock(input.projectId, () => this.reviseUnlocked(input, signal));
   }
@@ -2255,10 +3130,18 @@ export class VisualWorkflow {
     runId: string,
     revisionId: string | undefined,
     proposalSha256: string,
+    expectedClientCaptureReportSha256?: string,
     signal?: AbortSignal,
   ): Promise<VisualCommitResult> {
     return this.withProjectMutationLock(projectId, () =>
-      this.commitUnlocked(projectId, runId, revisionId, proposalSha256, signal),
+      this.commitUnlocked(
+        projectId,
+        runId,
+        revisionId,
+        proposalSha256,
+        expectedClientCaptureReportSha256,
+        signal,
+      ),
     );
   }
 
@@ -2267,6 +3150,7 @@ export class VisualWorkflow {
     runId: string,
     revisionId: string | undefined,
     proposalSha256: string,
+    expectedClientCaptureReportSha256?: string,
     signal?: AbortSignal,
   ): Promise<VisualCommitResult> {
     const loaded = await this.loadRevision(projectId, runId, revisionId);
@@ -2282,6 +3166,49 @@ export class VisualWorkflow {
         'precondition_failed',
         'The accepted proposal is not the current proposal for this revision.',
       );
+    }
+    const captureSupport = clientCaptureReviewSupport(loaded.spec.reviewProfile);
+    let acceptedClientCapture: VisualRevisionState['clientCapture'];
+    if (this.requireAuthoritativeClientCapture && captureSupport !== 'unsupported') {
+      if (expectedClientCaptureReportSha256 === undefined) {
+        throw new PackwrightError(
+          'precondition_required',
+          'The exact Minecraft client-capture report SHA-256 is required before committing this supported review profile.',
+        );
+      }
+      if (loaded.record.clientCapture?.reportSha256 !== expectedClientCaptureReportSha256) {
+        throw new PackwrightError(
+          'precondition_failed',
+          'The accepted Minecraft client-capture report is missing or is not current for this revision.',
+          {
+            expectedClientCaptureReportSha256,
+            actualClientCaptureReportSha256: loaded.record.clientCapture?.reportSha256,
+          },
+        );
+      }
+      try {
+        await this.verifyClientCaptureEvidence(loaded, loaded.record, signal);
+      } catch (error) {
+        throw new PackwrightError(
+          'precondition_failed',
+          `The accepted Minecraft client-capture evidence failed verification: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      acceptedClientCapture = loaded.record.clientCapture;
+    } else if (expectedClientCaptureReportSha256 !== undefined) {
+      if (loaded.record.clientCapture?.reportSha256 !== expectedClientCaptureReportSha256) {
+        throw new PackwrightError(
+          'precondition_failed',
+          'The supplied Minecraft client-capture report is not current for this revision.',
+        );
+      }
+      await this.verifyClientCaptureEvidence(loaded, loaded.record, signal);
+      acceptedClientCapture = loaded.record.clientCapture;
+    } else if (loaded.record.clientCapture !== undefined) {
+      // Advisory/test-harness callers may omit the explicit acceptance hash,
+      // but an existing verified capture must still be bound into the receipt.
+      await this.verifyClientCaptureEvidence(loaded, loaded.record, signal);
+      acceptedClientCapture = loaded.record.clientCapture;
     }
     const artifact = await this.runs.readCompiled(runId, proposalSha256);
     const proposalBytes = artifact.contents['proposal.json'];
@@ -2307,6 +3234,7 @@ export class VisualWorkflow {
       loaded.project,
       proposalSha256,
       proposal,
+      acceptedClientCapture,
     );
     const receiptBytes = canonicalJsonBytes(receipt);
     const receiptSha256 = sha256Buffer(receiptBytes);
@@ -2693,6 +3621,22 @@ export class VisualWorkflow {
       }
     }
 
+    let clientCaptured = false;
+    if (loaded.record.clientCapture !== undefined) {
+      try {
+        await this.verifyClientCaptureEvidence(loaded);
+        clientCaptured = true;
+      } catch (error) {
+        diagnostics.push(
+          artifactDiagnostic(
+            'visual.client_capture.unreadable',
+            `Minecraft client-capture evidence failed verification: ${error instanceof Error ? error.message : String(error)}`,
+            loaded.spec.id,
+          ),
+        );
+      }
+    }
+
     let committed = false;
     if (
       bindingReady &&
@@ -2736,6 +3680,7 @@ export class VisualWorkflow {
         reviewProfile: rendered && reviewProfileReady,
         binding: bindingReady,
         committed,
+        clientCaptured,
       },
       diagnostics,
       availableTextureResourceIds,
@@ -2773,6 +3718,7 @@ export class VisualWorkflow {
           reviewProfile: false,
           binding: false,
           committed: false,
+          clientCaptured: false,
         },
         diagnostics,
         truncated: false,
@@ -2831,6 +3777,7 @@ export class VisualWorkflow {
     readonly revisionId?: string;
     readonly result?: VisualValidationResult;
     readonly readiness?: VisualArtifactReadiness;
+    readonly clientCaptureSupport?: ReturnType<typeof clientCaptureReviewSupport>;
   }> {
     const project = await inspectVisualProject(this.workspace, projectId);
     let selectedRunId = runId;
@@ -2856,6 +3803,7 @@ export class VisualWorkflow {
       runId: selectedRunId,
       revisionId: loaded.record.revisionId,
       readiness: verified.readiness,
+      clientCaptureSupport: clientCaptureReviewSupport(loaded.spec.reviewProfile),
       result: {
         ...validation,
         ok: project.ready && !diagnostics.some((entry) => entry.severity === 'error'),
@@ -2954,12 +3902,19 @@ export class VisualWorkflow {
     input:
       | { readonly kind: 'project_manifest' | 'project_graph'; readonly projectId: string }
       | {
-          readonly kind: 'spec' | 'contact_sheet' | 'render_report' | 'review' | 'binding';
+          readonly kind:
+            | 'spec'
+            | 'contact_sheet'
+            | 'render_report'
+            | 'review'
+            | 'binding'
+            | 'client_capture_report'
+            | 'client_contact_sheet';
           readonly runId: string;
           readonly revisionId: string;
         }
       | {
-          readonly kind: 'view';
+          readonly kind: 'view' | 'client_view';
           readonly runId: string;
           readonly revisionId: string;
           readonly view: string;
@@ -2984,6 +3939,53 @@ export class VisualWorkflow {
     if (input.kind === 'spec') {
       const revision = await this.runs.readRevision(input.runId, input.revisionId);
       return { mimeType: 'application/json', data: canonicalJsonBytes(revision.modelSpec) };
+    }
+    if (
+      input.kind === 'client_capture_report' ||
+      input.kind === 'client_contact_sheet' ||
+      input.kind === 'client_view'
+    ) {
+      let evidence: StoredClientCaptureEvidence;
+      try {
+        evidence = await this.verifyClientCaptureEvidence(loaded, states.record);
+      } catch (error) {
+        throw new PackwrightError(
+          'precondition_failed',
+          `Minecraft client-capture evidence failed verification: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      if (input.kind === 'client_capture_report') {
+        return { mimeType: 'application/json', data: canonicalJsonBytes(evidence) };
+      }
+      const reference =
+        input.kind === 'client_contact_sheet'
+          ? states.record.clientCapture?.contactSheet
+          : states.record.clientCapture?.views['view' in input ? input.view : ''];
+      if (reference === undefined) {
+        throw new PackwrightError(
+          'not_found',
+          'Requested Minecraft client framebuffer capture is not available.',
+        );
+      }
+      const png = await this.runs.readPng(
+        input.runId,
+        'capture',
+        reference.label,
+        reference.sha256,
+      );
+      if (input.kind === 'client_view') {
+        const image = decodePng(png.data);
+        const preview = createBoundedClientPreview({
+          id: input.view,
+          width: image.width,
+          height: image.height,
+          image,
+          png: png.data,
+          sha256: reference.sha256,
+        });
+        return { mimeType: 'image/png', data: preview.png };
+      }
+      return { mimeType: 'image/png', data: png.data };
     }
     if (input.kind === 'contact_sheet' || input.kind === 'view') {
       const render = loaded.record.render;

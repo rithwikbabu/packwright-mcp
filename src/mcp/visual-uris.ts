@@ -13,6 +13,12 @@ export const VISUAL_RUN_RENDER_REPORT_URI_TEMPLATE =
   'packwright://visual/runs/{runId}/revisions/{revisionId}/render-report';
 export const VISUAL_RUN_VIEW_URI_TEMPLATE =
   'packwright://visual/runs/{runId}/revisions/{revisionId}/views/{view}';
+export const VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE =
+  'packwright://visual/runs/{runId}/revisions/{revisionId}/client-capture/report';
+export const VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE =
+  'packwright://visual/runs/{runId}/revisions/{revisionId}/client-capture/contact-sheet';
+export const VISUAL_RUN_CLIENT_CAPTURE_VIEW_URI_TEMPLATE =
+  'packwright://visual/runs/{runId}/revisions/{revisionId}/client-capture/views/{view}';
 export const VISUAL_RUN_REVIEW_URI_TEMPLATE =
   'packwright://visual/runs/{runId}/revisions/{revisionId}/review';
 export const VISUAL_RUN_BINDING_URI_TEMPLATE =
@@ -65,6 +71,22 @@ export function visualRunRenderReportUri(runId: string, revisionId: string): str
 
 export function visualRunViewUri(runId: string, revisionId: string, view: string): string {
   return `packwright://visual/runs/${validatedDraftId(runId, 'run ID')}/revisions/${validatedDraftId(revisionId, 'revision ID')}/views/${validatedView(view)}`;
+}
+
+export function visualRunClientCaptureReportUri(runId: string, revisionId: string): string {
+  return `packwright://visual/runs/${validatedDraftId(runId, 'run ID')}/revisions/${validatedDraftId(revisionId, 'revision ID')}/client-capture/report`;
+}
+
+export function visualRunClientCaptureContactSheetUri(runId: string, revisionId: string): string {
+  return `packwright://visual/runs/${validatedDraftId(runId, 'run ID')}/revisions/${validatedDraftId(revisionId, 'revision ID')}/client-capture/contact-sheet`;
+}
+
+export function visualRunClientCaptureViewUri(
+  runId: string,
+  revisionId: string,
+  view: string,
+): string {
+  return `packwright://visual/runs/${validatedDraftId(runId, 'run ID')}/revisions/${validatedDraftId(revisionId, 'revision ID')}/client-capture/views/${validatedView(view)}`;
 }
 
 export function visualRunReviewUri(runId: string, revisionId: string): string {

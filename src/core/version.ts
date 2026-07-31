@@ -1,4 +1,9 @@
 import { MINECRAFT_26_2_VISUAL_CAPABILITIES } from '../visual/capabilities.js';
+import {
+  CLIENT_CAPTURE_REVIEW_SUPPORT,
+  type ClientCaptureReviewSupport,
+} from '../visual/client-capture-support.js';
+import type { ReviewProfileId } from '../visual/review-profile.js';
 import type {
   MinecraftVersion,
   PackFormat,
@@ -140,11 +145,44 @@ export interface ResourcePackProfile {
   };
 }
 
+export interface ClientCaptureLibraryProfile {
+  readonly coordinate: string;
+  readonly sha1: string;
+  readonly sha256: string;
+  readonly size: number;
+  readonly repository: 'https://maven.fabricmc.net/';
+}
+
+export interface ClientCaptureProfile {
+  readonly protocolVersion: 1;
+  readonly authority: 'authoritative_environment_capture';
+  readonly javaMajor: 25;
+  readonly graphicsBackend: 'opengl';
+  readonly loader: {
+    readonly version: '0.19.3';
+    readonly mainClass: 'net.fabricmc.loader.impl.launch.knot.KnotClient';
+    readonly profileUrl: string;
+    readonly libraries: readonly ClientCaptureLibraryProfile[];
+  };
+  readonly captureMod: {
+    readonly id: 'packwright_capture';
+    readonly version: string;
+    readonly protocolVersion: 1;
+    /** Package-relative, immutable distribution path. */
+    readonly runtimePath: string;
+    readonly sha256: string;
+    readonly size: number;
+  };
+  readonly reviewProfiles: Readonly<Record<ReviewProfileId, ClientCaptureReviewSupport>>;
+  readonly redistributableMinecraftArtifacts: false;
+}
+
 export interface VersionProfile {
   readonly minecraftVersion: MinecraftVersion;
   readonly dataPack: DataPackProfile;
   readonly resourcePack: ResourcePackProfile;
   readonly visualCapabilities: VisualCapabilityProfile;
+  readonly clientCapture: ClientCaptureProfile;
   /** Compatibility alias for dataPack.packFormat used by stable datapack contracts. */
   readonly packFormat: PackFormat;
   /** Compatibility alias for dataPack.javaMajor. */
@@ -423,11 +461,92 @@ export const MINECRAFT_26_2_RESOURCE_PACK: ResourcePackProfile = Object.freeze({
   }),
 });
 
+const fabricLibrary = (
+  coordinate: string,
+  sha1: string,
+  sha256: string,
+  size: number,
+): ClientCaptureLibraryProfile =>
+  Object.freeze({
+    coordinate,
+    sha1,
+    sha256,
+    size,
+    repository: 'https://maven.fabricmc.net/',
+  });
+
+export const MINECRAFT_26_2_CLIENT_CAPTURE: ClientCaptureProfile = Object.freeze({
+  protocolVersion: 1,
+  authority: 'authoritative_environment_capture',
+  javaMajor: 25,
+  graphicsBackend: 'opengl',
+  loader: Object.freeze({
+    version: '0.19.3',
+    mainClass: 'net.fabricmc.loader.impl.launch.knot.KnotClient',
+    profileUrl: 'https://meta.fabricmc.net/v2/versions/loader/26.2/0.19.3/profile/json',
+    libraries: Object.freeze([
+      fabricLibrary(
+        'org.ow2.asm:asm:9.10.1',
+        'ada2141c0cc52ee8f5c48cd5fa4ce0e794f22236',
+        'ed825d10ab1399c8c0cb669e688cf0c8c82629b4c8399b58352b68e92ca10fcb',
+        126_151,
+      ),
+      fabricLibrary(
+        'org.ow2.asm:asm-analysis:9.10.1',
+        '8d49f14d51f632cb1d87c88d1ceaf50db0d8af1b',
+        'dede75a21306b65974ecd8f87114ff6970f09fb794157a4ca09ab25c888c2bfc',
+        35_140,
+      ),
+      fabricLibrary(
+        'org.ow2.asm:asm-commons:9.10.1',
+        '4229e4c55fd8e01c23f9fe9884075cc628aacc50',
+        '6d0abefb7cbf972ea16edb37ec14835372505063a45f976ab7ea889ed9497895',
+        74_840,
+      ),
+      fabricLibrary(
+        'org.ow2.asm:asm-tree:9.10.1',
+        'e244332a17564c1d1572449399a842de35881be2',
+        '3dfb0d5b6a106cd40b5b250e39935fbf2f927f4477546a5369a3ac609cf0506b',
+        51_958,
+      ),
+      fabricLibrary(
+        'org.ow2.asm:asm-util:9.10.1',
+        '7bb9d450e8d4cbf9f9e04096c44bbfe7fba80b15',
+        '1bb99d091fba2597dc6d51193e9bbcf0d8447e7ed96bd8f0198b18152f09655c',
+        95_628,
+      ),
+      fabricLibrary(
+        'net.fabricmc:sponge-mixin:0.17.3+mixin.0.8.7',
+        '41c4a3984a80f4679e759fb9f495587acc5cdac7',
+        '9e90efec71d2bad5b96c9089f019d14a8603227d3c5f408d12f53fae89d99d41',
+        1_540_060,
+      ),
+      fabricLibrary(
+        'net.fabricmc:fabric-loader:0.19.3',
+        '354dfaa02d0552e11867f85dff7cdbfaf813ba3e',
+        '73eed8c34bbad0320a2a3cba5346351e822f74f82b3f3c060574068474132958',
+        1_976_502,
+      ),
+    ]),
+  }),
+  captureMod: Object.freeze({
+    id: 'packwright_capture',
+    version: '0.4.0',
+    protocolVersion: 1,
+    runtimePath: 'capture-mod/runtime/packwright-capture-mod-0.4.0.jar',
+    sha256: '761ebb99192d2c19f79cc309d0daee5a652d38669e6e7d6286043597cb54bf76',
+    size: 93_307,
+  }),
+  reviewProfiles: CLIENT_CAPTURE_REVIEW_SUPPORT,
+  redistributableMinecraftArtifacts: false,
+});
+
 export const MINECRAFT_26_2: VersionProfile = Object.freeze({
   minecraftVersion: '26.2',
   dataPack: MINECRAFT_26_2_DATA_PACK,
   resourcePack: MINECRAFT_26_2_RESOURCE_PACK,
   visualCapabilities: MINECRAFT_26_2_VISUAL_CAPABILITIES,
+  clientCapture: MINECRAFT_26_2_CLIENT_CAPTURE,
   // Compatibility aliases for the established datapack-facing API.
   packFormat: MINECRAFT_26_2_DATA_PACK.packFormat,
   javaMajor: MINECRAFT_26_2_DATA_PACK.javaMajor,

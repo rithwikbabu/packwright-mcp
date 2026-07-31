@@ -246,6 +246,8 @@ const CONTACT_COLUMNS = 4;
 const CONTACT_CELL_SIZE = 100;
 const CONTACT_INSET = 4;
 const MAX_CONTACT_SHEET_BYTES = 720 * 1024;
+const CLIENT_PREVIEW_MAX_DIMENSION = 352;
+const MAX_CLIENT_PREVIEW_BYTES = 600 * 1024;
 const MAX_RASTER_SAMPLES = 50 * 1024 * 1024;
 const MODEL_CENTER: Vec3 = [8, 8, 8];
 const TRANSPARENT: Rgba = [0, 0, 0, 0];
@@ -3044,6 +3046,38 @@ export function createContactSheet(views: readonly RenderedView[]): RenderedCont
   const image: PixelImage = { width, height, data };
   const png = encodePng(image, { maxFileBytes: MAX_CONTACT_SHEET_BYTES });
   return { width, height, image, png, sha256: sha256(png), placements };
+}
+
+/**
+ * Produces a deterministic, payload-safe derivative of an authoritative client
+ * framebuffer. The original PNG and its hashes remain the evidence of record;
+ * this derivative exists only so an MCP image resource always fits beneath the
+ * one-MiB transport envelope after base64 encoding.
+ */
+export function createBoundedClientPreview(view: RenderedView): RenderedView {
+  if (!REVIEW_VIEW_ID_PATTERN.test(view.id)) {
+    throw new Error(`Invalid render view ${view.id}.`);
+  }
+  validateTexture(view.image, `Client framebuffer ${view.id}`);
+  const scale = Math.min(
+    1,
+    CLIENT_PREVIEW_MAX_DIMENSION / view.width,
+    CLIENT_PREVIEW_MAX_DIMENSION / view.height,
+  );
+  const width = Math.max(1, Math.floor(view.width * scale));
+  const height = Math.max(1, Math.floor(view.height * scale));
+  const data = Buffer.alloc(width * height * 4);
+  drawNearest(data, width, view.image, 0, 0, width, height);
+  const image: PixelImage = { width, height, data };
+  const png = encodePng(image, { maxFileBytes: MAX_CLIENT_PREVIEW_BYTES });
+  return {
+    id: view.id,
+    width,
+    height,
+    image,
+    png,
+    sha256: sha256(png),
+  };
 }
 
 /** Renders a cuboid visual draft through fixed CPU-only camera and lighting paths. */

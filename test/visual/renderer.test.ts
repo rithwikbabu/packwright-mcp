@@ -5,6 +5,7 @@ import { MAX_MODEL_PARTS, parseModelSpec } from '../../src/visual/model-spec.js'
 import { decodePng, type PixelImage } from '../../src/visual/png.js';
 import {
   CPU_RENDER_LIMITS,
+  createBoundedClientPreview,
   renderCuboidDraft,
   renderModelSpec,
   solidTexture,
@@ -62,6 +63,27 @@ describe('deterministic CPU visual renderer', () => {
     expect(first.views.find((view) => view.id === 'turntable_front')?.sha256).not.toBe(
       first.views.find((view) => view.id === 'turntable_rear')?.sha256,
     );
+  });
+
+  it('creates deterministic MCP-safe previews without changing authoritative source evidence', () => {
+    const image = gradientTexture(1280, 720);
+    const source = {
+      id: 'fp_right_steve',
+      width: image.width,
+      height: image.height,
+      image,
+      png: Buffer.from('authoritative-framebuffer-evidence'),
+      sha256: 'f'.repeat(64),
+    };
+    const first = createBoundedClientPreview(source);
+    const second = createBoundedClientPreview(source);
+
+    expect(first).toMatchObject({ id: source.id, width: 352, height: 198 });
+    expect(first.sha256).toBe(second.sha256);
+    expect(first.png).toEqual(second.png);
+    expect(first.png.length).toBeLessThan(600 * 1024);
+    expect(first.sha256).not.toBe(source.sha256);
+    expect(decodePng(first.png)).toMatchObject({ width: 352, height: 198 });
   });
 
   it('renders held-item profile views deterministically with visible reference geometry', () => {

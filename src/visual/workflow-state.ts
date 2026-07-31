@@ -20,7 +20,7 @@ export interface VisualPngReference {
   readonly width: number;
   readonly height: number;
   readonly bytes: number;
-  readonly source?: 'generated' | 'imported' | undefined;
+  readonly source?: 'captured' | 'generated' | 'imported' | undefined;
   readonly sourceSha256?: string | undefined;
   readonly strippedMetadata?: boolean | undefined;
 }
@@ -45,6 +45,30 @@ export interface VisualRenderReviewReference {
   readonly reviewReady: boolean;
 }
 
+export interface VisualClientCaptureReferences {
+  readonly authority: 'authoritative_environment_capture';
+  readonly rendererVersion: 'minecraft-client-26.2';
+  readonly profileId: ReviewProfileId;
+  readonly profileVersion: number;
+  readonly planSha256: string;
+  readonly reportSha256: string;
+  readonly sourceReportSha256: string;
+  readonly specSha256: string;
+  readonly compiledArtifactId: string;
+  readonly proposalArtifactId: string;
+  readonly manifestSha256: string;
+  readonly datapackContentSha256: string;
+  readonly resourcepackContentSha256: string;
+  readonly runtimeManifestSha256: string;
+  readonly clientJarSha1: string;
+  readonly clientJarSha256: string;
+  readonly captureModSha256: string;
+  readonly log: Readonly<{ label: string; sha256: string; bytes: number }>;
+  readonly contactSheet: VisualPngReference;
+  readonly views: Readonly<Record<string, VisualPngReference>>;
+  readonly requiredViewIds: readonly string[];
+}
+
 export interface VisualRevisionState {
   readonly runId: string;
   readonly revisionId: string;
@@ -53,9 +77,92 @@ export interface VisualRevisionState {
   readonly compiledArtifactId?: string | undefined;
   readonly proposalArtifactId?: string | undefined;
   readonly render?: VisualRenderReferences | undefined;
+  readonly clientCapture?: VisualClientCaptureReferences | undefined;
   readonly reviewSha256?: string | undefined;
   readonly committedTransactionId?: string | undefined;
   readonly committedReceiptSha256?: string | undefined;
+}
+
+function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Visual workflow client capture is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.authority !== 'authoritative_environment_capture' ||
+    record.rendererVersion !== 'minecraft-client-26.2' ||
+    !isReviewProfileId(record.profileId) ||
+    !Array.isArray(record.requiredViewIds) ||
+    typeof record.clientJarSha1 !== 'string' ||
+    !/^[a-f0-9]{40}$/u.test(record.clientJarSha1)
+  ) {
+    throw new Error('Visual workflow client-capture identity is invalid.');
+  }
+  const viewsValue = record.views;
+  if (viewsValue === null || typeof viewsValue !== 'object' || Array.isArray(viewsValue)) {
+    throw new Error('Visual workflow client-capture views are invalid.');
+  }
+  const views: Record<string, VisualPngReference> = {};
+  for (const [view, reference] of Object.entries(viewsValue)) {
+    if (!VIEW_PATTERN.test(view))
+      throw new Error('Visual workflow client-capture view is invalid.');
+    views[view] = pngReference(reference);
+    if (views[view].sourceSha256 === undefined) {
+      throw new Error('Visual workflow client-capture view has no source framebuffer hash.');
+    }
+  }
+  const requiredViewIds = record.requiredViewIds.map((view) => {
+    if (typeof view !== 'string' || !VIEW_PATTERN.test(view) || views[view] === undefined) {
+      throw new Error('Visual workflow required client-capture view is invalid or missing.');
+    }
+    return view;
+  });
+  if (new Set(requiredViewIds).size !== requiredViewIds.length) {
+    throw new Error('Visual workflow required client-capture views are duplicated.');
+  }
+  return {
+    authority: record.authority,
+    rendererVersion: record.rendererVersion,
+    profileId: record.profileId,
+    profileVersion: positiveInteger(record.profileVersion, 'client-capture profile version'),
+    planSha256: contentId(record.planSha256, 'client-capture plan hash'),
+    reportSha256: contentId(record.reportSha256, 'client-capture report hash'),
+    specSha256: contentId(record.specSha256, 'client-capture spec hash'),
+    compiledArtifactId: contentId(record.compiledArtifactId, 'client-capture compiled artifact ID'),
+    proposalArtifactId: contentId(record.proposalArtifactId, 'client-capture proposal artifact ID'),
+    manifestSha256: contentId(record.manifestSha256, 'client-capture manifest hash'),
+    datapackContentSha256: contentId(record.datapackContentSha256, 'client-capture datapack hash'),
+    resourcepackContentSha256: contentId(
+      record.resourcepackContentSha256,
+      'client-capture resource-pack hash',
+    ),
+    runtimeManifestSha256: contentId(
+      record.runtimeManifestSha256,
+      'client-capture runtime-manifest hash',
+    ),
+    clientJarSha1: record.clientJarSha1,
+    clientJarSha256: contentId(record.clientJarSha256, 'client-capture client JAR hash'),
+    captureModSha256: contentId(record.captureModSha256, 'client-capture mod hash'),
+    sourceReportSha256: contentId(record.sourceReportSha256, 'client-capture source report hash'),
+    log: (() => {
+      const value = record.log;
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+        throw new Error('Visual workflow client-capture log reference is invalid.');
+      }
+      const log = value as Record<string, unknown>;
+      if (typeof log.label !== 'string' || !VIEW_PATTERN.test(log.label)) {
+        throw new Error('Visual workflow client-capture log label is invalid.');
+      }
+      return {
+        label: log.label,
+        sha256: contentId(log.sha256, 'client-capture log hash'),
+        bytes: positiveInteger(log.bytes, 'client-capture log byte count'),
+      };
+    })(),
+    contactSheet: pngReference(record.contactSheet),
+    views,
+    requiredViewIds,
+  };
 }
 
 export interface VisualProjectWorkflowState {
@@ -94,7 +201,12 @@ function pngReference(value: unknown, expectedLabel?: string): VisualPngReferenc
     throw new Error('Visual workflow PNG label is invalid.');
   }
   const source = record.source;
-  if (source !== undefined && source !== 'generated' && source !== 'imported') {
+  if (
+    source !== undefined &&
+    source !== 'captured' &&
+    source !== 'generated' &&
+    source !== 'imported'
+  ) {
     throw new Error('Visual workflow PNG source is invalid.');
   }
   const sourceSha256 =
@@ -200,6 +312,8 @@ function revisionState(value: unknown, revisionId: string): VisualRevisionState 
       ...(review === undefined ? {} : { review }),
     };
   }
+  const clientCapture =
+    record.clientCapture === undefined ? undefined : clientCaptureReference(record.clientCapture);
 
   const optionalId = (field: string): string | undefined => {
     const candidate = record[field];
@@ -225,6 +339,7 @@ function revisionState(value: unknown, revisionId: string): VisualRevisionState 
       ? {}
       : { proposalArtifactId: optionalId('proposalArtifactId') }),
     ...(render === undefined ? {} : { render }),
+    ...(clientCapture === undefined ? {} : { clientCapture }),
     ...(optionalId('reviewSha256') === undefined
       ? {}
       : { reviewSha256: optionalId('reviewSha256') }),

@@ -11,6 +11,7 @@ const MAX_JSON_BYTES = 4 * 1024 * 1024;
 const MAX_COMPILED_FILES = 2048;
 const MAX_COMPILED_BYTES = 64 * 1024 * 1024;
 const DEFAULT_PNG_READ_LIMIT = 8 * 1024 * 1024;
+const MAX_CAPTURE_BLOB_BYTES = 16 * 1024 * 1024;
 
 export const VISUAL_RUN_STORE_LIMITS = Object.freeze({
   maxJsonBytes: MAX_JSON_BYTES,
@@ -56,7 +57,7 @@ export interface VisualRevisionRecord {
 
 export interface StoredPngArtifact {
   readonly runId: string;
-  readonly kind: 'render' | 'texture';
+  readonly kind: 'capture' | 'render' | 'texture';
   readonly sha256: string;
   readonly path: string;
   readonly width: number;
@@ -72,6 +73,19 @@ export interface StoredJsonArtifact {
   readonly sha256: string;
   readonly path: string;
   readonly bytes: number;
+}
+
+export interface StoredCaptureBlob {
+  readonly runId: string;
+  readonly label: string;
+  readonly extension: 'json' | 'log' | 'png';
+  readonly sha256: string;
+  readonly path: string;
+  readonly bytes: number;
+}
+
+export interface ReadCaptureBlob extends StoredCaptureBlob {
+  readonly data: Buffer;
 }
 
 export interface StoredCompiledArtifact {
@@ -677,6 +691,19 @@ export class VisualRunStore {
     return this.putPng(runId, 'render', label, png, options);
   }
 
+  async putCapture(
+    runId: string,
+    label: string,
+    png: Uint8Array,
+    options: {
+      readonly limits?: PngLimits | undefined;
+      readonly signal?: AbortSignal | undefined;
+    } = {},
+  ): Promise<StoredPngArtifact> {
+    requireArtifactLabel(label);
+    return this.putPng(runId, 'capture', label, png, options);
+  }
+
   private async putPng(
     runId: string,
     kind: StoredPngArtifact['kind'],
@@ -690,7 +717,8 @@ export class VisualRunStore {
     await assertDirectory(runDirectory);
     const normalized = normalizePng(input, confinedPngLimits(options.limits));
     abortIfNeeded(options.signal);
-    const collection = kind === 'texture' ? 'textures' : 'renders';
+    const collection =
+      kind === 'texture' ? 'textures' : kind === 'capture' ? 'captures' : 'renders';
     const filename = `${label}-${normalized.sha256}.png`;
     const destination = path.join(runDirectory, collection, filename);
     await writeImmutableFile(destination, normalized.png);
@@ -717,7 +745,8 @@ export class VisualRunStore {
     await this.ensureSafeRoot(false);
     requireArtifactLabel(label);
     requireContentId(sha256, 'PNG hash');
-    const collection = kind === 'texture' ? 'textures' : 'renders';
+    const collection =
+      kind === 'texture' ? 'textures' : kind === 'capture' ? 'captures' : 'renders';
     const base = path.join(this.runDirectory(runId), collection, `${label}-${sha256}`);
     const data = await readImmutableFile(`${base}.png`, sha256, DEFAULT_PNG_READ_LIMIT);
     const decoded = decodePng(data);
@@ -740,7 +769,8 @@ export class VisualRunStore {
     kind: StoredPngArtifact['kind'],
   ): Promise<readonly { readonly label: string; readonly sha256: string }[]> {
     if (!(await this.ensureSafeRoot(false))) return [];
-    const collection = kind === 'texture' ? 'textures' : 'renders';
+    const collection =
+      kind === 'texture' ? 'textures' : kind === 'capture' ? 'captures' : 'renders';
     const directory = path.join(this.runDirectory(runId), collection);
     let entries;
     try {
@@ -782,6 +812,62 @@ export class VisualRunStore {
     const destination = path.join(runDirectory, 'reviews', `${sha256}.json`);
     await writeImmutableFile(destination, bytes);
     return { runId, kind: 'review', sha256, path: destination, bytes: bytes.length };
+  }
+
+  async putCaptureBlob(
+    runId: string,
+    label: string,
+    extension: StoredCaptureBlob['extension'],
+    input: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<StoredCaptureBlob> {
+    abortIfNeeded(signal);
+    requireArtifactLabel(label);
+    const data = Buffer.from(input);
+    if (data.length === 0 || data.length > MAX_CAPTURE_BLOB_BYTES) {
+      throw new Error(
+        `Capture evidence blob must contain 1-${String(MAX_CAPTURE_BLOB_BYTES)} bytes.`,
+      );
+    }
+    await this.ensureSafeRoot(false);
+    const runDirectory = this.runDirectory(runId);
+    await assertDirectory(runDirectory);
+    const sha256 = hash(data);
+    const destination = path.join(
+      runDirectory,
+      'captures',
+      'evidence',
+      `${label}-${sha256}.${extension}`,
+    );
+    await writeImmutableFile(destination, data);
+    return { runId, label, extension, sha256, path: destination, bytes: data.length };
+  }
+
+  async readCaptureBlob(
+    runId: string,
+    label: string,
+    extension: StoredCaptureBlob['extension'],
+    sha256: string,
+  ): Promise<ReadCaptureBlob> {
+    await this.ensureSafeRoot(false);
+    requireArtifactLabel(label);
+    requireContentId(sha256, 'Capture evidence hash');
+    const filename = path.join(
+      this.runDirectory(runId),
+      'captures',
+      'evidence',
+      `${label}-${sha256}.${extension}`,
+    );
+    const data = await readImmutableFile(filename, sha256, MAX_CAPTURE_BLOB_BYTES);
+    return {
+      runId,
+      label,
+      extension,
+      sha256,
+      path: filename,
+      bytes: data.length,
+      data,
+    };
   }
 
   async readReview(runId: string, sha256: string): Promise<ReadJsonArtifact> {

@@ -3,3 +3,7 @@ coverage
 node_modules
 package-lock.json
 test/fixtures/**
+capture-mod/.gradle
+capture-mod/build
+capture-mod/run
+capture-mod/runtime/*.jar

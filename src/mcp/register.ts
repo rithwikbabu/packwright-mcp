@@ -41,6 +41,8 @@ import {
   VisualCapabilitiesResultSchema,
   VisualCommitInputSchema,
   VisualCommitResultSchema,
+  VisualClientCaptureInputSchema,
+  VisualClientCaptureResultSchema,
   VisualCompileInputSchema,
   VisualConnectInputSchema,
   VisualDraftResultSchema,
@@ -74,6 +76,9 @@ import {
   VISUAL_PROJECT_GRAPH_URI_TEMPLATE,
   VISUAL_PROJECT_MANIFEST_URI_TEMPLATE,
   VISUAL_RUN_BINDING_URI_TEMPLATE,
+  VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE,
+  VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE,
+  VISUAL_RUN_CLIENT_CAPTURE_VIEW_URI_TEMPLATE,
   VISUAL_RUN_CONTACT_SHEET_URI_TEMPLATE,
   VISUAL_RUN_RENDER_REPORT_URI_TEMPLATE,
   VISUAL_RUN_REVIEW_URI_TEMPLATE,
@@ -286,6 +291,49 @@ async function executeVisualRender(
       ],
     };
     return enforceToolPayloadLimit(response);
+  } catch (error) {
+    return enforceToolPayloadLimit(executionError(error));
+  }
+}
+
+async function executeVisualClientCapture(
+  service: PackwrightService,
+  input: Parameters<PackwrightService['captureVisual']>[0],
+  context: PackwrightServiceContext,
+): Promise<CallToolResult> {
+  try {
+    const result = await service.captureVisual(input, context);
+    const content: CallToolResult['content'] = [{ type: 'text', text: textFallback(result) }];
+    if (result.contactSheetUri !== undefined) {
+      const contactSheet = await service.readVisualResource(
+        {
+          kind: 'client_contact_sheet',
+          runId: result.runId,
+          revisionId: result.revisionId,
+        },
+        context,
+      );
+      if (contactSheet.mimeType !== 'image/png' || contactSheet.encoding !== 'base64') {
+        throw new Error('Client capture returned an invalid contact-sheet resource.');
+      }
+      content.push({ type: 'image', data: contactSheet.data, mimeType: 'image/png' });
+    }
+    const response: CallToolResult = {
+      ...(result.ok && result.status === 'passed' ? {} : { isError: true }),
+      structuredContent: result,
+      content,
+    };
+    if (fitsSerializedPayload(response)) return response;
+
+    // Full-resolution Minecraft framebuffers remain available through the
+    // hash-bound resource URI in structuredContent. Do not turn a successful,
+    // expensive capture into a size-limit failure solely because its optional
+    // inline convenience image does not fit MCP's one-MiB envelope.
+    return enforceToolPayloadLimit({
+      ...(result.ok && result.status === 'passed' ? {} : { isError: true }),
+      structuredContent: result,
+      content: [{ type: 'text', text: textFallback(result) }],
+    });
   } catch (error) {
     return enforceToolPayloadLimit(executionError(error));
   }
@@ -687,6 +735,25 @@ function registerTools(server: McpServer, service: PackwrightService): void {
   );
 
   server.registerTool(
+    'visual_capture',
+    {
+      title: 'Capture With Minecraft Client',
+      description:
+        'Launch the pinned official Minecraft 26.2 client in a disposable game directory with only Packwright’s capture mod, load the exact proposal, and return hash-bound framebuffer evidence from Minecraft’s actual renderer. Requires explicit client-capture setup and a graphical macOS session; never falls back to CPU images.',
+      inputSchema: VisualClientCaptureInputSchema,
+      outputSchema: VisualClientCaptureResultSchema,
+      annotations: {
+        title: 'Capture With Minecraft Client',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) => executeVisualClientCapture(service, input, serviceContext(context)),
+  );
+
+  server.registerTool(
     'visual_revision_create',
     {
       title: 'Repair Visual Draft',
@@ -711,7 +778,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Commit Accepted Visual',
       description:
-        'After explicit visual acceptance and a passing current profile report, atomically install every proposed datapack and resource-pack file using the proposal hash and captured per-file SHA preconditions.',
+        'After explicit acceptance, atomically install every proposed datapack and resource-pack file. Profiles supported by the official client require the exact verified client-capture report SHA-256, which is bound into the durable commit receipt.',
       inputSchema: VisualCommitInputSchema,
       outputSchema: VisualCommitResultSchema,
       annotations: {
@@ -731,7 +798,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Validate Paired Visual Project',
       description:
-        'Combine paired-pack metadata, strict ModelSpec, PNG, geometry, graph, immutable profile-report readiness and advisory measurements, binding, vanilla-command, and optional GameTest validation with normalized diagnostics.',
+        'Combine paired-pack, model, graph, CPU preview, binding, vanilla-command, and optional GameTest validation. Existing official-client evidence is authoritative by default for supported profiles; set requireClientCapture false only for an explicit fast advisory pass.',
       inputSchema: VisualValidateInputSchema,
       outputSchema: VisualValidateResultSchema,
       annotations: {
@@ -1019,7 +1086,14 @@ function registerResources(server: McpServer, service: PackwrightService): void 
 
   const runResourceInput = (
     variables: Record<string, string | string[]>,
-    kind: 'spec' | 'contact_sheet' | 'render_report' | 'review' | 'binding',
+    kind:
+      | 'spec'
+      | 'contact_sheet'
+      | 'render_report'
+      | 'review'
+      | 'binding'
+      | 'client_capture_report'
+      | 'client_contact_sheet',
   ) =>
     ({
       kind,
@@ -1069,6 +1143,23 @@ function registerResources(server: McpServer, service: PackwrightService): void 
       kind: 'binding' as const,
       mimeType: 'application/json',
     },
+    {
+      name: 'visual-client-capture-report',
+      template: VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE,
+      title: 'Minecraft Client Capture Report',
+      description:
+        'Hash-bound provenance and environment evidence from the actual Minecraft 26.2 renderer.',
+      kind: 'client_capture_report' as const,
+      mimeType: 'application/json',
+    },
+    {
+      name: 'visual-client-contact-sheet',
+      template: VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE,
+      title: 'Minecraft Client Capture Contact Sheet',
+      description: 'A bounded composition of verified Minecraft framebuffer captures.',
+      kind: 'client_contact_sheet' as const,
+      mimeType: 'image/png',
+    },
   ]) {
     server.registerResource(
       resource.name,
@@ -1103,6 +1194,30 @@ function registerResources(server: McpServer, service: PackwrightService): void 
         await service.readVisualResource(
           {
             kind: 'view',
+            runId: templateValue(variables, 'runId'),
+            revisionId: templateValue(variables, 'revisionId'),
+            view: templateValue(variables, 'view'),
+          },
+          serviceContext(context),
+        ),
+      ),
+  );
+
+  server.registerResource(
+    'visual-client-capture-view',
+    new ResourceTemplate(VISUAL_RUN_CLIENT_CAPTURE_VIEW_URI_TEMPLATE, { list: undefined }),
+    {
+      title: 'Minecraft Client Framebuffer Preview',
+      description:
+        'A bounded deterministic preview of one actual Minecraft framebuffer; the capture report retains the full-resolution source and normalized PNG hashes.',
+      mimeType: 'image/png',
+    },
+    async (uri, variables, context) =>
+      visualResource(
+        uri,
+        await service.readVisualResource(
+          {
+            kind: 'client_view',
             runId: templateValue(variables, 'runId'),
             revisionId: templateValue(variables, 'revisionId'),
             view: templateValue(variables, 'view'),
@@ -1389,7 +1504,7 @@ export function createPackwrightMcpServer(
   const server = new McpServer(
     {
       name: options.name ?? 'packwright-mcp',
-      version: options.version ?? '0.3.0',
+      version: options.version ?? '0.4.0',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );

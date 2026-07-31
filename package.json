@@ -1,7 +1,7 @@
 {
   "name": "@rithwikbabu/packwright-mcp",
-  "version": "0.3.0",
-  "description": "A local-first MCP visual compiler for paired Minecraft Java datapacks and resource packs.",
+  "version": "0.4.0",
+  "description": "A local-first MCP visual compiler and official-client capture harness for paired Minecraft Java datapacks and resource packs.",
   "type": "module",
   "bin": {
     "packwright-mcp": "dist/cli.js"
@@ -13,6 +13,9 @@
   "files": [
     "dist",
     "docs",
+    "capture-mod/LICENSE",
+    "capture-mod/README.md",
+    "capture-mod/runtime/packwright-capture-mod-0.4.0.jar",
     "README.md",
     "CHANGELOG.md",
     "CODE_OF_CONDUCT.md",
@@ -63,6 +66,7 @@
     "commander": "^14.0.0",
     "env-paths": "^3.0.0",
     "fast-xml-parser": "^5.2.5",
+    "yauzl": "^3.4.0",
     "yazl": "^3.3.1",
     "zod": "^4.0.0"
   },
@@ -70,6 +74,7 @@
     "@eslint/js": "^9.0.0",
     "@modelcontextprotocol/client": "^2.0.0",
     "@types/node": "^24.0.0",
+    "@types/yauzl": "^3.4.0",
     "@types/yazl": "^3.3.0",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.8.0",

@@ -12,6 +12,7 @@ import { MINECRAFT_26_2, RESOURCE_TYPES } from '../core/version.js';
 import { assertRuntimePathSeparation, type RuntimeConfig } from '../config.js';
 import { getJavaVersion } from './java.js';
 import { runProcess } from '../runtime/process.js';
+import { prepareClientCaptureRuntime } from './client-runtime-setup.js';
 
 export const VERSION_MANIFEST_URL =
   'https://piston-meta.mojang.com/mc/game/version_manifest_v2.json';
@@ -66,6 +67,7 @@ export interface SetupRecord {
   readonly serverSha1: string;
   readonly versionManifestUrl: string;
   readonly clientAssets?: ClientAssetsSetupRecord;
+  readonly clientCaptureRuntime?: ClientCaptureRuntimeSetupRecord;
 }
 
 export interface ClientAssetsSetupRecord {
@@ -76,6 +78,17 @@ export interface ClientAssetsSetupRecord {
   readonly assetIndexId: string;
   readonly assetIndexSha1: string;
   readonly assetIndexSize: number;
+}
+
+export interface ClientCaptureRuntimeSetupRecord {
+  readonly preparedAt: string;
+  readonly manifestSha256: string;
+  readonly platform: string;
+  readonly architecture: string;
+  readonly artifacts: number;
+  readonly bytes: number;
+  readonly loaderVersion: '0.19.3';
+  readonly captureProtocolVersion: 1;
 }
 
 export interface CachePaths {
@@ -115,6 +128,7 @@ export interface ClientAssetsCacheStatus {
 
 export interface SetupVersionOptions {
   readonly clientAssets?: boolean;
+  readonly clientCapture?: boolean;
 }
 
 export interface SetupVersionResult {
@@ -133,6 +147,16 @@ export interface SetupVersionResult {
     readonly assetIndex?: string;
     readonly assetIndexId?: string;
     readonly assetIndexSha1?: string;
+  };
+  readonly clientCapture: {
+    readonly selected: boolean;
+    readonly ready: boolean;
+    readonly manifest?: string;
+    readonly manifestSha256?: string;
+    readonly artifacts?: number;
+    readonly bytes?: number;
+    readonly platform?: string;
+    readonly architecture?: string;
   };
 }
 
@@ -251,6 +275,28 @@ function clientAssetsSetupRecord(value: unknown): ClientAssetsSetupRecord | unde
   return object as unknown as ClientAssetsSetupRecord;
 }
 
+function clientCaptureRuntimeSetupRecord(
+  value: unknown,
+): ClientCaptureRuntimeSetupRecord | undefined {
+  const object = asObject(value);
+  if (
+    !isIsoTimestamp(object?.preparedAt) ||
+    typeof object.manifestSha256 !== 'string' ||
+    !/^[a-f0-9]{64}$/u.test(object.manifestSha256) ||
+    typeof object.platform !== 'string' ||
+    object.platform.length === 0 ||
+    typeof object.architecture !== 'string' ||
+    object.architecture.length === 0 ||
+    !isPositiveSafeInteger(object.artifacts) ||
+    !isPositiveSafeInteger(object.bytes) ||
+    object.loaderVersion !== MINECRAFT_26_2.clientCapture.loader.version ||
+    object.captureProtocolVersion !== MINECRAFT_26_2.clientCapture.protocolVersion
+  ) {
+    return undefined;
+  }
+  return object as unknown as ClientCaptureRuntimeSetupRecord;
+}
+
 function setupRecord(value: unknown): SetupRecord | undefined {
   const object = asObject(value);
   if (
@@ -268,9 +314,22 @@ function setupRecord(value: unknown): SetupRecord | undefined {
   const clientAssets =
     object.clientAssets === undefined ? undefined : clientAssetsSetupRecord(object.clientAssets);
   if (object.clientAssets !== undefined && clientAssets === undefined) return undefined;
+  const clientCaptureRuntime =
+    object.clientCaptureRuntime === undefined
+      ? undefined
+      : clientCaptureRuntimeSetupRecord(object.clientCaptureRuntime);
+  if (object.clientCaptureRuntime !== undefined && clientCaptureRuntime === undefined) {
+    return undefined;
+  }
   if (
     clientAssets !== undefined &&
     Date.parse(clientAssets.preparedAt) > Date.parse(object.generatedAt)
+  ) {
+    return undefined;
+  }
+  if (
+    clientCaptureRuntime !== undefined &&
+    Date.parse(clientCaptureRuntime.preparedAt) > Date.parse(object.generatedAt)
   ) {
     return undefined;
   }
@@ -281,6 +340,7 @@ function setupRecord(value: unknown): SetupRecord | undefined {
     serverSha1: MINECRAFT_26_2.artifacts.serverSha1,
     versionManifestUrl: VERSION_MANIFEST_URL,
     ...(clientAssets === undefined ? {} : { clientAssets }),
+    ...(clientCaptureRuntime === undefined ? {} : { clientCaptureRuntime }),
   };
 }
 
@@ -434,7 +494,7 @@ async function fetchJson(
 ): Promise<{ readonly value: unknown; readonly sha1: string; readonly rawText: string }> {
   assertOfficialUrl(url);
   const response = await fetch(url, {
-    headers: { 'user-agent': 'packwright-mcp/0.3.0' },
+    headers: { 'user-agent': 'packwright-mcp/0.4.0' },
     redirect: 'error',
     ...(signal === undefined ? {} : { signal }),
   });
@@ -620,7 +680,7 @@ async function downloadVerified(
   );
   try {
     const response = await fetch(url, {
-      headers: { 'user-agent': 'packwright-mcp/0.3.0' },
+      headers: { 'user-agent': 'packwright-mcp/0.4.0' },
       redirect: 'error',
       ...(signal === undefined ? {} : { signal }),
     });
@@ -943,20 +1003,26 @@ export async function setupVersion(
     );
   }
   const paths = cachePaths(config.cacheDir);
-  const includeClientAssets = options.clientAssets === true;
+  const includeClientCapture = options.clientCapture === true;
+  const includeClientAssets = options.clientAssets === true || includeClientCapture;
   let previousClientAssets: ClientAssetsSetupRecord | undefined;
-  if (!includeClientAssets && (await fileExists(paths.setupRecord))) {
+  let previousClientCaptureRuntime: ClientCaptureRuntimeSetupRecord | undefined;
+  if ((!includeClientAssets || !includeClientCapture) && (await fileExists(paths.setupRecord))) {
     try {
-      previousClientAssets = setupRecord(
-        await readJsonFile<unknown>(paths.setupRecord),
-      )?.clientAssets;
+      const previous = setupRecord(await readJsonFile<unknown>(paths.setupRecord));
+      previousClientAssets = previous?.clientAssets;
+      previousClientCaptureRuntime = previous?.clientCaptureRuntime;
     } catch {
       previousClientAssets = undefined;
+      previousClientCaptureRuntime = undefined;
     }
   }
   const { metadata, sha1 } = await prepareServerJar(config, signal, includeClientAssets);
   const preparedClientAssets = includeClientAssets
     ? await prepareClientAssets(config, metadata, signal)
+    : undefined;
+  const preparedClientCapture = includeClientCapture
+    ? await prepareClientCaptureRuntime(config, signal)
     : undefined;
   const work = path.join(paths.versionDir, `.data-${randomUUID()}`);
   const generated = path.join(work, 'generated', 'reports');
@@ -994,6 +1060,19 @@ export async function setupVersion(
       preparedClientAssets === undefined
         ? previousClientAssets
         : { ...preparedClientAssets, preparedAt: generatedAt };
+    const recordedClientCaptureRuntime =
+      preparedClientCapture === undefined
+        ? previousClientCaptureRuntime
+        : {
+            preparedAt: generatedAt,
+            manifestSha256: preparedClientCapture.manifestSha256,
+            platform: preparedClientCapture.platform.os,
+            architecture: preparedClientCapture.platform.architecture,
+            artifacts: preparedClientCapture.artifacts,
+            bytes: preparedClientCapture.bytes,
+            loaderVersion: MINECRAFT_26_2.clientCapture.loader.version,
+            captureProtocolVersion: MINECRAFT_26_2.clientCapture.protocolVersion,
+          };
     const record: SetupRecord = {
       minecraftVersion: '26.2',
       acceptedMinecraftEulaAt: generatedAt,
@@ -1001,6 +1080,9 @@ export async function setupVersion(
       serverSha1: sha1,
       versionManifestUrl: VERSION_MANIFEST_URL,
       ...(recordedClientAssets === undefined ? {} : { clientAssets: recordedClientAssets }),
+      ...(recordedClientCaptureRuntime === undefined
+        ? {}
+        : { clientCaptureRuntime: recordedClientCaptureRuntime }),
     };
     await writeJsonAtomic(paths.setupRecord, record);
     const status = await getCacheStatus(config.cacheDir, true);
@@ -1031,6 +1113,20 @@ export async function setupVersion(
               assetIndexSha1: preparedClientAssets.assetIndexSha1,
             }
           : {}),
+      },
+      clientCapture: {
+        selected: includeClientCapture,
+        ready: preparedClientCapture?.ready ?? false,
+        ...(preparedClientCapture === undefined
+          ? {}
+          : {
+              manifest: preparedClientCapture.manifestPath,
+              manifestSha256: preparedClientCapture.manifestSha256,
+              artifacts: preparedClientCapture.artifacts,
+              bytes: preparedClientCapture.bytes,
+              platform: preparedClientCapture.platform.os,
+              architecture: preparedClientCapture.platform.architecture,
+            }),
       },
     };
   } finally {

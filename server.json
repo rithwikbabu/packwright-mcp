@@ -2,17 +2,17 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.rithwikbabu/packwright-mcp",
   "title": "Packwright MCP",
-  "description": "Local-first MCP visual compiler for paired Minecraft Java datapacks and resource packs.",
+  "description": "Local-first MCP visual compiler and official-client capture harness for paired Minecraft Java datapacks and resource packs.",
   "repository": {
     "url": "https://github.com/rithwikbabu/packwright-mcp",
     "source": "github"
   },
-  "version": "0.3.0",
+  "version": "0.4.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@rithwikbabu/packwright-mcp",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "transport": {
         "type": "stdio"
       },
@@ -26,14 +26,14 @@
         },
         {
           "name": "PACKWRIGHT_JAVA",
-          "description": "Optional Java 25 executable used for setup, vanilla command validation, builds, and GameTest runs.",
+          "description": "Optional Java 25 executable used for setup, vanilla command validation, builds, GameTest runs, and official-client visual capture.",
           "format": "string",
           "isRequired": false,
           "isSecret": false
         },
         {
           "name": "PACKWRIGHT_CACHE_DIR",
-          "description": "Optional absolute path for verified Minecraft artifacts, visual generation runs, and local reference data.",
+          "description": "Optional absolute path for verified Minecraft artifacts, visual generation runs, client-capture evidence, and local reference data.",
           "format": "string",
           "isRequired": false,
           "isSecret": false

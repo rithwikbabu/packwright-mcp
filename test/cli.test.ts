@@ -42,6 +42,20 @@ describe('compiled CLI', () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain('--accept-minecraft-eula');
     expect(result.stdout).toContain('--client-assets');
+    expect(result.stdout).toContain('--client-capture');
+  });
+
+  it('exposes an explicitly confirmed official-client capture command', async () => {
+    const result = await runProcess({
+      command: process.execPath,
+      args: [cli, 'capture', '--help'],
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('--proposal-sha256');
+    expect(result.stdout).toContain('--confirm');
+    expect(result.stdout).toContain('--gui-scale');
   });
 
   it('emits a structured failure when --json is requested', async () => {

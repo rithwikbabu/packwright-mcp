@@ -9,7 +9,7 @@ For a setting available as both a CLI option and an environment variable, the CL
 | CLI option                    | Environment variable          | Purpose                                                                           |
 | ----------------------------- | ----------------------------- | --------------------------------------------------------------------------------- |
 | `--workspace <absolute-path>` | `PACKWRIGHT_WORKSPACE`        | Required workspace containing datapacks and optional sibling resource packs.      |
-| `--java <executable>`         | `PACKWRIGHT_JAVA`             | Java executable used for setup checks and vanilla GameTests.                      |
+| `--java <executable>`         | `PACKWRIGHT_JAVA`             | Java executable used for setup, vanilla validation/GameTests, and client capture. |
 | `--cache-dir <absolute-path>` | `PACKWRIGHT_CACHE_DIR`        | Local cache for verified Minecraft artifacts, reports, and immutable visual runs. |
 | `--read-only`                 | `PACKWRIGHT_READ_ONLY=true`   | Disable workspace mutations; cached visual drafts remain available.               |
 | `--offline`                   | `PACKWRIGHT_OFFLINE=true`     | Forbid network access, including operator-invoked setup.                          |
@@ -38,7 +38,7 @@ The workspace is a container for packs, not a Minecraft world. Datapack-only pro
 
 MCP requests identify packs and resources relative to this directory. Absolute request paths, `..` traversal, encoded traversal, and symlinks that resolve outside the workspace are rejected. A pack root is recognized by its `pack.mcmeta`; resource operations cannot escape that root. A visual project requires distinct sibling pack paths and records Minecraft version `26.2`, datapack format `107.1`, resource-pack format `88.0`, and target `vanilla`.
 
-Immutable visual drafts are not project files. They live under `<PACKWRIGHT_CACHE_DIR>/visual-runs/`, and the active-head index lives below `<PACKWRIGHT_CACHE_DIR>/visual-project-state/<workspace-id>/`. State, resource resolution, and mutation locks use a hash of the canonical workspace root, so workspaces sharing one global cache cannot see each other's active heads. v0.3 keeps exactly one active workflow head per paired project, not one per asset or run; omitted IDs select it and `project_build` always builds it. Treat that cache as potentially sensitive because it can contain creative prompts, provenance, textures, compiled proposals, and previews.
+Immutable visual drafts are not project files. They live under `<PACKWRIGHT_CACHE_DIR>/visual-runs/`, and the active-head index lives below `<PACKWRIGHT_CACHE_DIR>/visual-project-state/<workspace-id>/`. State, resource resolution, and mutation locks use a hash of the canonical workspace root, so workspaces sharing one global cache cannot see each other's active heads. v0.4 keeps exactly one active workflow head per paired project, not one per asset or run; omitted IDs select it and `project_build` always builds it. Treat that cache as sensitive because it can contain creative prompts, provenance, textures, compiled proposals, CPU previews, actual-client framebuffer captures, environment metadata, bounded logs, and locally licensed Minecraft artifacts.
 
 ## Read-only sessions
 
@@ -49,7 +49,7 @@ Use read-only mode when an MCP client only needs inspection, lookup, or review:
   "mcpServers": {
     "packwright": {
       "command": "npx",
-      "args": ["-y", "@rithwikbabu/packwright-mcp@0.3.0"],
+      "args": ["-y", "@rithwikbabu/packwright-mcp@0.4.0"],
       "env": {
         "PACKWRIGHT_WORKSPACE": "/absolute/path/to/datapacks",
         "PACKWRIGHT_READ_ONLY": "true"
@@ -59,7 +59,7 @@ Use read-only mode when an MCP client only needs inspection, lookup, or review:
 }
 ```
 
-In read-only mode, workspace create, upsert, delete, attach, commit, and build operations are disabled. Inspection, reading, validation, lookup, and prompts remain available. Visual draft, compile, render, and repair operations may still create immutable artifacts in the configured cache but cannot install them into either pack. Vanilla testing may create temporary state outside the workspace but never changes a pack.
+In read-only mode, workspace create, upsert, delete, attach, commit, and build operations are disabled. Inspection, reading, validation, lookup, and prompts remain available. Visual draft, compile, CPU render, official-client capture, and repair operations may still create immutable artifacts in the configured cache but cannot install them into either pack. Vanilla testing and client capture may create temporary state outside the workspace but never change a source pack or use a user save.
 
 ## Offline behavior
 
@@ -67,11 +67,11 @@ The MCP server never silently accesses the network. Normal authoring, visual dra
 
 `PACKWRIGHT_OFFLINE=true` additionally prevents the operator-only `setup-version` command from downloading metadata or artifacts. When required local data is absent, Packwright returns `setup_required` rather than falling back to the network.
 
-The optional `setup-version --client-assets` step uses the same cache and offline policy. It stores the manifest-verified 26.2 client jar and asset index only when explicitly selected. In v0.3 this is setup/readiness data, not a built-in texture/model resolver; compilation, rendering, and validation do not load built-in asset content from it. Custom external dependencies must exist in the sibling resource pack.
+The optional `setup-version --client-assets` step uses the same cache and offline policy. It stores the manifest-verified 26.2 client jar and asset index only when explicitly selected. `setup-version --client-capture` implies that step and also downloads every required asset object, platform library/native, and pinned Fabric Loader dependency. Setup is the only networked path; the later `visual_capture` call reads the verified cache and never silently downloads a missing artifact. Custom external dependencies must still exist in the sibling resource pack proposal.
 
 ## Resource limits
 
-The v0.3 safety limits are:
+The v0.4 safety limits are:
 
 | Limit                            |   Value |
 | -------------------------------- | ------: |
@@ -95,6 +95,7 @@ Visual-specific limits are:
 | One renderer scene            |                      512 parts |
 | One render view               |         32–256 pixels per axis |
 | Contact sheet                 |                        720 KiB |
+| One raw capture evidence blob |                         16 MiB |
 
 Payloads that can be safely shortened include explicit truncation metadata. Operations that cannot be completed within a safety bound fail without a partial write.
 

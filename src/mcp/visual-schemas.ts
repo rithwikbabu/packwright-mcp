@@ -125,6 +125,7 @@ export const VisualCapabilitiesResultSchema = z.strictObject({
       version: z.number().int().positive(),
       targetKind: z.literal('item'),
       support: z.literal('full'),
+      clientCaptureSupport: z.enum(['full', 'limited', 'unsupported']),
     }),
   ),
 });
@@ -203,6 +204,7 @@ export const VisualAssetInspectResultSchema = z.strictObject({
     reviewProfile: z.boolean(),
     binding: z.boolean(),
     committed: z.boolean(),
+    clientCaptured: z.boolean(),
   }),
   diagnostics: z.array(DiagnosticSchema),
   truncated: z.boolean(),
@@ -422,6 +424,64 @@ export const VisualRenderResultSchema = z.strictObject({
   diagnostics: z.array(DiagnosticSchema),
 });
 
+export const VisualClientCaptureInputSchema = z
+  .strictObject({
+    projectId: VisualProjectIdSchema,
+    runId: VisualDraftIdSchema,
+    revisionId: VisualDraftIdSchema.optional(),
+    proposalSha256: Sha256Schema,
+    confirm: z.literal(true),
+    timeoutMs: z.number().int().min(30_000).max(600_000).default(300_000),
+    resolution: z
+      .strictObject({
+        width: z.number().int().min(640).max(1920).default(1280),
+        height: z.number().int().min(360).max(1080).default(720),
+      })
+      .default({ width: 1280, height: 720 }),
+    guiScale: z.number().int().min(0).max(8).default(2),
+  })
+  .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
+
+export const VisualClientCaptureResultSchema = z.strictObject({
+  ok: z.boolean(),
+  status: z.enum(['passed', 'failed', 'setup_required', 'cancelled', 'timeout']),
+  authority: z.literal('authoritative_environment_capture'),
+  projectId: VisualProjectIdSchema,
+  runId: VisualDraftIdSchema,
+  revisionId: VisualDraftIdSchema,
+  reviewProfile: z.enum(REVIEW_PROFILE_IDS),
+  profileVersion: z.number().int().positive(),
+  clientCaptureSupport: z.enum(['full', 'limited', 'unsupported']),
+  captureReady: z.boolean(),
+  planSha256: Sha256Schema.optional(),
+  reportSha256: Sha256Schema.optional(),
+  reportUri: z.url().optional(),
+  contactSheet: VisualFileSchema.optional(),
+  contactSheetUri: z.url().optional(),
+  views: z.array(
+    z.strictObject({
+      name: z.string().min(1).max(128),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+      sourceSha256: Sha256Schema,
+      normalizedSha256: Sha256Schema,
+      bytes: z.number().int().positive(),
+      uri: z.url(),
+    }),
+  ),
+  environment: z
+    .strictObject({
+      rendererBackend: z.enum(['opengl', 'vulkan']),
+      operatingSystem: z.string().min(1).max(512),
+      javaVersion: z.string().min(1).max(512),
+      gpuVendor: z.string().min(1).max(512),
+      gpuRenderer: z.string().min(1).max(512),
+      driverVersion: z.string().min(1).max(512),
+    })
+    .optional(),
+  diagnostics: z.array(DiagnosticSchema),
+});
+
 const PartRepairSchema = z.strictObject({
   kind: z.literal('part'),
   partId: z.string().min(1).max(64),
@@ -503,6 +563,7 @@ export const VisualCommitInputSchema = z
     runId: VisualDraftIdSchema,
     revisionId: VisualDraftIdSchema.optional(),
     proposalSha256: Sha256Schema,
+    expectedClientCaptureReportSha256: Sha256Schema.optional(),
     confirm: z.literal(true),
   })
   .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
@@ -514,6 +575,7 @@ export const VisualCommitResultSchema = z.strictObject({
   runId: VisualDraftIdSchema,
   revisionId: VisualDraftIdSchema,
   transactionId: z.string().min(1),
+  clientCaptureReportSha256: Sha256Schema.optional(),
   files: z.array(VisualFileSchema),
   diagnostics: z.array(DiagnosticSchema),
 });
@@ -525,6 +587,7 @@ export const VisualValidateInputSchema = z
     revisionId: VisualDraftIdSchema.optional(),
     includeVanilla: z.boolean().default(true),
     includeGameTests: z.boolean().default(false),
+    requireClientCapture: z.boolean().optional(),
   })
   .superRefine((value, context) => {
     if (value.revisionId !== undefined && value.runId === undefined) {
@@ -552,6 +615,7 @@ export const VisualValidateResultSchema = z.strictObject({
         'geometry',
         'render',
         'review_profile',
+        'client_capture',
         'binding',
         'vanilla_commands',
         'gametest',
@@ -628,6 +692,8 @@ export type VisualConnectInput = z.infer<typeof VisualConnectInputSchema>;
 export type VisualDraftResult = z.infer<typeof VisualDraftResultSchema>;
 export type VisualRenderInput = z.infer<typeof VisualRenderInputSchema>;
 export type VisualRenderResult = z.infer<typeof VisualRenderResultSchema>;
+export type VisualClientCaptureInput = z.infer<typeof VisualClientCaptureInputSchema>;
+export type VisualClientCaptureResult = z.infer<typeof VisualClientCaptureResultSchema>;
 export type VisualRevisionCreateInput = z.infer<typeof VisualRevisionCreateInputSchema>;
 export type VisualCommitInput = z.infer<typeof VisualCommitInputSchema>;
 export type VisualCommitResult = z.infer<typeof VisualCommitResultSchema>;
