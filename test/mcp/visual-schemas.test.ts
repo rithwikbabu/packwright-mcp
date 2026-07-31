@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ProjectBuildInputSchema,
   TextureImportInputSchema,
+  VisualClientCaptureResultSchema,
   VisualConnectInputSchema,
   VisualDraftIdSchema,
   VisualProjectIdSchema,
@@ -10,6 +11,56 @@ import {
 } from '../../src/mcp/visual-schemas.js';
 
 const CONTENT_ID = 'a'.repeat(64);
+const REQUIRED_CAPTURE_VIEW = 'first_person_vanilla--first-person-right-steve';
+const SUPPLEMENTAL_CAPTURE_VIEW = 'first_person_scale_reference--first-person-right-steve';
+
+function captureResult() {
+  const file = (name: string) => ({
+    path: `visual-runs/${CONTENT_ID}/captures/${name}.png`,
+    sha256: CONTENT_ID,
+    size: 64,
+    mediaType: 'image/png',
+    role: 'render' as const,
+  });
+  const view = (name: string, scaleReference: boolean) => ({
+    name,
+    baseSceneId: 'first-person-right-steve',
+    viewKind: scaleReference
+      ? ('first_person_scale_reference' as const)
+      : ('first_person_vanilla' as const),
+    authority: scaleReference
+      ? ('augmented_qa_reference' as const)
+      : ('authoritative_environment_capture' as const),
+    requiredForAuthority: !scaleReference,
+    width: 1280,
+    height: 720,
+    sourceSha256: CONTENT_ID,
+    normalizedSha256: CONTENT_ID,
+    bytes: 64,
+    uri: `https://example.invalid/${name}`,
+  });
+  return {
+    ok: true,
+    status: 'passed' as const,
+    authority: 'authoritative_environment_capture' as const,
+    authorityScope: 'required_views_only' as const,
+    projectId: 'firestaff',
+    runId: CONTENT_ID,
+    revisionId: CONTENT_ID,
+    reviewProfile: 'held_item' as const,
+    profileVersion: 1,
+    clientCaptureSupport: 'limited' as const,
+    captureReady: true,
+    contactSheet: file('contact'),
+    contactSheetUri: 'https://example.invalid/contact',
+    scaleReferenceContactSheet: file('scale-reference-contact'),
+    scaleReferenceContactSheetUri: 'https://example.invalid/scale-reference-contact',
+    views: [view(REQUIRED_CAPTURE_VIEW, false), view(SUPPLEMENTAL_CAPTURE_VIEW, true)],
+    requiredViewIds: [REQUIRED_CAPTURE_VIEW],
+    supplementalViewIds: [SUPPLEMENTAL_CAPTURE_VIEW],
+    diagnostics: [],
+  };
+}
 
 function connection(recipe: unknown) {
   return {
@@ -178,5 +229,76 @@ describe('visual MCP input schemas', () => {
         ],
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('visual client-capture result schema', () => {
+  it('scopes top-level authority to required views in a mixed result', () => {
+    const parsed = VisualClientCaptureResultSchema.parse(captureResult());
+
+    expect(parsed.authority).toBe('authoritative_environment_capture');
+    expect(parsed.authorityScope).toBe('required_views_only');
+    expect(parsed.views.map((view) => view.authority)).toEqual([
+      'authoritative_environment_capture',
+      'augmented_qa_reference',
+    ]);
+  });
+
+  it('rejects inconsistent view kinds, per-view authority, and authority classification', () => {
+    const invalidResults = [
+      (() => {
+        const result = captureResult();
+        result.views = result.views.map((view) =>
+          view.name === SUPPLEMENTAL_CAPTURE_VIEW
+            ? { ...view, authority: 'authoritative_environment_capture' as const }
+            : view,
+        );
+        return result;
+      })(),
+      (() => {
+        const result = captureResult();
+        result.views = result.views.map((view) =>
+          view.name === SUPPLEMENTAL_CAPTURE_VIEW ? { ...view, requiredForAuthority: true } : view,
+        );
+        return result;
+      })(),
+      (() => {
+        const result = captureResult();
+        result.requiredViewIds = [SUPPLEMENTAL_CAPTURE_VIEW];
+        result.supplementalViewIds = [REQUIRED_CAPTURE_VIEW];
+        return result;
+      })(),
+      (() => {
+        const result = captureResult();
+        result.supplementalViewIds = [];
+        return result;
+      })(),
+      (() => {
+        const result = captureResult();
+        result.requiredViewIds = [REQUIRED_CAPTURE_VIEW, REQUIRED_CAPTURE_VIEW];
+        return result;
+      })(),
+    ];
+
+    for (const result of invalidResults) {
+      expect(VisualClientCaptureResultSchema.safeParse(result).success).toBe(false);
+    }
+  });
+
+  it('requires the scale-reference sheet and URI exactly for supplemental views', () => {
+    const missingSheet = captureResult();
+    delete (missingSheet as Partial<typeof missingSheet>).scaleReferenceContactSheet;
+    expect(VisualClientCaptureResultSchema.safeParse(missingSheet).success).toBe(false);
+
+    const missingUri = captureResult();
+    delete (missingUri as Partial<typeof missingUri>).scaleReferenceContactSheetUri;
+    expect(VisualClientCaptureResultSchema.safeParse(missingUri).success).toBe(false);
+
+    const vanillaOnly = captureResult();
+    vanillaOnly.views = vanillaOnly.views.filter((view) => view.name === REQUIRED_CAPTURE_VIEW);
+    vanillaOnly.supplementalViewIds = [];
+    delete (vanillaOnly as Partial<typeof vanillaOnly>).scaleReferenceContactSheet;
+    delete (vanillaOnly as Partial<typeof vanillaOnly>).scaleReferenceContactSheetUri;
+    expect(VisualClientCaptureResultSchema.safeParse(vanillaOnly).success).toBe(true);
   });
 });

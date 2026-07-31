@@ -66,11 +66,14 @@ packwright-mcp capture <project-id> \
   [--width <640-1920>] \
   [--height <360-1080>] \
   [--gui-scale <0-8>] \
+  [--include-scale-reference-views] \
   --workspace /absolute/path/to/datapacks \
   [--json]
 ```
 
-Mirrors the MCP `visual_capture` operation. It launches the pinned official Minecraft 26.2 client only after all exact run/revision/proposal preconditions and setup checks pass. The defaults are a five-minute timeout, 1280×720 framebuffer, and GUI scale 2. A successful human-readable result prints the framebuffer count plus the immutable report and contact-sheet MCP resource URIs. `setup_required` uses exit code 2; capture failure, timeout, or cancellation uses exit code 1.
+Mirrors the MCP `visual_capture` operation. It launches the pinned official Minecraft 26.2 client only after all exact run/revision/proposal preconditions and setup checks pass. The defaults are a five-minute timeout, 1280×720 framebuffer, GUI scale 2, and no augmented scale-reference views. A successful human-readable result prints the framebuffer count plus the immutable report and authoritative vanilla contact-sheet MCP resource URIs. `setup_required` uses exit code 2; capture failure, timeout, or cancellation uses exit code 1.
+
+Required first-person views are `first_person_vanilla`: exact stock Minecraft gameplay composition with no Packwright-injected arm. `--include-scale-reference-views` adds separately labeled `first_person_scale_reference` captures and an optional scale-reference QA sheet. These supplemental frames inject a Minecraft-rendered arm for scale and occlusion review, are never WYSIWYG gameplay evidence, and cannot replace or satisfy any required authoritative view. The corresponding MCP input is `includeScaleReferenceViews`, also `false` by default.
 
 The command stages the packs in a disposable game directory and never touches a user save. It does not accept account credentials, arbitrary game commands, extra mods, JVM arguments, or a destination directory. Current client-capture support is `limited` for one-handed `held_item` scenes and `full` for `gui_item`; `twoHanded: true` is rejected.
 

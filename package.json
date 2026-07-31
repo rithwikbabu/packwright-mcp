@@ -1,6 +1,6 @@
 {
   "name": "@rithwikbabu/packwright-mcp",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Packwright compiles, renders, validates, and captures paired Minecraft Java packs.",
   "type": "module",
   "bin": {
@@ -15,7 +15,7 @@
     "docs",
     "capture-mod/LICENSE",
     "capture-mod/README.md",
-    "capture-mod/runtime/packwright-capture-mod-0.4.0.jar",
+    "capture-mod/runtime/packwright-capture-mod-0.4.1.jar",
     "README.md",
     "CHANGELOG.md",
     "CODE_OF_CONDUCT.md",

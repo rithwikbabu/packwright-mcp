@@ -78,6 +78,7 @@ import {
   VISUAL_RUN_BINDING_URI_TEMPLATE,
   VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE,
   VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE,
+  VISUAL_RUN_CLIENT_CAPTURE_SCALE_REFERENCE_SHEET_URI_TEMPLATE,
   VISUAL_RUN_CLIENT_CAPTURE_VIEW_URI_TEMPLATE,
   VISUAL_RUN_CONTACT_SHEET_URI_TEMPLATE,
   VISUAL_RUN_RENDER_REPORT_URI_TEMPLATE,
@@ -739,7 +740,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Capture With Minecraft Client',
       description:
-        'Launch the pinned official Minecraft 26.2 client in a disposable game directory with only Packwright’s capture mod, load the exact proposal, and return hash-bound framebuffer evidence from Minecraft’s actual renderer. Requires explicit client-capture setup and a graphical macOS session; never falls back to CPU images.',
+        'Launch the pinned official Minecraft 26.2 client in a disposable game directory with only Packwright’s capture mod, load the exact proposal, and return hash-bound framebuffer evidence from Minecraft’s actual renderer. Required first-person views are exact stock gameplay captures with no injected arm. Top-level authorityScope is required_views_only. includeScaleReferenceViews defaults to false; enabling it adds separately labeled, augmented QA-only scale-reference views that are never WYSIWYG or a substitute for required authority. Requires explicit client-capture setup and a graphical macOS session; never falls back to CPU images.',
       inputSchema: VisualClientCaptureInputSchema,
       outputSchema: VisualClientCaptureResultSchema,
       annotations: {
@@ -1093,7 +1094,8 @@ function registerResources(server: McpServer, service: PackwrightService): void 
       | 'review'
       | 'binding'
       | 'client_capture_report'
-      | 'client_contact_sheet',
+      | 'client_contact_sheet'
+      | 'client_scale_reference_sheet',
   ) =>
     ({
       kind,
@@ -1148,16 +1150,26 @@ function registerResources(server: McpServer, service: PackwrightService): void 
       template: VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE,
       title: 'Minecraft Client Capture Report',
       description:
-        'Hash-bound provenance and environment evidence from the actual Minecraft 26.2 renderer.',
+        'Hash-bound provenance and environment evidence from the actual Minecraft 26.2 renderer, including required_views_only authority scope and each view’s kind, authority, and required-or-supplemental status.',
       kind: 'client_capture_report' as const,
       mimeType: 'application/json',
     },
     {
       name: 'visual-client-contact-sheet',
       template: VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE,
-      title: 'Minecraft Client Capture Contact Sheet',
-      description: 'A bounded composition of verified Minecraft framebuffer captures.',
+      title: 'Authoritative Minecraft Gameplay Contact Sheet',
+      description:
+        'A bounded composition of verified vanilla Minecraft framebuffer captures. It excludes every augmented scale-reference view.',
       kind: 'client_contact_sheet' as const,
+      mimeType: 'image/png',
+    },
+    {
+      name: 'visual-client-scale-reference-sheet',
+      template: VISUAL_RUN_CLIENT_CAPTURE_SCALE_REFERENCE_SHEET_URI_TEMPLATE,
+      title: 'Optional Minecraft Scale-Reference QA Sheet',
+      description:
+        'A separately labeled QA-only composition containing injected-arm scale-reference captures. It is not a WYSIWYG gameplay preview.',
+      kind: 'client_scale_reference_sheet' as const,
       mimeType: 'image/png',
     },
   ]) {
@@ -1209,7 +1221,7 @@ function registerResources(server: McpServer, service: PackwrightService): void 
     {
       title: 'Minecraft Client Framebuffer Preview',
       description:
-        'A bounded deterministic preview of one actual Minecraft framebuffer; the capture report retains the full-resolution source and normalized PNG hashes.',
+        'A bounded deterministic preview of one actual Minecraft framebuffer. Consult the capture report for its view kind and authority: stock views are authoritative environment captures; injected-arm scale references are augmented QA only and never WYSIWYG. The report retains the full-resolution source and normalized PNG hashes.',
       mimeType: 'image/png',
     },
     async (uri, variables, context) =>
@@ -1390,6 +1402,7 @@ function registerPrompts(server: McpServer): void {
               `Visually review project ${projectId}, run ${runId}, revision ${revisionId}. Intended result: ${intent}`,
               `Read packwright://visual/runs/${runId}/revisions/${revisionId}/render-report and ${visualRunContactSheetUri(runId, revisionId)}; inspect individual profile views when a finding is ambiguous.`,
               'Review every required scene defined by the selected profile, including its original Packwright reference geometry. Treat all CPU-rendered fit, overlap, lighting, GUI, pose, scale, hitbox, and frame measurements as advisory rather than authoritative client evidence.',
+              'When official-client evidence is available, review the authoritative gameplay contact sheet and every required stock view. A first_person_vanilla view is exact gameplay composition with no Packwright-injected arm. Treat any separately requested first_person_scale_reference view as augmented QA-only scale/occlusion context: it is never WYSIWYG and never substitutes for required evidence.',
               'Return accept or repair. A failed measurement or reviewReady=false requires repair. Name the exact part, material, display context, profile metadata field, scene, and metric when available. Do not mutate or commit files.',
             ].join('\n'),
           },
@@ -1504,7 +1517,7 @@ export function createPackwrightMcpServer(
   const server = new McpServer(
     {
       name: options.name ?? 'packwright-mcp',
-      version: options.version ?? '0.4.0',
+      version: options.version ?? '0.4.1',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );

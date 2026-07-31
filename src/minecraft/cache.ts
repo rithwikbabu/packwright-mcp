@@ -88,7 +88,7 @@ export interface ClientCaptureRuntimeSetupRecord {
   readonly artifacts: number;
   readonly bytes: number;
   readonly loaderVersion: '0.19.3';
-  readonly captureProtocolVersion: 1;
+  readonly captureProtocolVersion: 2;
 }
 
 export interface CachePaths {
@@ -494,7 +494,7 @@ async function fetchJson(
 ): Promise<{ readonly value: unknown; readonly sha1: string; readonly rawText: string }> {
   assertOfficialUrl(url);
   const response = await fetch(url, {
-    headers: { 'user-agent': 'packwright-mcp/0.4.0' },
+    headers: { 'user-agent': 'packwright-mcp/0.4.1' },
     redirect: 'error',
     ...(signal === undefined ? {} : { signal }),
   });
@@ -680,7 +680,7 @@ async function downloadVerified(
   );
   try {
     const response = await fetch(url, {
-      headers: { 'user-agent': 'packwright-mcp/0.4.0' },
+      headers: { 'user-agent': 'packwright-mcp/0.4.1' },
       redirect: 'error',
       ...(signal === undefined ? {} : { signal }),
     });

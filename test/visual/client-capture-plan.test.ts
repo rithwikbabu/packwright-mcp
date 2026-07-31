@@ -27,7 +27,7 @@ const baseSpec = {
 } as const;
 
 describe('visual client-capture scene lowering', () => {
-  it('serializes the independently signed item-model component as Minecraft command syntax', () => {
+  it('serializes the independently hash-bound item-model component as Minecraft command syntax', () => {
     const spec = parseModelSpec({ ...baseSpec, reviewProfile: 'held_item' });
     const compiled = compileItemAsset(spec);
     const binding = createItemBindingProposal(spec, compiled, 'minecraft:blaze_rod');
@@ -66,13 +66,25 @@ describe('visual client-capture scene lowering', () => {
     expect(scenes.every((scene) => scene.resolution.width === 1280)).toBe(true);
     expect(scenes.every((scene) => scene.resolution.height === 720)).toBe(true);
     expect(scenes.every((scene) => scene.guiScale === 2)).toBe(true);
-    expect(scenes.find((scene) => scene.id === 'fp_left_alex')).toMatchObject({
-      camera: 'first_person',
-      context: 'world',
-      hand: 'left',
-      playerModel: 'alex',
-      presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' },
-    });
+    expect(scenes.every((scene) => scene.requiredForAuthority)).toBe(true);
+    expect(
+      scenes.every(
+        (scene) =>
+          scene.presentation?.referenceArm === undefined &&
+          scene.presentation?.referenceArmPurpose === undefined,
+      ),
+    ).toBe(true);
+    expect(scenes.find((scene) => scene.id === 'first_person_vanilla--fp_left_alex')).toMatchObject(
+      {
+        baseSceneId: 'fp_left_alex',
+        viewKind: 'first_person_vanilla',
+        requiredForAuthority: true,
+        camera: 'first_person',
+        context: 'world',
+        hand: 'left',
+        playerModel: 'alex',
+      },
+    );
     expect(scenes.find((scene) => scene.id === 'tp_front_right_steve')).toMatchObject({
       camera: 'third_person_front',
       hand: 'right',
@@ -83,29 +95,83 @@ describe('visual client-capture scene lowering', () => {
       context: 'item_inspection',
       animationState: 'idle',
     });
-    expect(scenes.find((scene) => scene.id === 'swing_midpoint')).toMatchObject({
+    expect(
+      scenes.find((scene) => scene.id === 'first_person_vanilla--swing_midpoint'),
+    ).toMatchObject({
+      viewKind: 'first_person_vanilla',
       camera: 'first_person',
       context: 'world',
       animationState: 'swing',
       frame: 4,
-      presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' },
     });
-    expect(scenes.find((scene) => scene.id === 'active_use')).toMatchObject({
+    expect(scenes.find((scene) => scene.id === 'first_person_vanilla--active_use')).toMatchObject({
       camera: 'first_person',
       context: 'world',
       animationState: 'aim',
       frame: 10,
-      presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' },
     });
-    expect(scenes.find((scene) => scene.id === 'aiming')).toMatchObject({
+    expect(scenes.find((scene) => scene.id === 'first_person_vanilla--aiming')).toMatchObject({
       camera: 'first_person',
       context: 'world',
       animationState: 'aim',
-      presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' },
     });
   });
 
-  it('rejects two-handed capture until a secondary reference arm is posed and verified', () => {
+  it('adds separately identified scale-reference QA views only when explicitly requested', () => {
+    const spec = parseModelSpec({
+      ...baseSpec,
+      reviewProfile: 'held_item',
+      heldItem: {
+        primaryGrip: [8, 5.5, 11],
+        muzzle: [8, 14, 8],
+        forwardAxis: [0, 0, -1],
+        handedness: 'either',
+        twoHanded: false,
+        itemKind: 'weapon',
+        usePose: 'aim',
+      },
+    });
+
+    const scenes = createVisualClientCaptureScenes(spec, {
+      width: 1280,
+      height: 720,
+      guiScale: 2,
+      includeScaleReferenceViews: true,
+    });
+    const authoritative = scenes.filter((scene) => scene.requiredForAuthority);
+    const supplemental = scenes.filter((scene) => !scene.requiredForAuthority);
+
+    expect(scenes).toHaveLength(23);
+    expect(authoritative).toHaveLength(15);
+    expect(supplemental).toHaveLength(8);
+    expect(supplemental.every((scene) => scene.viewKind === 'first_person_scale_reference')).toBe(
+      true,
+    );
+    expect(
+      supplemental.every(
+        (scene) =>
+          scene.presentation?.referenceArm === true &&
+          scene.presentation.referenceArmPurpose === 'scale_only',
+      ),
+    ).toBe(true);
+    for (const reference of supplemental) {
+      const vanilla = scenes.find(
+        (scene) =>
+          scene.viewKind === 'first_person_vanilla' && scene.baseSceneId === reference.baseSceneId,
+      );
+      expect(vanilla).toBeDefined();
+      expect(vanilla?.presentation?.referenceArm).toBeUndefined();
+      expect({
+        ...reference,
+        id: vanilla?.id,
+        viewKind: vanilla?.viewKind,
+        requiredForAuthority: true,
+        presentation: vanilla?.presentation,
+      }).toMatchObject(vanilla ?? {});
+    }
+  });
+
+  it('rejects two-handed capture until the gameplay secondary hand is posed and verified', () => {
     const spec = parseModelSpec({
       ...baseSpec,
       reviewProfile: 'held_item',
@@ -118,7 +184,7 @@ describe('visual client-capture scene lowering', () => {
 
     expect(() =>
       createVisualClientCaptureScenes(spec, { width: 1280, height: 720, guiScale: 2 }),
-    ).toThrow(/secondary reference arm/u);
+    ).toThrow(/gameplay hand/u);
   });
 
   it('rejects a declared secondary grip even when the twoHanded flag is false', () => {
@@ -134,7 +200,7 @@ describe('visual client-capture scene lowering', () => {
 
     expect(() =>
       createVisualClientCaptureScenes(spec, { width: 1280, height: 720, guiScale: 2 }),
-    ).toThrow(/secondary reference arm/u);
+    ).toThrow(/gameplay hand/u);
   });
 
   it('uses actual GUI contexts and presentation states for the gui_item profile', () => {
@@ -149,6 +215,10 @@ describe('visual client-capture scene lowering', () => {
       height: 540,
       guiScale: 3,
     });
+
+    expect(scenes).toHaveLength(9);
+    expect(scenes.every((scene) => scene.viewKind === 'minecraft_vanilla')).toBe(true);
+    expect(scenes.every((scene) => scene.requiredForAuthority)).toBe(true);
 
     expect(scenes.find((scene) => scene.id === 'gui_inventory_64')).toMatchObject({
       context: 'inventory',
@@ -193,7 +263,7 @@ describe('visual client-capture scene lowering', () => {
       guiScale: 2,
     });
 
-    expect(scenes.find((scene) => scene.id === 'aiming')).toMatchObject({
+    expect(scenes.find((scene) => scene.id === 'first_person_vanilla--aiming')).toMatchObject({
       animationState: 'idle',
       frame: 0,
     });

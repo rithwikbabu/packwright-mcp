@@ -17,6 +17,8 @@ export const VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE =
   'packwright://visual/runs/{runId}/revisions/{revisionId}/client-capture/report';
 export const VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE =
   'packwright://visual/runs/{runId}/revisions/{revisionId}/client-capture/contact-sheet';
+export const VISUAL_RUN_CLIENT_CAPTURE_SCALE_REFERENCE_SHEET_URI_TEMPLATE =
+  'packwright://visual/runs/{runId}/revisions/{revisionId}/client-capture/scale-reference-sheet';
 export const VISUAL_RUN_CLIENT_CAPTURE_VIEW_URI_TEMPLATE =
   'packwright://visual/runs/{runId}/revisions/{revisionId}/client-capture/views/{view}';
 export const VISUAL_RUN_REVIEW_URI_TEMPLATE =
@@ -79,6 +81,13 @@ export function visualRunClientCaptureReportUri(runId: string, revisionId: strin
 
 export function visualRunClientCaptureContactSheetUri(runId: string, revisionId: string): string {
   return `packwright://visual/runs/${validatedDraftId(runId, 'run ID')}/revisions/${validatedDraftId(revisionId, 'revision ID')}/client-capture/contact-sheet`;
+}
+
+export function visualRunClientCaptureScaleReferenceSheetUri(
+  runId: string,
+  revisionId: string,
+): string {
+  return `packwright://visual/runs/${validatedDraftId(runId, 'run ID')}/revisions/${validatedDraftId(revisionId, 'revision ID')}/client-capture/scale-reference-sheet`;
 }
 
 export function visualRunClientCaptureViewUri(

@@ -155,7 +155,7 @@ async function writeCompleteOutput(plan: ClientCapturePlan): Promise<void> {
   );
   await writeFile(path.join(output, 'logs/client.log'), log);
   const report: ClientCaptureCompleteReport = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'packwright.client-capture-report',
     status: 'complete',
     executionId: plan.execution.executionId,
@@ -183,7 +183,7 @@ async function writeCompleteOutput(plan: ClientCapturePlan): Promise<void> {
   await writeFile(
     path.join(output, 'capture-complete.json'),
     canonicalJsonBytes({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'packwright.client-capture-complete',
       executionId: plan.execution.executionId,
       planSha256: plan.planSha256,
@@ -196,7 +196,7 @@ async function writeCompleteOutput(plan: ClientCapturePlan): Promise<void> {
   );
 }
 
-async function captureFixture() {
+async function captureFixture(includeScaleReference = false) {
   const root = await mkdtemp(path.join(tmpdir(), 'packwright-client-capture-test-'));
   cleanups.push(root);
   const config: RuntimeConfig = {
@@ -234,7 +234,7 @@ async function captureFixture() {
     client: { jarSha1: SHA1, jarSha256: HASH_B },
     captureMod: {
       id: 'packwright_capture',
-      version: '0.4.0',
+      version: '0.4.1',
       sha256: sha256Buffer(captureModData),
       data: captureModData,
     },
@@ -249,7 +249,7 @@ async function captureFixture() {
     readonly outputDirectory: string;
   }) =>
     createClientCapturePlan({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'packwright.client-capture-plan',
       minecraftVersion: '26.2',
       provenance: {
@@ -277,18 +277,43 @@ async function captureFixture() {
         },
       },
       scenes: [
+        ...(includeScaleReference
+          ? [
+              {
+                id: 'first_person_scale_reference--fp_right_steve',
+                baseSceneId: 'fp_right_steve',
+                viewKind: 'first_person_scale_reference' as const,
+                requiredForAuthority: false,
+                camera: 'first_person' as const,
+                context: 'world' as const,
+                hand: 'right' as const,
+                playerModel: 'steve' as const,
+                fov: 70,
+                resolution: { width: 64, height: 64 },
+                guiScale: 2,
+                animationState: 'idle' as const,
+                frame: 0,
+                presentation: {
+                  referenceArm: true,
+                  referenceArmPurpose: 'scale_only' as const,
+                },
+              },
+            ]
+          : []),
         {
-          id: 'first_person_right_steve',
-          camera: 'first_person',
-          context: 'world',
-          hand: 'right',
-          playerModel: 'steve',
+          id: 'first_person_vanilla--fp_right_steve',
+          baseSceneId: 'fp_right_steve',
+          viewKind: 'first_person_vanilla' as const,
+          requiredForAuthority: true,
+          camera: 'first_person' as const,
+          context: 'world' as const,
+          hand: 'right' as const,
+          playerModel: 'steve' as const,
           fov: 70,
           resolution: { width: 64, height: 64 },
           guiScale: 2,
-          animationState: 'idle',
+          animationState: 'idle' as const,
           frame: 0,
-          presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' },
         },
       ],
       execution: { executionId, gameDirectory, outputDirectory },
@@ -306,28 +331,28 @@ describe('official Minecraft client capture orchestration', () => {
     const bundled = await readBundledCaptureMod();
     expect(bundled).toMatchObject({
       id: 'packwright_capture',
-      version: '0.4.0',
-      sha256: '761ebb99192d2c19f79cc309d0daee5a652d38669e6e7d6286043597cb54bf76',
+      version: '0.4.1',
+      sha256: '7c4b5674969cc2a08d29cd9843906655470d284a13120caa65c85c6ebed7b042',
     });
-    expect(bundled.data).toHaveLength(93_307);
+    expect(bundled.data).toHaveLength(99_897);
 
     const packageRoot = await mkdtemp(path.join(tmpdir(), 'packwright-capture-package-test-'));
     cleanups.push(packageRoot);
     const buildDirectory = path.join(packageRoot, 'capture-mod/build/libs');
     await mkdir(buildDirectory, { recursive: true });
-    await writeFile(path.join(buildDirectory, 'packwright-capture-mod-0.4.0.jar'), bundled.data);
+    await writeFile(path.join(buildDirectory, 'packwright-capture-mod-0.4.1.jar'), bundled.data);
     await expect(readBundledCaptureMod(packageRoot)).rejects.toMatchObject({ code: 'not_found' });
 
     const runtimeDirectory = path.join(packageRoot, 'capture-mod/runtime');
     await mkdir(runtimeDirectory, { recursive: true });
     await writeFile(
-      path.join(runtimeDirectory, 'packwright-capture-mod-0.4.0.jar'),
+      path.join(runtimeDirectory, 'packwright-capture-mod-0.4.1.jar'),
       Buffer.from('substituted capture mod'),
     );
     await expect(readBundledCaptureMod(packageRoot)).rejects.toMatchObject({
       code: 'precondition_failed',
       details: {
-        expectedSha256: '761ebb99192d2c19f79cc309d0daee5a652d38669e6e7d6286043597cb54bf76',
+        expectedSha256: '7c4b5674969cc2a08d29cd9843906655470d284a13120caa65c85c6ebed7b042',
       },
     });
   });
@@ -378,6 +403,15 @@ describe('official Minecraft client capture orchestration', () => {
       const plan = parseClientCapturePlanBytes(
         await readFile(path.join(input.cwd, 'packwright/input/capture-plan.json')),
       );
+      expect(plan.scenes).toEqual([
+        expect.objectContaining({
+          id: 'first_person_vanilla--fp_right_steve',
+          baseSceneId: 'fp_right_steve',
+          viewKind: 'first_person_vanilla',
+          requiredForAuthority: true,
+        }),
+      ]);
+      expect(plan.scenes[0]?.presentation).toBeUndefined();
       expect(
         input.args.find((argument) => argument.startsWith('-Dpackwright.capture.output=')),
       ).toBe(`-Dpackwright.capture.output=${plan.execution.outputDirectory}`);
@@ -406,17 +440,79 @@ describe('official Minecraft client capture orchestration', () => {
     });
 
     expect(result.evidence.views).toEqual([
-      expect.objectContaining({ sceneId: 'first_person_right_steve', width: 64, height: 64 }),
+      expect.objectContaining({
+        sceneId: 'first_person_vanilla--fp_right_steve',
+        width: 64,
+        height: 64,
+      }),
     ]);
     expect(Object.keys(result.artifacts).sort()).toEqual([
       'capture-complete.json',
       'capture-report.json',
       'logs/client.log',
-      'views/first_person_right_steve.png',
+      'views/first_person_vanilla--fp_right_steve.png',
     ]);
-    expect(result.artifacts['views/first_person_right_steve.png']?.length).toBeGreaterThan(0);
+    expect(
+      result.artifacts['views/first_person_vanilla--fp_right_steve.png']?.length,
+    ).toBeGreaterThan(0);
     expect(disposableGameDirectory).toBeDefined();
     await expect(lstat(disposableGameDirectory ?? '')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('captures an opt-in scale reference only as an exact supplemental vanilla pair', async () => {
+    const fixture = await captureFixture(true);
+    const launch: ClientCaptureProcessLauncher = async (input) => {
+      const plan = parseClientCapturePlanBytes(
+        await readFile(path.join(input.cwd, 'packwright/input/capture-plan.json')),
+      );
+      const vanilla = plan.scenes.find((scene) => scene.viewKind === 'first_person_vanilla');
+      const scaleReference = plan.scenes.find(
+        (scene) => scene.viewKind === 'first_person_scale_reference',
+      );
+
+      expect(vanilla).toMatchObject({
+        id: 'first_person_vanilla--fp_right_steve',
+        baseSceneId: 'fp_right_steve',
+        requiredForAuthority: true,
+      });
+      expect(vanilla?.presentation).toBeUndefined();
+      expect(scaleReference).toMatchObject({
+        id: 'first_person_scale_reference--fp_right_steve',
+        baseSceneId: 'fp_right_steve',
+        requiredForAuthority: false,
+        camera: vanilla?.camera,
+        context: vanilla?.context,
+        hand: vanilla?.hand,
+        playerModel: vanilla?.playerModel,
+        fov: vanilla?.fov,
+        resolution: vanilla?.resolution,
+        guiScale: vanilla?.guiScale,
+        animationState: vanilla?.animationState,
+        frame: vanilla?.frame,
+        presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' },
+      });
+
+      await writeCompleteOutput(plan);
+      return processResult({ exitCode: 0 });
+    };
+
+    const result = await executeMinecraftClientCapture({
+      ...fixture,
+      timeoutMs: 45_000,
+      launch,
+    });
+
+    expect(result.evidence.views.map((view) => view.sceneId).sort()).toEqual([
+      'first_person_scale_reference--fp_right_steve',
+      'first_person_vanilla--fp_right_steve',
+    ]);
+    expect(Object.keys(result.artifacts).sort()).toEqual([
+      'capture-complete.json',
+      'capture-report.json',
+      'logs/client.log',
+      'views/first_person_scale_reference--fp_right_steve.png',
+      'views/first_person_vanilla--fp_right_steve.png',
+    ]);
   });
 
   it('reports a timed-out client as validation failure and removes the disposable game', async () => {

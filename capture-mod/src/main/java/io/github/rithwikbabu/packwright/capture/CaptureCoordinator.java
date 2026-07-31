@@ -110,10 +110,7 @@ final class CaptureCoordinator {
     private boolean environmentVerified;
     private int worldCreationStartedTick;
     private int resourceReloadCompletedTick;
-    private boolean vanillaHandSubmissionSeen;
-    private boolean submittedItemMatched;
-    private boolean vanillaItemRenderSeen;
-    private boolean referenceArmSubmissionSeen;
+    private final RenderFrameEvidence renderFrameEvidence = new RenderFrameEvidence();
     private boolean renderPredicatesLogged;
 
     CaptureCoordinator(CapturePaths paths, CapturePlan plan, String planFileSha256) {
@@ -152,8 +149,26 @@ final class CaptureCoordinator {
         }
     }
 
+    void onRenderFrameStarted() {
+        if (state == State.WAITING_FOR_FRAMES) {
+            renderFrameEvidence.beginFrame();
+        } else {
+            renderFrameEvidence.abandonFrame();
+        }
+    }
+
     void onRenderedFrame(Minecraft client, boolean renderLevel) {
-        if (state != State.WAITING_FOR_FRAMES) return;
+        if (state != State.WAITING_FOR_FRAMES) {
+            renderFrameEvidence.abandonFrame();
+            return;
+        }
+        RenderFrameAttestation frame;
+        try {
+            frame = renderFrameEvidence.finishFrame();
+        } catch (IllegalStateException error) {
+            fail(client, "scene_capture_failed", error.getMessage());
+            return;
+        }
         Scene scene = currentScene();
         if (scene.animationState() != AnimationState.IDLE && elapsedTicks != animationTargetTick) {
             fail(
@@ -189,8 +204,10 @@ final class CaptureCoordinator {
             if (!renderPredicatesLogged) {
                 renderPredicatesLogged = true;
                 LOGGER.info(
-                        "Packwright capture render predicates; id={}; renderLevel={}; camera={}; panoramic={}; sleeping={}; hudHidden={}; mode={}; animation={}; usingItem={}; usedHand={}; useTicks={}; attackAnim={}; vanillaHandsSubmitted={}; submittedItemMatched={}; vanillaItemRendered={}; referenceArmRequested={}; referenceArmSubmitted={}",
+                        "Packwright capture render predicates; id={}; viewKind={}; requiredForAuthority={}; renderLevel={}; camera={}; panoramic={}; sleeping={}; hudHidden={}; mode={}; animation={}; usingItem={}; usedHand={}; useTicks={}; attackAnim={}; vanillaHandsSubmitted={}; submittedItemMatched={}; oppositeHandEmpty={}; vanillaItemRendered={}; referenceArmRequested={}; referenceArmSubmissions={}; referenceArmMatched={}; unexpectedReferenceArmSubmission={}",
                         scene.id(),
+                        scene.viewKind(),
+                        scene.requiredForAuthority(),
                         renderLevel,
                         renderState.optionsRenderState.cameraType,
                         cameraState.isPanoramicMode,
@@ -202,11 +219,14 @@ final class CaptureCoordinator {
                         player.getUsedItemHand(),
                         player.getTicksUsingItem(),
                         player.getAttackAnim(1.0f),
-                        vanillaHandSubmissionSeen,
-                        submittedItemMatched,
-                        vanillaItemRenderSeen,
+                        frame.vanillaHandSubmissionSeen(),
+                        frame.submittedItemMatched(),
+                        frame.oppositeHandEmpty(),
+                        frame.vanillaItemRenderSeen(),
                         scene.referenceArm(),
-                        referenceArmSubmissionSeen);
+                        frame.referenceArmSubmissionCount(),
+                        frame.referenceArmSubmissionSeen(),
+                        frame.unexpectedReferenceArmSubmissionSeen());
             }
             if (!renderLevel) {
                 fail(client, "scene_capture_failed", "Minecraft did not render the world for a world capture scene.");
@@ -223,14 +243,20 @@ final class CaptureCoordinator {
                 return;
             }
             if (scene.camera() == Camera.FIRST_PERSON
-                    && (!vanillaHandSubmissionSeen
-                            || !submittedItemMatched
-                            || !vanillaItemRenderSeen)) {
+                    && (!frame.vanillaHandSubmissionSeen()
+                            || !frame.submittedItemMatched()
+                            || !frame.oppositeHandEmpty()
+                            || !frame.vanillaItemRenderSeen())) {
                 fail(client, "scene_capture_failed", "Minecraft did not submit the exact planned held item.");
                 return;
             }
-            if (scene.referenceArm() && !referenceArmSubmissionSeen) {
-                fail(client, "scene_capture_failed", "Minecraft did not submit the signed reference-arm augmentation.");
+            String referenceArmFailure = referenceArmEvidenceFailure(
+                    scene.referenceArm(),
+                    frame.referenceArmSubmissionCount(),
+                    frame.referenceArmSubmissionSeen(),
+                    frame.unexpectedReferenceArmSubmissionSeen());
+            if (referenceArmFailure != null) {
+                fail(client, "scene_capture_failed", referenceArmFailure);
                 return;
             }
         } else if (scene.context() == Context.TOOLTIP) {
@@ -323,29 +349,51 @@ final class CaptureCoordinator {
 
     void onVanillaHandSubmission(
             LocalPlayer player, ItemStack submittedMain, ItemStack submittedOff) {
-        if (!isWorldSceneActive()) return;
+        if (!isCandidateWorldFrameOpen()) return;
         Scene scene = currentScene();
-        vanillaHandSubmissionSeen = true;
         ItemStack submitted = scene.hand() == Hand.RIGHT ? submittedMain : submittedOff;
+        ItemStack opposite = scene.hand() == Hand.RIGHT ? submittedOff : submittedMain;
         ItemStack expected = itemForScene(scene);
-        submittedItemMatched = submitted.getCount() == expected.getCount()
-                && ItemStack.isSameItemSameComponents(submitted, expected);
+        renderFrameEvidence.observeVanillaHand(
+                submitted.getCount() == expected.getCount()
+                        && ItemStack.isSameItemSameComponents(submitted, expected),
+                opposite.isEmpty());
     }
 
     HumanoidArm referenceArm() {
-        if (!isWorldSceneActive()) return null;
+        if (!isCandidateWorldFrameOpen()) return null;
         Scene scene = currentScene();
         if (scene.camera() != Camera.FIRST_PERSON || !scene.referenceArm()) return null;
         return scene.hand() == Hand.RIGHT ? HumanoidArm.RIGHT : HumanoidArm.LEFT;
     }
 
     void onReferenceArmSubmission(HumanoidArm arm) {
+        if (!isCandidateWorldFrameOpen()) return;
         HumanoidArm expected = referenceArm();
-        if (expected != null && expected == arm) referenceArmSubmissionSeen = true;
+        renderFrameEvidence.observeReferenceArm(expected != null && expected == arm);
+    }
+
+    static String referenceArmEvidenceFailure(
+            boolean requested, int submissionCount, boolean matchingSeen, boolean unexpectedSeen) {
+        if (submissionCount < 0) {
+            throw new IllegalArgumentException("Reference-arm submission count cannot be negative.");
+        }
+        if (!requested && (submissionCount != 0 || matchingSeen || unexpectedSeen)) {
+            return "A vanilla gameplay capture received an unexpected reference-arm augmentation.";
+        }
+        if (requested && submissionCount != 1) {
+            return submissionCount == 0
+                    ? "Minecraft did not submit the hash-bound reference-arm augmentation."
+                    : "Minecraft submitted the hash-bound reference-arm augmentation more than once in one frame.";
+        }
+        if (requested && (!matchingSeen || unexpectedSeen)) {
+            return "Minecraft did not submit the hash-bound reference-arm augmentation.";
+        }
+        return null;
     }
 
     void onVanillaItemRender(ItemStack rendered, net.minecraft.world.item.ItemDisplayContext context) {
-        if (!isWorldSceneActive()) return;
+        if (!isCandidateWorldFrameOpen()) return;
         Scene scene = currentScene();
         net.minecraft.world.item.ItemDisplayContext expectedContext = scene.hand() == Hand.RIGHT
                 ? net.minecraft.world.item.ItemDisplayContext.FIRST_PERSON_RIGHT_HAND
@@ -354,17 +402,14 @@ final class CaptureCoordinator {
         if (context == expectedContext
                 && rendered.getCount() == expected.getCount()
                 && ItemStack.isSameItemSameComponents(rendered, expected)) {
-            vanillaItemRenderSeen = true;
+            renderFrameEvidence.observeVanillaItemRender();
         }
     }
 
-    private boolean isWorldSceneActive() {
+    private boolean isCandidateWorldFrameOpen() {
         if (sceneIndex >= plan.scenes().size()) return false;
         if (currentScene().context() != Context.WORLD) return false;
-        return switch (state) {
-            case WAITING_FOR_EQUIP, WAITING_FOR_ANIMATION, WAITING_FOR_FRAMES, CAPTURING -> true;
-            default -> false;
-        };
+        return state == State.WAITING_FOR_FRAMES && renderFrameEvidence.isOpen();
     }
 
     private static boolean exactStack(ItemStack actual, ItemStack expected) {
@@ -671,7 +716,7 @@ final class CaptureCoordinator {
         ItemStack declared = declaredInput.createItemStack(planned.count());
         if (!ItemStack.isSameItemSameComponents(parsed, declared)) {
             throw new IllegalStateException(
-                    "Parsed item components do not match the separately signed component map.");
+                    "Parsed item components do not match the separately hash-bound component map.");
         }
         return parsed;
     }
@@ -681,10 +726,7 @@ final class CaptureCoordinator {
         Scene scene = currentScene();
         renderedSettleFrames = 0;
         targetResizeAttempts = 0;
-        vanillaHandSubmissionSeen = false;
-        submittedItemMatched = false;
-        vanillaItemRenderSeen = false;
-        referenceArmSubmissionSeen = false;
+        renderFrameEvidence.abandonFrame();
         renderPredicatesLogged = false;
         animationTargetTick = -1;
         sceneServerSetupFuture = null;
@@ -1164,7 +1206,7 @@ final class CaptureCoordinator {
 
     private Map<String, Object> commonReport(Minecraft client) {
         Map<String, Object> report = new LinkedHashMap<>();
-        report.put("schemaVersion", 1);
+        report.put("schemaVersion", 2);
         report.put("kind", "packwright.client-capture-report");
         report.put("executionId", plan.execution().executionId());
         report.put("planSha256", plan.planSha256());
@@ -1227,7 +1269,7 @@ final class CaptureCoordinator {
         reportReference.put("sha256", Hashing.sha256(report));
         reportReference.put("bytes", report.length);
         Map<String, Object> sentinel = new LinkedHashMap<>();
-        sentinel.put("schemaVersion", 1);
+        sentinel.put("schemaVersion", 2);
         sentinel.put("kind", "packwright.client-capture-complete");
         sentinel.put("executionId", plan.execution().executionId());
         sentinel.put("planSha256", plan.planSha256());
@@ -1276,6 +1318,101 @@ final class CaptureCoordinator {
         if (client.player == null) throw new IllegalStateException("Client player is unavailable.");
         return client.player;
     }
+
+    /** Observations scoped to one GameRenderer.render invocation, from HEAD through TAIL. */
+    static final class RenderFrameEvidence {
+        private boolean open;
+        private boolean vanillaHandSubmissionSeen;
+        private boolean submittedItemMatched;
+        private boolean oppositeHandEmpty;
+        private boolean vanillaItemRenderSeen;
+        private boolean referenceArmSubmissionSeen;
+        private boolean unexpectedReferenceArmSubmissionSeen;
+        private int referenceArmSubmissionCount;
+
+        void beginFrame() {
+            reset();
+            open = true;
+        }
+
+        void abandonFrame() {
+            reset();
+            open = false;
+        }
+
+        boolean isOpen() {
+            return open;
+        }
+
+        void observeVanillaHand(boolean itemMatched, boolean emptyOppositeHand) {
+            requireOpen();
+            if (vanillaHandSubmissionSeen) {
+                submittedItemMatched &= itemMatched;
+                oppositeHandEmpty &= emptyOppositeHand;
+            } else {
+                submittedItemMatched = itemMatched;
+                oppositeHandEmpty = emptyOppositeHand;
+            }
+            vanillaHandSubmissionSeen = true;
+        }
+
+        void observeVanillaItemRender() {
+            requireOpen();
+            vanillaItemRenderSeen = true;
+        }
+
+        void observeReferenceArm(boolean matching) {
+            requireOpen();
+            referenceArmSubmissionCount++;
+            if (matching) {
+                referenceArmSubmissionSeen = true;
+            } else {
+                unexpectedReferenceArmSubmissionSeen = true;
+            }
+        }
+
+        RenderFrameAttestation finishFrame() {
+            if (!open) {
+                throw new IllegalStateException(
+                        "Minecraft render TAIL did not match an open Packwright candidate frame.");
+            }
+            RenderFrameAttestation result = new RenderFrameAttestation(
+                    vanillaHandSubmissionSeen,
+                    submittedItemMatched,
+                    oppositeHandEmpty,
+                    vanillaItemRenderSeen,
+                    referenceArmSubmissionSeen,
+                    unexpectedReferenceArmSubmissionSeen,
+                    referenceArmSubmissionCount);
+            abandonFrame();
+            return result;
+        }
+
+        private void requireOpen() {
+            if (!open) {
+                throw new IllegalStateException("Render evidence was submitted outside an open candidate frame.");
+            }
+        }
+
+        private void reset() {
+            vanillaHandSubmissionSeen = false;
+            submittedItemMatched = false;
+            oppositeHandEmpty = false;
+            vanillaItemRenderSeen = false;
+            referenceArmSubmissionSeen = false;
+            unexpectedReferenceArmSubmissionSeen = false;
+            referenceArmSubmissionCount = 0;
+        }
+    }
+
+    record RenderFrameAttestation(
+            boolean vanillaHandSubmissionSeen,
+            boolean submittedItemMatched,
+            boolean oppositeHandEmpty,
+            boolean vanillaItemRenderSeen,
+            boolean referenceArmSubmissionSeen,
+            boolean unexpectedReferenceArmSubmissionSeen,
+            int referenceArmSubmissionCount) {}
 
     private enum State {
         WAITING_FOR_WORLD,

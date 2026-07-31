@@ -11,6 +11,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(GameRenderer.class)
 abstract class GameRendererMixin {
+    @Inject(method = "render", at = @At("HEAD"))
+    private void packwrightCapture$beforeRender(
+            DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo callback) {
+        CaptureRuntime.onRenderFrameStarted();
+    }
+
     @Inject(method = "render", at = @At("TAIL"))
     private void packwrightCapture$afterRender(
             DeltaTracker deltaTracker, boolean renderLevel, CallbackInfo callback) {

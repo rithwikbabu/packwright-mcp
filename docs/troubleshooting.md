@@ -114,7 +114,9 @@ Use individual view resources to identify the failing semantic display context, 
 
 The CPU preview is deterministic and approximate. It does not run the actual Minecraft client and does not provide full special-model rendering. A clean CPU contact sheet therefore needs agent review and is not authoritative client-render evidence.
 
-For a current `held_item` or `gui_item` proposal, prepare client capture and call `visual_capture` (or the CLI `capture` mirror) after CPU review. Compare the separate client contact sheet and bounded normalized preview resources against the source-frame hashes in the report; Packwright never silently replaces these with CPU images.
+For a current `held_item` or `gui_item` proposal, prepare client capture and call `visual_capture` (or the CLI `capture` mirror) after CPU review. The authoritative client contact sheet contains stock Minecraft views; `first_person_vanilla` has no Packwright-injected arm. Compare its bounded normalized preview resources against the source-frame hashes in the report; Packwright never silently replaces these with CPU images.
+
+No scale-reference sheet is expected by default. Set MCP `includeScaleReferenceViews: true` or CLI `--include-scale-reference-views` only when a separate scale/occlusion QA comparison is useful. Its `first_person_scale_reference` frames are augmented, non-WYSIWYG references and cannot establish how the item actually appears in stock gameplay or replace a missing required view.
 
 ## Official-client capture returns `setup_required`
 
@@ -122,14 +124,14 @@ Run `doctor` and inspect `minecraft_client_capture`. All of these must be true:
 
 - `setup-version 26.2 --accept-minecraft-eula --client-capture` completed in the same cache.
 - `PACKWRIGHT_JAVA` resolves to Java 25.
-- The installed npm package contains `capture-mod/runtime/packwright-capture-mod-0.4.0.jar`.
+- The installed npm package contains `capture-mod/runtime/packwright-capture-mod-0.4.1.jar`.
 - The process is running in an interactive macOS graphical session that can create a real OpenGL window.
 
 Remote shells, headless launch agents, Linux CI, and macOS sessions without an active WindowServer are intentionally not treated as capture-ready. Packwright does not emulate a display or fall back to its software renderer. If `PACKWRIGHT_OFFLINE=true`, rerun setup without offline mode; capture itself remains offline once the cache is complete.
 
 ## Official-client capture says the profile is unsupported
 
-Client capture is `limited` for `held_item` and `full` for `gui_item` in v0.4. A held-item spec with `twoHanded: true` intentionally fails until the adapter can pose and verify a secondary Minecraft-rendered arm at `secondaryGrip`. `block`, `placeable`, `armor`, `head_wearable`, `projectile`, and `entity_model` intentionally fail because their compiler/binding strategies are not present. Changing the profile name to bypass this result would misrepresent the generated item as another Minecraft target; use the profile's CPU evidence or wait for its truthful client implementation.
+Client capture is `limited` for `held_item` and `full` for `gui_item` in v0.4. A held-item spec with `twoHanded: true` intentionally fails until the adapter can pose and verify the secondary gameplay hand at `secondaryGrip`. `block`, `placeable`, `armor`, `head_wearable`, `projectile`, and `entity_model` intentionally fail because their compiler/binding strategies are not present. Changing the profile name to bypass this result would misrepresent the generated item as another Minecraft target; use the profile's CPU evidence or wait for its truthful client implementation.
 
 ## Official-client capture fails or times out
 
@@ -139,7 +141,7 @@ Do not attach full logs to a public issue without review. They can contain local
 
 ## Client screenshots differ between machines
 
-This is expected across some GPU, driver, operating-system, OpenGL, resolution, FOV, and GUI-scale combinations. Client frames have `authoritative_environment_capture` authority for the environment recorded in their report, not a cross-GPU pixel-determinism guarantee. Compare proposal/client/mod hashes first; if those match, review the recorded environment fields before treating a pixel change as a regression. Use the CPU renderer's content hash for portable deterministic regression checks and the client frames for environment-specific visual evidence.
+This is expected across some GPU, driver, operating-system, OpenGL, resolution, FOV, and GUI-scale combinations. Required stock client frames have `authoritative_environment_capture` authority for the environment recorded in their report, not a cross-GPU pixel-determinism guarantee. Optional scale-reference frames remain `augmented_qa_reference` and non-WYSIWYG even though Minecraft rendered them. Compare proposal/client/mod hashes first; if those match, review the recorded environment fields before treating a pixel change as a regression. Use the CPU renderer's content hash for portable deterministic regression checks and the stock client frames for environment-specific visual evidence.
 
 ## `visual_commit` reports a stale proposal or hash
 

@@ -63,7 +63,7 @@ describe('Packwright MCP registration', () => {
       () => client.close(),
       () => server.close(),
     );
-    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.4.0' });
+    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.4.1' });
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
@@ -156,6 +156,29 @@ describe('Packwright MCP registration', () => {
       expect.arrayContaining(['metric', 'status', 'unit', 'message']),
     );
 
+    const captureTool = tools.tools.find((tool) => tool.name === 'visual_capture');
+    const captureInputSchema = captureTool?.inputSchema as JsonSchemaShape | undefined;
+    const captureOutputSchema = captureTool?.outputSchema as JsonSchemaShape | undefined;
+    expect(captureInputSchema?.properties?.includeScaleReferenceViews).toMatchObject({
+      type: 'boolean',
+    });
+    expect(captureOutputSchema?.required).toEqual(
+      expect.arrayContaining(['authorityScope', 'requiredViewIds', 'supplementalViewIds']),
+    );
+    expect(captureOutputSchema?.properties?.authorityScope).toMatchObject({
+      type: 'string',
+      const: 'required_views_only',
+    });
+    expect(captureOutputSchema?.properties?.views?.items?.required).toEqual(
+      expect.arrayContaining([
+        'name',
+        'baseSceneId',
+        'viewKind',
+        'authority',
+        'requiredForAuthority',
+      ]),
+    );
+
     const templates = await client.listResourceTemplates();
     expect(templates.resourceTemplates.map((template) => template.name)).toEqual([
       'pack-manifest',
@@ -171,6 +194,7 @@ describe('Packwright MCP registration', () => {
       'visual-binding-proposal',
       'visual-client-capture-report',
       'visual-client-contact-sheet',
+      'visual-client-scale-reference-sheet',
       'visual-render-view',
       'visual-client-capture-view',
     ]);
@@ -250,12 +274,13 @@ describe('Packwright MCP registration', () => {
           ok: true,
           status: 'passed',
           authority: 'authoritative_environment_capture',
+          authorityScope: 'required_views_only',
           projectId: 'example',
           runId: identity,
           revisionId: identity,
           reviewProfile: 'held_item',
           profileVersion: 1,
-          clientCaptureSupport: 'full',
+          clientCaptureSupport: 'limited',
           captureReady: true,
           planSha256: identity,
           reportSha256: identity,
@@ -269,6 +294,8 @@ describe('Packwright MCP registration', () => {
           },
           contactSheetUri: `packwright://visual-runs/${identity}/revisions/${identity}/client-contact-sheet`,
           views: [],
+          requiredViewIds: [],
+          supplementalViewIds: [],
           diagnostics: [],
         }),
       readVisualResource: () =>

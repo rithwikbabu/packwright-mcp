@@ -523,7 +523,7 @@ function launchArguments(
     `-Dio.netty.native.workdir=${path.join(nativeRoot, 'netty')}`,
     `-Dlog4j.configurationFile=${path.join(input.config.cacheDir, ...logging.cachePath.split('/'))}`,
     '-Dminecraft.launcher.brand=packwright',
-    '-Dminecraft.launcher.version=0.4.0',
+    '-Dminecraft.launcher.version=0.4.1',
     '-Dfabric.side=client',
     `-Dfabric.gameVersion=${runtime.manifest.minecraftVersion}`,
     `-Dfabric.modsFolder=${path.join(gameDirectory, 'mods')}`,

@@ -73,6 +73,14 @@ public final class CaptureRuntime {
         if (active != null) active.onRenderedFrame(client, renderLevel);
     }
 
+    public static void onRenderFrameStarted() {
+        CaptureCoordinator active;
+        synchronized (CaptureRuntime.class) {
+            active = coordinator;
+        }
+        if (active != null) active.onRenderFrameStarted();
+    }
+
     public static void onVanillaHandSubmission(
             LocalPlayer player, ItemStack submittedMain, ItemStack submittedOff) {
         CaptureCoordinator active;
@@ -126,7 +134,7 @@ public final class CaptureRuntime {
             throws IOException, ProtocolException {
         CapturePlan.Execution execution = plan.execution();
         if (!Path.of(execution.outputDirectory()).equals(paths.outputDirectory())) {
-            throw new ProtocolException("Capture output path does not match the signed execution scope.");
+            throw new ProtocolException("Capture output path does not match the hash-bound execution scope.");
         }
         String executionProperty = System.getProperty("packwright.capture.execution", "");
         if (!execution.executionId().equals(executionProperty)) {
@@ -151,7 +159,7 @@ public final class CaptureRuntime {
         if (failure.paths() != null) {
             try {
                 byte[] report = CanonicalJson.encode(Map.of(
-                        "schemaVersion", 1,
+                        "schemaVersion", 2,
                         "status", "failed",
                         "error", failure.message()));
                 AtomicFiles.writeNew(

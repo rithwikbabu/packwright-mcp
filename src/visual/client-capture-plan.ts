@@ -15,6 +15,7 @@ export interface ClientCaptureSceneOptions {
   readonly width: number;
   readonly height: number;
   readonly guiScale: number;
+  readonly includeScaleReferenceViews?: boolean | undefined;
 }
 
 export interface CreateVisualClientCapturePlanInput extends ClientCaptureSceneOptions {
@@ -82,8 +83,9 @@ function animationForScene(
 function presentationForScene(
   spec: ModelSpec,
   scene: ReviewSceneDefinition,
+  viewKind: ClientCaptureScene['viewKind'],
 ): ClientCaptureScene['presentation'] {
-  if (cameraForScene(scene) === 'first_person' && contextForScene(scene) === 'world') {
+  if (viewKind === 'first_person_scale_reference') {
     return { referenceArm: true, referenceArmPurpose: 'scale_only' };
   }
   if (spec.reviewProfile !== 'gui_item') return undefined;
@@ -127,34 +129,46 @@ export function createVisualClientCaptureScenes(
   assertClientCaptureReviewSupport(spec.reviewProfile);
   if (spec.reviewProfile === 'held_item' && spec.heldItem?.secondaryGrip !== undefined) {
     throw new Error(
-      'Official-client capture for two-handed held items is not yet authoritative because the capture mod does not pose and verify a secondary reference arm at secondaryGrip.',
+      'Official-client capture for two-handed held items is not yet authoritative because the capture mod does not pose and verify the gameplay hand at secondaryGrip.',
     );
   }
   const reviewPlan = resolveReviewProfile(spec, 128);
-  return reviewPlan.scenes.map((scene) =>
-    ClientCaptureSceneSchema.parse({
-      id: scene.id,
-      camera: cameraForScene(scene),
-      context: contextForScene(scene),
-      hand: scene.hand ?? 'right',
-      playerModel: scene.referenceRig?.variant ?? 'steve',
-      fov: sceneFov(scene),
-      resolution: { width: options.width, height: options.height },
-      guiScale: sceneGuiScale(spec, scene, options.guiScale),
-      animationState: animationForScene(spec, scene),
-      frame: scene.id.includes('swing') ? 4 : scene.id.includes('active_use') ? 10 : 0,
-      ...(presentationForScene(spec, scene) === undefined
-        ? {}
-        : { presentation: presentationForScene(spec, scene) }),
-    }),
-  );
+  return reviewPlan.scenes.flatMap((scene) => {
+    const camera = cameraForScene(scene);
+    const context = contextForScene(scene);
+    const isFirstPersonWorld = camera === 'first_person' && context === 'world';
+    const viewKinds: readonly ClientCaptureScene['viewKind'][] = isFirstPersonWorld
+      ? options.includeScaleReferenceViews === true
+        ? ['first_person_vanilla', 'first_person_scale_reference']
+        : ['first_person_vanilla']
+      : ['minecraft_vanilla'];
+    return viewKinds.map((viewKind) => {
+      const presentation = presentationForScene(spec, scene, viewKind);
+      return ClientCaptureSceneSchema.parse({
+        id: isFirstPersonWorld ? `${viewKind}--${scene.id}` : scene.id,
+        baseSceneId: scene.id,
+        viewKind,
+        requiredForAuthority: viewKind !== 'first_person_scale_reference',
+        camera,
+        context,
+        hand: scene.hand ?? 'right',
+        playerModel: scene.referenceRig?.variant ?? 'steve',
+        fov: sceneFov(scene),
+        resolution: { width: options.width, height: options.height },
+        guiScale: sceneGuiScale(spec, scene, options.guiScale),
+        animationState: animationForScene(spec, scene),
+        frame: scene.id.includes('swing') ? 4 : scene.id.includes('active_use') ? 10 : 0,
+        ...(presentation === undefined ? {} : { presentation }),
+      });
+    });
+  });
 }
 
 export function createVisualClientCapturePlan(
   input: CreateVisualClientCapturePlanInput,
 ): ClientCapturePlan {
   return createClientCapturePlan({
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'packwright.client-capture-plan',
     minecraftVersion: '26.2',
     provenance: input.provenance,
