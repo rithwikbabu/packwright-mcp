@@ -57,7 +57,8 @@ export type VisualResourceInput =
         | 'review'
         | 'binding'
         | 'client_capture_report'
-        | 'client_contact_sheet';
+        | 'client_contact_sheet'
+        | 'client_scale_reference_sheet';
       readonly runId: string;
       readonly revisionId: string;
     }

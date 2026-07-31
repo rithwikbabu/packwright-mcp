@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-31
+
+### Changed
+
+- Upgraded the official-client capture wire format to protocol version 2. Every frame now carries a hash-bound `viewKind`, `baseSceneId`, and `requiredForAuthority` identity.
+- Required `first_person_vanilla` views use stock gameplay composition with no Packwright-injected arm and form the authoritative contact sheet.
+- MCP `includeScaleReferenceViews: true` and CLI `--include-scale-reference-views` add separately labeled `first_person_scale_reference` frames and a distinct QA contact sheet. These augmented views have `augmented_qa_reference` authority and never satisfy capture acceptance.
+- Client-capture results now declare `authorityScope: "required_views_only"`; result validation rejects relabeled, unclassified, overlapping, or incompletely represented required/supplemental views and mismatched scale-reference sheets.
+
+### Migration
+
+- A committed v0.4.0 visual revision cannot be recaptured in place. Create a child with `visual_revision_create`, run `visual_connect` again, capture it with `visual_capture`, and recommit it with `visual_commit` so the new protocol-v2 evidence and vanilla-first-person composition are bound to a new immutable receipt.
+
+### Security
+
+- Capture plans require every augmented scale-reference scene to have an otherwise identical vanilla first-person pair. The capture mod proves zero Packwright reference-arm submissions for vanilla frames and matching submissions for requested QA frames.
+- Stored evidence, workflow indexes, MCP resources, and regenerated contact sheets preserve the authoritative/supplemental split and reject stale protocol-v1 or relabeled evidence.
+
+### Fixed
+
+- First-person screenshots are now WYSIWYG by default: an empty offhand produces only Minecraft's normal main-hand composition. The optional extra arm is no longer presented to agents as gameplay output.
+
 ## [0.4.0] - 2026-07-31
 
 ### Added
@@ -118,7 +140,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Excluded Spyglass from runtime dependencies because its current dependency tree contains an unfixed critical archive-extraction advisory; external use requires explicit operator configuration.
 
-[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.2...v0.2.0

@@ -8,10 +8,10 @@ each scene, and captures Minecraft's actual framebuffer through
 
 The mod is deliberately not a general automation or remote-control surface. It:
 
-- supports capture-plan schema version `1` only;
+- supports capture-plan schema version `2` only;
 - provides `limited` one-handed `held_item` capture and `full` `gui_item`
-  capture; `twoHanded: true` is rejected until a secondary Minecraft-rendered
-  arm can be posed and verified at `secondaryGrip`;
+  capture; `twoHanded: true` is rejected until the secondary gameplay hand can
+  be posed and verified at `secondaryGrip`;
 - rejects unknown JSON fields, duplicate keys, unsafe scene IDs, relative or
   symbolic-link protocol paths, unknown resource-pack IDs, and trailing item
   syntax;
@@ -38,7 +38,7 @@ its SHA-256 before running the build.
 `build/libs/` stays ignored because it is generated. After unit tests and a
 reproducible local build, a maintainer copies only the non-sources Packwright
 JAR to
-`capture-mod/runtime/packwright-capture-mod-0.4.0.jar`. The npm package
+`capture-mod/runtime/packwright-capture-mod-0.4.1.jar`. The npm package
 allow-lists that exact runtime path; release and ordinary CI do not resolve
 Minecraft to rebuild the mod. The TypeScript launcher resolves that exact
 filename, verifies its SHA-256, and binds the digest into every capture plan
@@ -74,7 +74,7 @@ The mod independently verifies the launched Minecraft and Fabric versions,
 offline mode, selected resource-pack ID, item parser result, framebuffer PNGs,
 and screenshot hashes.
 
-## Capture plan v1
+## Capture plan v2
 
 The authoritative schema and identity algorithms live in
 `src/minecraft/client-capture-protocol.ts`. The mod accepts its canonical JSON
@@ -82,32 +82,41 @@ encoding exactly: `schemaVersion`, `kind`, `minecraftVersion`, `provenance`,
 sorted `scenes`, `execution`, and `planSha256`. Provenance binds the project,
 revision, compiled proposal, both pack archives, exact item stack, complete
 runtime manifest, client JAR, and capture-mod identities. Scenes bind camera,
-context, hand, Steve/Alex
-model, FOV, resolution, GUI scale, animation state/frame, and optional GUI
-presentation state. Unknown fields, duplicate keys, noncanonical bytes, hash
-mismatches, and execution-path mismatches are rejected.
+context, hand, Steve/Alex model, FOV, resolution, GUI scale, animation
+state/frame, optional GUI presentation state, `baseSceneId`, `viewKind`, and
+`requiredForAuthority`. Unknown fields, duplicate keys, noncanonical bytes,
+hash mismatches, and execution-path mismatches are rejected.
 
-First-person world scenes require the signed `referenceArm: true` and
+Every required first-person world scene is `first_person_vanilla`. It uses the
+exact stock Minecraft gameplay composition and forbids Packwright's reference
+arm fields. These scenes carry the authoritative evidence requirement.
+
+When the caller explicitly requests scale references, the plan includes a
+paired `first_person_scale_reference` scene for an existing vanilla scene.
+Only this supplemental scene requires signed `referenceArm: true` and
 `referenceArmPurpose: "scale_only"` presentation fields. Minecraft 26.2's
 generic nonempty-item path can omit the player arm, so the capture mixin
 submits that arm through Minecraft's own `ItemInHandRenderer` after the vanilla
 item submission and reports whether the submission occurred. This
-Minecraft-rendered augmentation supplies scale and occlusion context only; it
-is explicitly not the stock 26.2 composition and does not prove that the palm
-meets the semantic `primaryGrip`. The fields are rejected outside first-person
-world scenes and change only review evidence, never either pack. CPU review
-retains the advisory grip-distance measurement; client frames require visual
-review.
+Minecraft-rendered augmentation supplies QA-only scale and occlusion context;
+it is never stock or WYSIWYG gameplay evidence and does not prove that the palm
+meets the semantic `primaryGrip`. It cannot replace its paired required vanilla
+scene, and it changes only review evidence, never either pack. CPU review
+retains the advisory grip-distance measurement; all client frames require
+visual review.
 
 Successful execution writes sorted framebuffer PNGs, the full hashed client
 log, canonical `capture-report.json`, and finally canonical
 `capture-complete.json`. The completion file is the atomic publication point.
 
-The client screenshot is authoritative evidence for the reported OS/GPU/driver
-and graphics backend. It is not guaranteed to be pixel-identical on another
-GPU or operating system. Packwright must retain its deterministic software
-preview as a fast, portable advisory first gate. Protocol success means the
-planned evidence completed and verified; it is not aesthetic approval.
+Stock `minecraft_vanilla` and `first_person_vanilla` screenshots are
+authoritative evidence for the reported OS/GPU/driver and graphics backend.
+Optional `first_person_scale_reference` screenshots have only
+`augmented_qa_reference` authority. Client screenshots are not guaranteed to
+be pixel-identical on another GPU or operating system. Packwright must retain
+its deterministic software preview as a fast, portable advisory first gate.
+Protocol success means the required planned evidence completed and verified;
+it is not aesthetic approval.
 
 NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR
 MICROSOFT.

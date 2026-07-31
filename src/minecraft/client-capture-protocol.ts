@@ -8,7 +8,7 @@ import { readStableFile } from '../core/stable-file.js';
 import { decodePng } from '../visual/png.js';
 import { canonicalJsonBytes } from '../visual/run-store.js';
 
-export const CLIENT_CAPTURE_PROTOCOL_VERSION = 1 as const;
+export const CLIENT_CAPTURE_PROTOCOL_VERSION = 2 as const;
 export const CLIENT_CAPTURE_MINECRAFT_VERSION = '26.2' as const;
 
 export const CLIENT_CAPTURE_LIMITS = Object.freeze({
@@ -117,6 +117,9 @@ export const ClientCaptureResolutionSchema = z
 export const ClientCaptureSceneSchema = z
   .object({
     id: SafeIdSchema,
+    baseSceneId: SafeIdSchema,
+    viewKind: z.enum(['minecraft_vanilla', 'first_person_vanilla', 'first_person_scale_reference']),
+    requiredForAuthority: z.boolean(),
     camera: z.enum(['first_person', 'third_person_back', 'third_person_front', 'neutral']),
     context: z.enum(['world', 'inventory', 'hotbar', 'tooltip', 'item_inspection']),
     hand: z.enum(['right', 'left']),
@@ -140,9 +143,47 @@ export const ClientCaptureSceneSchema = z
   })
   .strict()
   .superRefine((scene, context) => {
-    const requiresReferenceArm = scene.camera === 'first_person' && scene.context === 'world';
+    const isFirstPersonWorld = scene.camera === 'first_person' && scene.context === 'world';
+    const isVanillaFirstPerson = scene.viewKind === 'first_person_vanilla';
+    const isScaleReference = scene.viewKind === 'first_person_scale_reference';
+    if (isFirstPersonWorld && !isVanillaFirstPerson && !isScaleReference) {
+      context.addIssue({
+        code: 'custom',
+        path: ['viewKind'],
+        message:
+          'First-person world captures must be explicitly classified as vanilla gameplay or a scale reference',
+      });
+    }
+    if (!isFirstPersonWorld && scene.viewKind !== 'minecraft_vanilla') {
+      context.addIssue({
+        code: 'custom',
+        path: ['viewKind'],
+        message: 'First-person view kinds are only valid for first-person world captures',
+      });
+    }
+    const expectedId =
+      scene.viewKind === 'first_person_vanilla'
+        ? `first_person_vanilla--${scene.baseSceneId}`
+        : scene.viewKind === 'first_person_scale_reference'
+          ? `first_person_scale_reference--${scene.baseSceneId}`
+          : scene.baseSceneId;
+    if (scene.id !== expectedId) {
+      context.addIssue({
+        code: 'custom',
+        path: ['id'],
+        message: 'Capture scene id does not match its hash-bound view kind and base scene id',
+      });
+    }
+    if (scene.requiredForAuthority === isScaleReference) {
+      context.addIssue({
+        code: 'custom',
+        path: ['requiredForAuthority'],
+        message:
+          'Vanilla Minecraft views are required for authority and scale-reference views are supplemental',
+      });
+    }
     if (
-      requiresReferenceArm &&
+      isScaleReference &&
       (scene.presentation?.referenceArm !== true ||
         scene.presentation.referenceArmPurpose !== 'scale_only')
     ) {
@@ -150,18 +191,18 @@ export const ClientCaptureSceneSchema = z
         code: 'custom',
         path: ['presentation'],
         message:
-          'First-person world captures must explicitly declare the Minecraft-rendered scale-only reference-arm augmentation',
+          'Scale-reference captures must explicitly declare the Minecraft-rendered scale-only reference-arm augmentation',
       });
     }
     if (
-      !requiresReferenceArm &&
+      !isScaleReference &&
       (scene.presentation?.referenceArm !== undefined ||
         scene.presentation?.referenceArmPurpose !== undefined)
     ) {
       context.addIssue({
         code: 'custom',
         path: ['presentation'],
-        message: 'Reference-arm fields are only valid for first-person world captures',
+        message: 'Reference-arm fields are only valid for first-person scale-reference captures',
       });
     }
   });
@@ -266,6 +307,8 @@ function addUniqueSortedSceneChecks(
   context: z.RefinementCtx,
 ): void {
   const seen = new Set<string>();
+  const vanillaFirstPerson = new Map<string, (typeof scenes)[number]>();
+  const scaleReferences: (typeof scenes)[number][] = [];
   for (const [index, scene] of scenes.entries()) {
     if (seen.has(scene.id)) {
       context.addIssue({
@@ -275,11 +318,51 @@ function addUniqueSortedSceneChecks(
       });
     }
     seen.add(scene.id);
+    if (scene.viewKind === 'first_person_vanilla') {
+      vanillaFirstPerson.set(scene.baseSceneId, scene);
+    } else if (scene.viewKind === 'first_person_scale_reference') {
+      scaleReferences.push(scene);
+    }
     if (index > 0 && (scenes[index - 1]?.id ?? '') >= scene.id) {
       context.addIssue({
         code: 'custom',
         path: ['scenes', index, 'id'],
         message: 'Capture scenes must be sorted by id',
+      });
+    }
+  }
+  for (const scene of scaleReferences) {
+    const vanilla = vanillaFirstPerson.get(scene.baseSceneId);
+    if (vanilla === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['scenes'],
+        message: `Scale-reference scene '${scene.id}' has no matching vanilla first-person scene`,
+      });
+      continue;
+    }
+    const comparable = (value: (typeof scenes)[number]): unknown => {
+      const presentation = { ...(value.presentation ?? {}) };
+      delete presentation.referenceArm;
+      delete presentation.referenceArmPurpose;
+      return {
+        camera: value.camera,
+        context: value.context,
+        hand: value.hand,
+        playerModel: value.playerModel,
+        fov: value.fov,
+        resolution: value.resolution,
+        guiScale: value.guiScale,
+        animationState: value.animationState,
+        frame: value.frame,
+        ...(Object.keys(presentation).length === 0 ? {} : { presentation }),
+      };
+    };
+    if (!canonicalJsonBytes(comparable(scene)).equals(canonicalJsonBytes(comparable(vanilla)))) {
+      context.addIssue({
+        code: 'custom',
+        path: ['scenes'],
+        message: `Scale-reference scene '${scene.id}' does not match its vanilla first-person pair`,
       });
     }
   }
@@ -311,6 +394,17 @@ export const ClientCapturePlanSchema = z
   .superRefine(({ scenes }, context) => addUniqueSortedSceneChecks(scenes, context));
 
 export type ClientCaptureScene = z.infer<typeof ClientCaptureSceneSchema>;
+export type ClientCaptureViewKind = ClientCaptureScene['viewKind'];
+export type ClientCaptureViewAuthority =
+  'authoritative_environment_capture' | 'augmented_qa_reference';
+
+export function clientCaptureViewAuthority(
+  scene: Pick<ClientCaptureScene, 'viewKind'>,
+): ClientCaptureViewAuthority {
+  return scene.viewKind === 'first_person_scale_reference'
+    ? 'augmented_qa_reference'
+    : 'authoritative_environment_capture';
+}
 export type ClientCaptureItemStack = z.infer<typeof ClientCaptureItemStackSchema>;
 export type ClientCaptureProvenance = z.infer<typeof ClientCaptureProvenanceSchema>;
 export type ClientCaptureExecution = z.infer<typeof ClientCaptureExecutionSchema>;

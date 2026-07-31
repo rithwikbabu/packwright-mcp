@@ -15,6 +15,8 @@ const REVISION_ID = 'b'.repeat(64);
 const SPEC_SHA256 = 'c'.repeat(64);
 const TEXTURE_SHA256 = 'd'.repeat(64);
 const SOURCE_SHA256 = 'e'.repeat(64);
+const REQUIRED_CAPTURE_VIEW = 'first_person_vanilla--fp_right_steve';
+const SUPPLEMENTAL_CAPTURE_VIEW = 'first_person_scale_reference--fp_right_steve';
 
 afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
@@ -54,6 +56,88 @@ function stateWithTexture(projectId: string, workspaceId: string): VisualProject
   };
 }
 
+interface ClientCaptureStateOptions {
+  readonly requiredViewIds?: readonly string[] | undefined;
+  readonly supplementalViewIds?: readonly string[] | undefined;
+  readonly includeSupplementalView?: boolean | undefined;
+  readonly includeScaleReferenceContactSheet?: boolean | undefined;
+}
+
+function capturePng(label: string, hashCharacter: string, source: 'captured' | 'generated') {
+  return {
+    label,
+    sha256: hashCharacter.repeat(64),
+    width: 1280,
+    height: 720,
+    bytes: 4096,
+    source,
+    sourceSha256: hashCharacter.repeat(64),
+    strippedMetadata: true,
+  } as const;
+}
+
+function stateWithClientCapture(
+  projectId: string,
+  workspaceId: string,
+  options: ClientCaptureStateOptions = {},
+): VisualProjectWorkflowState {
+  const includeSupplementalView = options.includeSupplementalView ?? true;
+  const includeScaleReferenceContactSheet = options.includeScaleReferenceContactSheet ?? true;
+  return {
+    schemaVersion: 1,
+    workspaceId,
+    projectId,
+    latest: { runId: RUN_ID, revisionId: REVISION_ID },
+    revisions: {
+      [REVISION_ID]: {
+        runId: RUN_ID,
+        revisionId: REVISION_ID,
+        specSha256: SPEC_SHA256,
+        textures: {},
+        compiledArtifactId: '0'.repeat(64),
+        proposalArtifactId: '1'.repeat(64),
+        clientCapture: {
+          authority: 'authoritative_environment_capture',
+          authorityScope: 'required_views_only',
+          rendererVersion: 'minecraft-client-26.2',
+          profileId: 'held_item',
+          profileVersion: 1,
+          planSha256: '2'.repeat(64),
+          reportSha256: '3'.repeat(64),
+          sourceReportSha256: '4'.repeat(64),
+          specSha256: SPEC_SHA256,
+          compiledArtifactId: '0'.repeat(64),
+          proposalArtifactId: '1'.repeat(64),
+          manifestSha256: '5'.repeat(64),
+          datapackContentSha256: '6'.repeat(64),
+          resourcepackContentSha256: '7'.repeat(64),
+          runtimeManifestSha256: '8'.repeat(64),
+          clientJarSha1: '9'.repeat(40),
+          clientJarSha256: 'a'.repeat(64),
+          captureModSha256: 'b'.repeat(64),
+          log: { label: 'minecraft-log', sha256: 'c'.repeat(64), bytes: 1024 },
+          contactSheet: capturePng('vanilla-contact', 'd', 'generated'),
+          ...(includeScaleReferenceContactSheet
+            ? {
+                scaleReferenceContactSheet: capturePng('scale-reference-contact', 'e', 'generated'),
+              }
+            : {}),
+          views: {
+            [REQUIRED_CAPTURE_VIEW]: capturePng('vanilla-view', 'f', 'captured'),
+            ...(includeSupplementalView
+              ? {
+                  [SUPPLEMENTAL_CAPTURE_VIEW]: capturePng('scale-reference-view', '0', 'captured'),
+                }
+              : {}),
+          },
+          requiredViewIds: options.requiredViewIds ?? [REQUIRED_CAPTURE_VIEW],
+          supplementalViewIds: options.supplementalViewIds ?? [SUPPLEMENTAL_CAPTURE_VIEW],
+        },
+      },
+    },
+  };
+}
+
 describe('visual workflow state storage', () => {
   it('round-trips texture source and normalized-source provenance', async () => {
     const cacheRoot = await temporaryDirectory();
@@ -72,6 +156,129 @@ describe('visual workflow state storage', () => {
       sourceSha256: SOURCE_SHA256,
       strippedMetadata: true,
     });
+  });
+
+  it('round-trips authoritative, supplemental, and scale-reference capture evidence separately', async () => {
+    const cacheRoot = await temporaryDirectory();
+    const workspaceRoot = await temporaryDirectory();
+    const store = new VisualWorkflowStateStore(cacheRoot, workspaceRoot);
+
+    await store.update('firestaff', () => stateWithClientCapture('firestaff', store.workspaceId));
+
+    const capture = (await store.read('firestaff')).revisions[REVISION_ID]?.clientCapture;
+    expect(capture).toMatchObject({
+      authority: 'authoritative_environment_capture',
+      authorityScope: 'required_views_only',
+      requiredViewIds: [REQUIRED_CAPTURE_VIEW],
+      supplementalViewIds: [SUPPLEMENTAL_CAPTURE_VIEW],
+      scaleReferenceContactSheet: {
+        label: 'scale-reference-contact',
+        source: 'generated',
+      },
+      views: {
+        [REQUIRED_CAPTURE_VIEW]: { label: 'vanilla-view', source: 'captured' },
+        [SUPPLEMENTAL_CAPTURE_VIEW]: {
+          label: 'scale-reference-view',
+          source: 'captured',
+        },
+      },
+    });
+  });
+
+  it('round-trips a vanilla-only capture without an optional scale-reference sheet', async () => {
+    const cacheRoot = await temporaryDirectory();
+    const workspaceRoot = await temporaryDirectory();
+    const store = new VisualWorkflowStateStore(cacheRoot, workspaceRoot);
+
+    await store.update('firestaff', () =>
+      stateWithClientCapture('firestaff', store.workspaceId, {
+        supplementalViewIds: [],
+        includeSupplementalView: false,
+        includeScaleReferenceContactSheet: false,
+      }),
+    );
+
+    const capture = (await store.read('firestaff')).revisions[REVISION_ID]?.clientCapture;
+    expect(capture?.requiredViewIds).toEqual([REQUIRED_CAPTURE_VIEW]);
+    expect(capture?.supplementalViewIds).toEqual([]);
+    expect(capture?.scaleReferenceContactSheet).toBeUndefined();
+    expect(Object.keys(capture?.views ?? {})).toEqual([REQUIRED_CAPTURE_VIEW]);
+  });
+
+  it('rejects supplemental IDs whose captured views are missing', async () => {
+    const cacheRoot = await temporaryDirectory();
+    const workspaceRoot = await temporaryDirectory();
+    const store = new VisualWorkflowStateStore(cacheRoot, workspaceRoot);
+
+    await expect(
+      store.update('firestaff', () =>
+        stateWithClientCapture('firestaff', store.workspaceId, {
+          includeSupplementalView: false,
+        }),
+      ),
+    ).rejects.toThrow(/scale-reference client-capture view is invalid or missing/u);
+  });
+
+  it('rejects unclassified views and a scale-reference sheet without matching supplemental views', async () => {
+    const cacheRoot = await temporaryDirectory();
+    const workspaceRoot = await temporaryDirectory();
+    const store = new VisualWorkflowStateStore(cacheRoot, workspaceRoot);
+
+    await expect(
+      store.update('firestaff', () =>
+        stateWithClientCapture('firestaff', store.workspaceId, {
+          supplementalViewIds: [],
+          includeScaleReferenceContactSheet: false,
+        }),
+      ),
+    ).rejects.toThrow(/views are not completely classified/u);
+
+    await expect(
+      store.update('firestaff', () =>
+        stateWithClientCapture('firestaff', store.workspaceId, {
+          supplementalViewIds: [],
+          includeSupplementalView: false,
+        }),
+      ),
+    ).rejects.toThrow(/contact sheet does not match its supplemental views/u);
+
+    await expect(
+      store.update('firestaff', () =>
+        stateWithClientCapture('firestaff', store.workspaceId, {
+          includeScaleReferenceContactSheet: false,
+        }),
+      ),
+    ).rejects.toThrow(/contact sheet does not match its supplemental views/u);
+  });
+
+  it('rejects duplicate and overlapping authoritative or supplemental view IDs', async () => {
+    const cacheRoot = await temporaryDirectory();
+    const workspaceRoot = await temporaryDirectory();
+    const store = new VisualWorkflowStateStore(cacheRoot, workspaceRoot);
+
+    await expect(
+      store.update('firestaff', () =>
+        stateWithClientCapture('firestaff', store.workspaceId, {
+          requiredViewIds: [REQUIRED_CAPTURE_VIEW, REQUIRED_CAPTURE_VIEW],
+        }),
+      ),
+    ).rejects.toThrow(/required client-capture views are duplicated/u);
+
+    await expect(
+      store.update('firestaff', () =>
+        stateWithClientCapture('firestaff', store.workspaceId, {
+          supplementalViewIds: [SUPPLEMENTAL_CAPTURE_VIEW, SUPPLEMENTAL_CAPTURE_VIEW],
+        }),
+      ),
+    ).rejects.toThrow(/scale-reference client-capture views are duplicated/u);
+
+    await expect(
+      store.update('firestaff', () =>
+        stateWithClientCapture('firestaff', store.workspaceId, {
+          supplementalViewIds: [REQUIRED_CAPTURE_VIEW],
+        }),
+      ),
+    ).rejects.toThrow(/scale-reference client-capture views are duplicated/u);
   });
 
   it('rejects a symlink used as the configured cache root', async () => {

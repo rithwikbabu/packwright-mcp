@@ -439,48 +439,163 @@ export const VisualClientCaptureInputSchema = z
       })
       .default({ width: 1280, height: 720 }),
     guiScale: z.number().int().min(0).max(8).default(2),
+    includeScaleReferenceViews: z.boolean().default(false),
   })
   .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
 
-export const VisualClientCaptureResultSchema = z.strictObject({
-  ok: z.boolean(),
-  status: z.enum(['passed', 'failed', 'setup_required', 'cancelled', 'timeout']),
-  authority: z.literal('authoritative_environment_capture'),
-  projectId: VisualProjectIdSchema,
-  runId: VisualDraftIdSchema,
-  revisionId: VisualDraftIdSchema,
-  reviewProfile: z.enum(REVIEW_PROFILE_IDS),
-  profileVersion: z.number().int().positive(),
-  clientCaptureSupport: z.enum(['full', 'limited', 'unsupported']),
-  captureReady: z.boolean(),
-  planSha256: Sha256Schema.optional(),
-  reportSha256: Sha256Schema.optional(),
-  reportUri: z.url().optional(),
-  contactSheet: VisualFileSchema.optional(),
-  contactSheetUri: z.url().optional(),
-  views: z.array(
-    z.strictObject({
-      name: z.string().min(1).max(128),
-      width: z.number().int().positive(),
-      height: z.number().int().positive(),
-      sourceSha256: Sha256Schema,
-      normalizedSha256: Sha256Schema,
-      bytes: z.number().int().positive(),
-      uri: z.url(),
-    }),
-  ),
-  environment: z
-    .strictObject({
-      rendererBackend: z.enum(['opengl', 'vulkan']),
-      operatingSystem: z.string().min(1).max(512),
-      javaVersion: z.string().min(1).max(512),
-      gpuVendor: z.string().min(1).max(512),
-      gpuRenderer: z.string().min(1).max(512),
-      driverVersion: z.string().min(1).max(512),
-    })
-    .optional(),
-  diagnostics: z.array(DiagnosticSchema),
-});
+export const VisualClientCaptureResultSchema = z
+  .strictObject({
+    ok: z.boolean(),
+    status: z.enum(['passed', 'failed', 'setup_required', 'cancelled', 'timeout']),
+    authority: z.literal('authoritative_environment_capture'),
+    authorityScope: z.literal('required_views_only'),
+    projectId: VisualProjectIdSchema,
+    runId: VisualDraftIdSchema,
+    revisionId: VisualDraftIdSchema,
+    reviewProfile: z.enum(REVIEW_PROFILE_IDS),
+    profileVersion: z.number().int().positive(),
+    clientCaptureSupport: z.enum(['full', 'limited', 'unsupported']),
+    captureReady: z.boolean(),
+    planSha256: Sha256Schema.optional(),
+    reportSha256: Sha256Schema.optional(),
+    reportUri: z.url().optional(),
+    contactSheet: VisualFileSchema.optional(),
+    contactSheetUri: z.url().optional(),
+    scaleReferenceContactSheet: VisualFileSchema.optional(),
+    scaleReferenceContactSheetUri: z.url().optional(),
+    views: z.array(
+      z.strictObject({
+        name: z.string().min(1).max(128),
+        baseSceneId: z.string().min(1).max(64),
+        viewKind: z.enum([
+          'minecraft_vanilla',
+          'first_person_vanilla',
+          'first_person_scale_reference',
+        ]),
+        authority: z.enum(['authoritative_environment_capture', 'augmented_qa_reference']),
+        requiredForAuthority: z.boolean(),
+        width: z.number().int().positive(),
+        height: z.number().int().positive(),
+        sourceSha256: Sha256Schema,
+        normalizedSha256: Sha256Schema,
+        bytes: z.number().int().positive(),
+        uri: z.url(),
+      }),
+    ),
+    requiredViewIds: z.array(z.string().min(1).max(128)),
+    supplementalViewIds: z.array(z.string().min(1).max(128)),
+    environment: z
+      .strictObject({
+        rendererBackend: z.enum(['opengl', 'vulkan']),
+        operatingSystem: z.string().min(1).max(512),
+        javaVersion: z.string().min(1).max(512),
+        gpuVendor: z.string().min(1).max(512),
+        gpuRenderer: z.string().min(1).max(512),
+        driverVersion: z.string().min(1).max(512),
+      })
+      .optional(),
+    diagnostics: z.array(DiagnosticSchema),
+  })
+  .superRefine((value, context) => {
+    const requiredIds = new Set(value.requiredViewIds);
+    const supplementalIds = new Set(value.supplementalViewIds);
+    const viewIds = new Set(value.views.map((view) => view.name));
+
+    if (requiredIds.size !== value.requiredViewIds.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['requiredViewIds'],
+        message: 'Required client-capture view IDs must be unique',
+      });
+    }
+    if (supplementalIds.size !== value.supplementalViewIds.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['supplementalViewIds'],
+        message: 'Supplemental client-capture view IDs must be unique',
+      });
+    }
+    if (viewIds.size !== value.views.length) {
+      context.addIssue({
+        code: 'custom',
+        path: ['views'],
+        message: 'Completed client-capture view names must be unique',
+      });
+    }
+
+    for (const [index, view] of value.views.entries()) {
+      const isScaleReference = view.viewKind === 'first_person_scale_reference';
+      const expectedAuthority = isScaleReference
+        ? 'augmented_qa_reference'
+        : 'authoritative_environment_capture';
+      const expectedRequired = !isScaleReference;
+      const inRequired = requiredIds.has(view.name);
+      const inSupplemental = supplementalIds.has(view.name);
+
+      if (view.authority !== expectedAuthority) {
+        context.addIssue({
+          code: 'custom',
+          path: ['views', index, 'authority'],
+          message: `View authority must be '${expectedAuthority}' for '${view.viewKind}'`,
+        });
+      }
+      if (view.requiredForAuthority !== expectedRequired) {
+        context.addIssue({
+          code: 'custom',
+          path: ['views', index, 'requiredForAuthority'],
+          message: `'${view.viewKind}' requiredForAuthority must be ${String(expectedRequired)}`,
+        });
+      }
+      if (inRequired === inSupplemental || inRequired !== expectedRequired) {
+        context.addIssue({
+          code: 'custom',
+          path: [expectedRequired ? 'requiredViewIds' : 'supplementalViewIds'],
+          message: `Completed view '${view.name}' is not classified in its only valid authority set`,
+        });
+      }
+    }
+
+    for (const [index, viewId] of value.requiredViewIds.entries()) {
+      if (!viewIds.has(viewId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['requiredViewIds', index],
+          message: `Required view '${viewId}' is not present in completed views`,
+        });
+      }
+      if (supplementalIds.has(viewId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['requiredViewIds', index],
+          message: `View '${viewId}' cannot be both required and supplemental`,
+        });
+      }
+    }
+    for (const [index, viewId] of value.supplementalViewIds.entries()) {
+      if (!viewIds.has(viewId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['supplementalViewIds', index],
+          message: `Supplemental view '${viewId}' is not present in completed views`,
+        });
+      }
+    }
+
+    const hasScaleReferenceSheet = value.scaleReferenceContactSheet !== undefined;
+    const hasScaleReferenceSheetUri = value.scaleReferenceContactSheetUri !== undefined;
+    const expectsScaleReferenceSheet = value.supplementalViewIds.length > 0;
+    if (
+      hasScaleReferenceSheet !== hasScaleReferenceSheetUri ||
+      hasScaleReferenceSheet !== expectsScaleReferenceSheet
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['scaleReferenceContactSheet'],
+        message:
+          'Scale-reference contact sheet and URI must both exist exactly when supplemental views exist',
+      });
+    }
+  });
 
 const PartRepairSchema = z.strictObject({
   kind: z.literal('part'),

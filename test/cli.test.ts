@@ -56,6 +56,7 @@ describe('compiled CLI', () => {
     expect(result.stdout).toContain('--proposal-sha256');
     expect(result.stdout).toContain('--confirm');
     expect(result.stdout).toContain('--gui-scale');
+    expect(result.stdout).toContain('--include-scale-reference-views');
   });
 
   it('emits a structured failure when --json is requested', async () => {

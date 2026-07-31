@@ -47,7 +47,7 @@ Add or update tests for behavior changes. Safety-sensitive changes should includ
 
 Minecraft integration tests are not part of ordinary CI. Maintainers run the manually approved `Minecraft integration` workflow when a change affects Mojang downloads, Java discovery, vanilla validation, pack loading, or GameTest parsing. That workflow requires explicit EULA acceptance and never uploads the server jar.
 
-Changes to the official-client launcher, capture protocol/mod, scene lowering, or evidence verification also require the protected manual graphical gate described in [docs/releasing.md](docs/releasing.md). It runs only on a trusted interactive macOS machine with Java 25, explicit EULA acceptance, and an isolated cache. Do not upload Minecraft jars/assets/natives, full client logs, or framebuffer captures. Ordinary CI tests the capture protocol and runtime manifest with original fixtures but does not claim to launch the client.
+Changes to the official-client launcher, capture protocol/mod, scene lowering, or evidence verification also require the protected manual graphical gate described in [docs/releasing.md](docs/releasing.md). It runs only on a trusted interactive macOS machine with Java 25, explicit EULA acceptance, and an isolated cache. The gate must verify that default `first_person_vanilla` views contain no Packwright-injected arm and remain the required authority, then separately exercise `--include-scale-reference-views` and confirm those augmented QA views cannot replace required evidence. Do not upload Minecraft jars/assets/natives, full client logs, or framebuffer captures. Ordinary CI tests the capture protocol and runtime manifest with original fixtures but does not claim to launch the client.
 
 ## Design expectations
 

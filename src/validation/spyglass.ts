@@ -544,7 +544,7 @@ export class ExternalSpyglassAdapter implements ValidationAdapter {
           textDocument: { publishDiagnostics: { relatedInformation: true } },
           workspace: { workspaceFolders: true },
         },
-        clientInfo: { name: 'packwright-mcp', version: '0.4.0' },
+        clientInfo: { name: 'packwright-mcp', version: '0.4.1' },
       });
       await connection.notify('initialized', {});
       const documents = await textDocuments(packRoot);

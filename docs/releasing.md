@@ -75,7 +75,7 @@ The MCP Registry is a metadata registry and may remain in preview. Re-check its 
 
 Release and ordinary CI jobs must never download Minecraft jars, assets, libraries, natives, or generated vanilla data. Only a manually approved integration workflow or local release gate may run setup, and no workflow may upload the cache, jars, assets, generated registries, decompiled sources, full logs, or framebuffer captures.
 
-The npm package includes one original Packwright artifact at `capture-mod/runtime/packwright-capture-mod-0.4.0.jar`. It is built from the MIT-licensed source under `capture-mod/` and must not contain Minecraft classes/assets, Fabric Loader, Fabric API, ASM, Sponge Mixin, or other downloaded launcher components. `package.json.files` allow-lists only that exact runtime JAR plus its Packwright license/readme. Before changing it, a maintainer must:
+The npm package includes one original Packwright artifact at `capture-mod/runtime/packwright-capture-mod-0.4.1.jar`. It is built from the MIT-licensed source under `capture-mod/` and must not contain Minecraft classes/assets, Fabric Loader, Fabric API, ASM, Sponge Mixin, or other downloaded launcher components. `package.json.files` allow-lists only that exact runtime JAR plus its Packwright license/readme. Before changing it, a maintainer must:
 
 1. Accept the Minecraft EULA and build the capture-mod source in an isolated local environment with Java 25 and the pinned Gradle/Loom configuration.
 2. Run the capture-mod unit tests and inspect the resulting JAR entry list for only Packwright classes/resources and normal JAR metadata.
@@ -84,7 +84,7 @@ The npm package includes one original Packwright artifact at `capture-mod/runtim
 
 ## Official-client graphical release gate
 
-Current capture uses a real OpenGL window and is intentionally not claimed by hosted CI. On a protected trusted interactive macOS machine, use an isolated absolute workspace/cache and Java 25, explicitly accept the EULA, and run `setup-version 26.2 --client-capture`. Capture both the known `held_item` and `gui_item` fixtures from their exact connected proposals, run `visual_validate` with its default capture-required policy, and prove `visual_commit` accepts only each exact `expectedClientCaptureReportSha256`.
+Current capture uses a real OpenGL window and is intentionally not claimed by hosted CI. On a protected trusted interactive macOS machine, use an isolated absolute workspace/cache and Java 25, explicitly accept the EULA, and run `setup-version 26.2 --client-capture`. Capture both the known `held_item` and `gui_item` fixtures from their exact connected proposals with the default settings. Confirm that every required `first_person_vanilla` view uses exact stock gameplay composition with no injected reference arm, then run the held-item capture again with `--include-scale-reference-views`. Confirm the supplemental `first_person_scale_reference` frames appear only in the separate QA sheet, are clearly non-WYSIWYG, and cannot replace required authority. Run `visual_validate` with its default capture-required policy, and prove `visual_commit` accepts only each exact `expectedClientCaptureReportSha256`.
 
 The repository acceptance harness can exercise one complete held-item vertical slice with the actual client:
 
@@ -95,6 +95,6 @@ PACKWRIGHT_RUN_CLIENT_CAPTURE=true \
 npm run test:minecraft
 ```
 
-Review that each result binds the expected client/mod/pack/item hashes, reports `authoritative_environment_capture`, includes the complete planned scene set, records the OS/Java/GPU/driver/OpenGL/settings environment, and has a clean resource-load log. Confirm timeout/cancellation cleanup and that no user save or unrelated mod was touched. Pixels are release evidence for that recorded environment, not a cross-GPU golden image.
+Review that each result binds the expected client/mod/pack/item hashes, includes the complete required scene set, records the OS/Java/GPU/driver/OpenGL/settings environment, and has a clean resource-load log. Required stock views must report `authoritative_environment_capture`; optional scale references must report `augmented_qa_reference` and remain supplemental. Confirm timeout/cancellation cleanup and that no user save or unrelated mod was touched. Authoritative pixels are release evidence for that recorded environment, not a cross-GPU golden image.
 
 Destroy the isolated game/cache state when review is complete. Do not upload Mojang artifacts, full logs, or framebuffer evidence to GitHub Actions. A future self-hosted graphical harness may automate this protected gate; until then, record only a sanitized pass/fail attestation in the release checklist.

@@ -159,7 +159,7 @@ export function createCli(): Command {
   program
     .name('packwright-mcp')
     .description('Local-first MCP server and visual compiler for Minecraft Java 26.2 packs')
-    .version('0.4.0')
+    .version('0.4.1')
     .showSuggestionAfterError()
     .showHelpAfterError();
   addGlobalOptions(program);
@@ -266,6 +266,11 @@ export function createCli(): Command {
     .option('--width <pixels>', 'framebuffer width from 640 to 1920', integer, 1280)
     .option('--height <pixels>', 'framebuffer height from 360 to 1080', integer, 720)
     .option('--gui-scale <scale>', 'Minecraft GUI scale from 0 to 8', nonNegativeInteger, 2)
+    .option(
+      '--include-scale-reference-views',
+      'add separately labeled, non-WYSIWYG first-person scale-reference views',
+      false,
+    )
     .action(
       async (
         projectId: string,
@@ -278,6 +283,7 @@ export function createCli(): Command {
           width: number;
           height: number;
           guiScale: number;
+          includeScaleReferenceViews: boolean;
         },
         command: Command,
       ) => {
@@ -308,6 +314,7 @@ export function createCli(): Command {
               timeoutMs: local.timeoutMs,
               resolution: { width: local.width, height: local.height },
               guiScale: local.guiScale,
+              includeScaleReferenceViews: local.includeScaleReferenceViews,
             },
             operationContext(abort.controller.signal),
           );
@@ -316,13 +323,18 @@ export function createCli(): Command {
             options.json ?? false,
             [
               `${result.status.toUpperCase()}: ${String(result.views.length)} Minecraft framebuffer views`,
+              `Authoritative vanilla views: ${String(result.requiredViewIds.length)}`,
+              `Supplemental scale-reference views: ${String(result.supplementalViewIds.length)}`,
               ...(result.reportSha256 === undefined
                 ? []
                 : [`Accepted report SHA-256: ${result.reportSha256}`]),
               ...(result.reportUri === undefined ? [] : [`Report: ${result.reportUri}`]),
               ...(result.contactSheetUri === undefined
                 ? []
-                : [`Contact sheet: ${result.contactSheetUri}`]),
+                : [`Authoritative vanilla contact sheet: ${result.contactSheetUri}`]),
+              ...(result.scaleReferenceContactSheetUri === undefined
+                ? []
+                : [`Optional scale-reference QA sheet: ${result.scaleReferenceContactSheetUri}`]),
             ],
             result.diagnostics,
           );

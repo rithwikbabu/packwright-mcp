@@ -14,7 +14,7 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
-/** Adds an explicitly signed reference arm using Minecraft's own first-person arm renderer. */
+/** Adds an explicitly hash-bound reference arm using Minecraft's own first-person arm renderer. */
 @Mixin(ItemInHandRenderer.class)
 abstract class ItemInHandRendererMixin {
     @Inject(method = "submitHandsWithItems", at = @At("HEAD"))
@@ -35,7 +35,7 @@ abstract class ItemInHandRendererMixin {
         float swingProgress = player.getAttackAnim(partialTick);
         poseStack.pushPose();
         // Vanilla 26.2 does not draw an arm for ordinary non-empty items. Keep
-        // this signed reference arm slightly behind the stock held-item plane
+        // this hash-bound reference arm slightly behind the stock held-item plane
         // so it cannot hide the asset it is meant to contextualize.
         poseStack.translate(0.0F, 0.0F, -0.25F);
         accessor.packwrightCapture$renderPlayerArm(

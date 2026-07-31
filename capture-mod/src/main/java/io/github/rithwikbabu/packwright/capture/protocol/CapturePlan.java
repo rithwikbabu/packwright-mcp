@@ -24,7 +24,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/** Immutable implementation of Packwright client-capture protocol version 1. */
+/** Immutable implementation of Packwright client-capture protocol version 2. */
 public record CapturePlan(
         int schemaVersion,
         String kind,
@@ -57,6 +57,22 @@ public record CapturePlan(
         private final String id;
 
         Camera(String id) {
+            this.id = id;
+        }
+
+        public String id() {
+            return id;
+        }
+    }
+
+    public enum ViewKind {
+        MINECRAFT_VANILLA("minecraft_vanilla"),
+        FIRST_PERSON_VANILLA("first_person_vanilla"),
+        FIRST_PERSON_SCALE_REFERENCE("first_person_scale_reference");
+
+        private final String id;
+
+        ViewKind(String id) {
             this.id = id;
         }
 
@@ -169,6 +185,9 @@ public record CapturePlan(
     /** Null means the optional presentation object was absent; an empty map was present. */
     public record Scene(
             String id,
+            String baseSceneId,
+            ViewKind viewKind,
+            boolean requiredForAuthority,
             Camera camera,
             Context context,
             Hand hand,
@@ -190,6 +209,9 @@ public record CapturePlan(
         public Map<String, Object> toProtocolValue() {
             Map<String, Object> result = new LinkedHashMap<>();
             result.put("id", id);
+            result.put("baseSceneId", baseSceneId);
+            result.put("viewKind", viewKind.id());
+            result.put("requiredForAuthority", requiredForAuthority);
             result.put("camera", camera.id());
             result.put("context", context.id());
             result.put("hand", hand.id());
@@ -234,6 +256,26 @@ public record CapturePlan(
             Object value = presentation.get("referenceArmPurpose");
             return value instanceof String purpose ? purpose : null;
         }
+
+        public Map<String, Object> pairingValue() {
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("camera", camera.id());
+            result.put("context", context.id());
+            result.put("hand", hand.id());
+            result.put("playerModel", playerModel.id());
+            result.put("fov", fov);
+            result.put("resolution", Map.of("width", width(), "height", height()));
+            result.put("guiScale", guiScale);
+            result.put("animationState", animationState.id());
+            result.put("frame", frame);
+            if (presentation != null) {
+                Map<String, Object> retained = new LinkedHashMap<>(presentation);
+                retained.remove("referenceArm");
+                retained.remove("referenceArmPurpose");
+                if (!retained.isEmpty()) result.put("presentation", Map.copyOf(retained));
+            }
+            return Map.copyOf(result);
+        }
     }
 
     public record Execution(String executionId, String gameDirectory, String outputDirectory) {}
@@ -277,7 +319,7 @@ public record CapturePlan(
         exactKeys(root, "plan", Set.of(
                 "schemaVersion", "kind", "minecraftVersion", "provenance", "scenes",
                 "execution", "planSha256"));
-        int schemaVersion = integer(root, "schemaVersion", 1, 1);
+        int schemaVersion = integer(root, "schemaVersion", 2, 2);
         String kind = string(root, "kind", 1, 64);
         if (!kind.equals("packwright.client-capture-plan")) {
             throw new ProtocolException("Capture plan kind is unsupported.");
@@ -417,13 +459,31 @@ public record CapturePlan(
             previous = scene.id();
             scenes.add(scene);
         }
+        Map<String, Scene> vanillaFirstPerson = new LinkedHashMap<>();
+        for (Scene scene : scenes) {
+            if (scene.viewKind() == ViewKind.FIRST_PERSON_VANILLA) {
+                vanillaFirstPerson.put(scene.baseSceneId(), scene);
+            }
+        }
+        for (Scene scene : scenes) {
+            if (scene.viewKind() != ViewKind.FIRST_PERSON_SCALE_REFERENCE) continue;
+            Scene vanilla = vanillaFirstPerson.get(scene.baseSceneId());
+            if (vanilla == null) {
+                throw new ProtocolException(
+                        "Scale-reference scene has no matching vanilla first-person scene: " + scene.id());
+            }
+            if (!scene.pairingValue().equals(vanilla.pairingValue())) {
+                throw new ProtocolException(
+                        "Scale-reference scene does not match its vanilla first-person pair: " + scene.id());
+            }
+        }
         return scenes;
     }
 
     private static Scene parseScene(JsonObject value) throws ProtocolException {
         Set<String> required = Set.of(
-                "id", "camera", "context", "hand", "playerModel", "fov", "resolution",
-                "guiScale", "animationState", "frame");
+                "id", "baseSceneId", "viewKind", "requiredForAuthority", "camera", "context",
+                "hand", "playerModel", "fov", "resolution", "guiScale", "animationState", "frame");
         Set<String> actual = value.keySet();
         Set<String> allowed = new HashSet<>(required);
         allowed.add("presentation");
@@ -431,6 +491,9 @@ public record CapturePlan(
             throw fieldMismatch("scene", actual, required, allowed);
         }
         String id = safeId(value, "id");
+        String baseSceneId = safeId(value, "baseSceneId");
+        ViewKind viewKind = enumValue(value, "viewKind", ViewKind.class);
+        boolean requiredForAuthority = bool(value, "requiredForAuthority");
         Camera camera = enumValue(value, "camera", Camera.class);
         Context context = enumValue(value, "context", Context.class);
         Hand hand = enumValue(value, "hand", Hand.class);
@@ -449,24 +512,49 @@ public record CapturePlan(
         Map<String, Object> presentation = value.has("presentation")
                 ? parsePresentation(object(value, "presentation"))
                 : null;
-        boolean requiresReferenceArm = context == Context.WORLD && camera == Camera.FIRST_PERSON;
+        boolean isFirstPersonWorld = context == Context.WORLD && camera == Camera.FIRST_PERSON;
+        boolean isVanillaFirstPerson = viewKind == ViewKind.FIRST_PERSON_VANILLA;
+        boolean isScaleReference = viewKind == ViewKind.FIRST_PERSON_SCALE_REFERENCE;
+        if (isFirstPersonWorld && !isVanillaFirstPerson && !isScaleReference) {
+            throw new ProtocolException(
+                    "First-person world scenes must declare a vanilla or scale-reference view kind.");
+        }
+        if (!isFirstPersonWorld && viewKind != ViewKind.MINECRAFT_VANILLA) {
+            throw new ProtocolException(
+                    "First-person view kinds are allowed only for first-person world scenes.");
+        }
+        String expectedId = switch (viewKind) {
+            case FIRST_PERSON_VANILLA -> "first_person_vanilla--" + baseSceneId;
+            case FIRST_PERSON_SCALE_REFERENCE -> "first_person_scale_reference--" + baseSceneId;
+            case MINECRAFT_VANILLA -> baseSceneId;
+        };
+        if (!id.equals(expectedId)) {
+            throw new ProtocolException("Scene id does not match its view kind and base scene id.");
+        }
+        if (requiredForAuthority == isScaleReference) {
+            throw new ProtocolException(
+                    "Vanilla scenes must be authoritative and scale-reference scenes supplemental.");
+        }
         boolean hasReferenceArm = presentation != null
                 && Boolean.TRUE.equals(presentation.get("referenceArm"));
         boolean hasScaleOnlyPurpose = presentation != null
                 && "scale_only".equals(presentation.get("referenceArmPurpose"));
-        if (requiresReferenceArm && (!hasReferenceArm || !hasScaleOnlyPurpose)) {
+        if (isScaleReference && (!hasReferenceArm || !hasScaleOnlyPurpose)) {
             throw new ProtocolException(
-                    "First-person world scenes require referenceArm=true and referenceArmPurpose=scale_only.");
+                    "Scale-reference scenes require referenceArm=true and referenceArmPurpose=scale_only.");
         }
-        if (!requiresReferenceArm
+        if (!isScaleReference
                 && presentation != null
                 && (presentation.containsKey("referenceArm")
                         || presentation.containsKey("referenceArmPurpose"))) {
             throw new ProtocolException(
-                    "Reference-arm presentation fields are allowed only for first-person world scenes.");
+                    "Reference-arm presentation fields are allowed only for first-person scale-reference scenes.");
         }
         return new Scene(
                 id,
+                baseSceneId,
+                viewKind,
+                requiredForAuthority,
                 camera,
                 context,
                 hand,

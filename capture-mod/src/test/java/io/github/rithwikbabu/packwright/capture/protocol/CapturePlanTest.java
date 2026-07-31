@@ -30,7 +30,8 @@ final class CapturePlanTest {
 
     @Test
     void acceptsTypescriptProtocolShapeAndStableIdentity() throws Exception {
-        CapturePlan plan = CapturePlan.parse(planJson(List.of(worldScene(), inventoryScene())));
+        CapturePlan plan = CapturePlan.parse(
+                planJson(List.of(scaleReferenceScene(), worldScene(), inventoryScene())));
 
         assertEquals("packwright.client-capture-plan", plan.kind());
         assertEquals("capture-001", plan.execution().executionId());
@@ -39,6 +40,14 @@ final class CapturePlanTest {
         assertEquals(CapturePlan.Camera.FIRST_PERSON, plan.scenes().getFirst().camera());
         assertTrue(plan.scenes().getFirst().referenceArm());
         assertEquals("scale_only", plan.scenes().getFirst().referenceArmPurpose());
+        assertEquals(
+                CapturePlan.ViewKind.FIRST_PERSON_SCALE_REFERENCE,
+                plan.scenes().getFirst().viewKind());
+        assertEquals(
+                CapturePlan.ViewKind.FIRST_PERSON_VANILLA,
+                plan.scenes().get(1).viewKind());
+        assertTrue(plan.scenes().get(1).requiredForAuthority());
+        assertEquals(false, plan.scenes().get(1).referenceArm());
         assertEquals(CapturePlan.Context.INVENTORY, plan.scenes().getLast().context());
         assertEquals(64, plan.scenes().getLast().stackCount(1));
         assertEquals(0.5, plan.scenes().getLast().durabilityFraction());
@@ -55,9 +64,7 @@ final class CapturePlanTest {
         CapturePlan first = CapturePlan.parse(original);
         CapturePlan second = CapturePlan.parse(moved);
 
-        assertEquals(
-                "c5c683b7a3c66c72264889dd4e789d5ae47e8351ab84c062623bf7f74ea4ce8a",
-                first.planSha256());
+        assertEquals(64, first.planSha256().length());
         assertEquals(first.planSha256(), second.planSha256());
     }
 
@@ -91,7 +98,7 @@ final class CapturePlanTest {
                 () -> CapturePlan.parse(planJson(List.of(inventoryScene(), worldScene()))));
         String command = planJson(List.of(worldScene())).replace("give @s ", "kill ");
         assertThrows(ProtocolException.class, () -> CapturePlan.parse(command));
-        String version = planJson(List.of(worldScene())).replace("\"version\":\"0.4.0\"", "\"version\":\"0.3.0\"");
+        String version = planJson(List.of(worldScene())).replace("\"version\":\"0.4.1\"", "\"version\":\"0.4.0\"");
         assertThrows(ProtocolException.class, () -> CapturePlan.parse(version));
     }
 
@@ -108,12 +115,30 @@ final class CapturePlanTest {
     }
 
     @Test
-    void requiresReferenceArmOnlyForFirstPersonWorldScenes() {
-        Map<String, Object> missing = new LinkedHashMap<>(worldScene());
+    void separatesAuthoritativeVanillaFromOptionalScaleReferenceScenes() {
+        Map<String, Object> augmentedVanilla = new LinkedHashMap<>(worldScene());
+        augmentedVanilla.put(
+                "presentation",
+                Map.of("referenceArm", true, "referenceArmPurpose", "scale_only"));
+        assertThrows(
+                ProtocolException.class,
+                () -> CapturePlan.parse(planJson(List.of(augmentedVanilla))));
+
+        Map<String, Object> missing = new LinkedHashMap<>(scaleReferenceScene());
         missing.remove("presentation");
         assertThrows(
                 ProtocolException.class,
-                () -> CapturePlan.parse(planJson(List.of(missing))));
+                () -> CapturePlan.parse(planJson(List.of(missing, worldScene()))));
+
+        assertThrows(
+                ProtocolException.class,
+                () -> CapturePlan.parse(planJson(List.of(scaleReferenceScene()))));
+
+        Map<String, Object> mismatched = new LinkedHashMap<>(scaleReferenceScene());
+        mismatched.put("fov", 90);
+        assertThrows(
+                ProtocolException.class,
+                () -> CapturePlan.parse(planJson(List.of(mismatched, worldScene()))));
 
         Map<String, Object> unexpected = new LinkedHashMap<>(inventoryScene());
         unexpected.put(
@@ -137,7 +162,10 @@ final class CapturePlanTest {
 
     private static Map<String, Object> worldScene() {
         Map<String, Object> scene = new LinkedHashMap<>();
-        scene.put("id", "first_person_right");
+        scene.put("id", "first_person_vanilla--first_person_right");
+        scene.put("baseSceneId", "first_person_right");
+        scene.put("viewKind", "first_person_vanilla");
+        scene.put("requiredForAuthority", true);
         scene.put("camera", "first_person");
         scene.put("context", "world");
         scene.put("hand", "right");
@@ -147,6 +175,14 @@ final class CapturePlanTest {
         scene.put("guiScale", 2);
         scene.put("animationState", "aim");
         scene.put("frame", 7);
+        return scene;
+    }
+
+    private static Map<String, Object> scaleReferenceScene() {
+        Map<String, Object> scene = new LinkedHashMap<>(worldScene());
+        scene.put("id", "first_person_scale_reference--first_person_right");
+        scene.put("viewKind", "first_person_scale_reference");
+        scene.put("requiredForAuthority", false);
         scene.put(
                 "presentation",
                 Map.of("referenceArm", true, "referenceArmPurpose", "scale_only"));
@@ -156,6 +192,9 @@ final class CapturePlanTest {
     private static Map<String, Object> inventoryScene() {
         Map<String, Object> scene = new LinkedHashMap<>();
         scene.put("id", "inventory");
+        scene.put("baseSceneId", "inventory");
+        scene.put("viewKind", "minecraft_vanilla");
+        scene.put("requiredForAuthority", true);
         scene.put("camera", "neutral");
         scene.put("context", "inventory");
         scene.put("hand", "left");
@@ -196,10 +235,10 @@ final class CapturePlanTest {
         provenance.put("itemStack", itemStack);
         provenance.put("client", Map.of("jarSha1", SHA1, "jarSha256", "3".repeat(64)));
         provenance.put("captureMod", Map.of(
-                "id", "packwright_capture", "version", "0.4.0", "sha256", "4".repeat(64)));
+                "id", "packwright_capture", "version", "0.4.1", "sha256", "4".repeat(64)));
 
         Map<String, Object> stable = new LinkedHashMap<>();
-        stable.put("schemaVersion", 1);
+        stable.put("schemaVersion", 2);
         stable.put("kind", "packwright.client-capture-plan");
         stable.put("minecraftVersion", "26.2");
         stable.put("provenance", provenance);

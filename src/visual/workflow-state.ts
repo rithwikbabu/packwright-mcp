@@ -47,6 +47,7 @@ export interface VisualRenderReviewReference {
 
 export interface VisualClientCaptureReferences {
   readonly authority: 'authoritative_environment_capture';
+  readonly authorityScope: 'required_views_only';
   readonly rendererVersion: 'minecraft-client-26.2';
   readonly profileId: ReviewProfileId;
   readonly profileVersion: number;
@@ -65,8 +66,10 @@ export interface VisualClientCaptureReferences {
   readonly captureModSha256: string;
   readonly log: Readonly<{ label: string; sha256: string; bytes: number }>;
   readonly contactSheet: VisualPngReference;
+  readonly scaleReferenceContactSheet?: VisualPngReference | undefined;
   readonly views: Readonly<Record<string, VisualPngReference>>;
   readonly requiredViewIds: readonly string[];
+  readonly supplementalViewIds: readonly string[];
 }
 
 export interface VisualRevisionState {
@@ -90,6 +93,7 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
   const record = value as Record<string, unknown>;
   if (
     record.authority !== 'authoritative_environment_capture' ||
+    record.authorityScope !== 'required_views_only' ||
     record.rendererVersion !== 'minecraft-client-26.2' ||
     !isReviewProfileId(record.profileId) ||
     !Array.isArray(record.requiredViewIds) ||
@@ -120,8 +124,42 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
   if (new Set(requiredViewIds).size !== requiredViewIds.length) {
     throw new Error('Visual workflow required client-capture views are duplicated.');
   }
+  const scaleReferenceValue =
+    record.supplementalViewIds === undefined ? [] : record.supplementalViewIds;
+  if (!Array.isArray(scaleReferenceValue)) {
+    throw new Error('Visual workflow scale-reference client-capture views are invalid.');
+  }
+  const supplementalViewIds = scaleReferenceValue.map((view) => {
+    if (typeof view !== 'string' || !VIEW_PATTERN.test(view) || views[view] === undefined) {
+      throw new Error('Visual workflow scale-reference client-capture view is invalid or missing.');
+    }
+    return view;
+  });
+  if (
+    new Set(supplementalViewIds).size !== supplementalViewIds.length ||
+    supplementalViewIds.some((view) => requiredViewIds.includes(view))
+  ) {
+    throw new Error('Visual workflow scale-reference client-capture views are duplicated.');
+  }
+  const classifiedViewIds = new Set([...requiredViewIds, ...supplementalViewIds]);
+  if (
+    classifiedViewIds.size !== Object.keys(views).length ||
+    Object.keys(views).some((view) => !classifiedViewIds.has(view))
+  ) {
+    throw new Error('Visual workflow client-capture views are not completely classified.');
+  }
+  const scaleReferenceContactSheet =
+    record.scaleReferenceContactSheet === undefined
+      ? undefined
+      : pngReference(record.scaleReferenceContactSheet);
+  if (supplementalViewIds.length > 0 !== (scaleReferenceContactSheet !== undefined)) {
+    throw new Error(
+      'Visual workflow scale-reference contact sheet does not match its supplemental views.',
+    );
+  }
   return {
     authority: record.authority,
+    authorityScope: record.authorityScope,
     rendererVersion: record.rendererVersion,
     profileId: record.profileId,
     profileVersion: positiveInteger(record.profileVersion, 'client-capture profile version'),
@@ -160,8 +198,10 @@ function clientCaptureReference(value: unknown): VisualClientCaptureReferences {
       };
     })(),
     contactSheet: pngReference(record.contactSheet),
+    ...(scaleReferenceContactSheet === undefined ? {} : { scaleReferenceContactSheet }),
     views,
     requiredViewIds,
+    supplementalViewIds,
   };
 }
 

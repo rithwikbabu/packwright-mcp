@@ -8,6 +8,7 @@ import { sha256Buffer } from '../../src/core/hash.js';
 import {
   canonicalClientCapturePlanBytes,
   clientCaptureIdentityForPlan,
+  clientCaptureViewAuthority,
   computeClientCaptureSceneSha256,
   createClientCapturePlan,
   parseClientCapturePlan,
@@ -34,13 +35,65 @@ afterEach(async () => {
   await Promise.all(cleanups.splice(0).map((directory) => rm(directory, { recursive: true })));
 });
 
+function inventoryScene() {
+  return {
+    id: 'inventory',
+    baseSceneId: 'inventory',
+    viewKind: 'minecraft_vanilla' as const,
+    requiredForAuthority: true,
+    camera: 'neutral' as const,
+    context: 'inventory' as const,
+    hand: 'right' as const,
+    playerModel: 'alex' as const,
+    fov: 70,
+    resolution: { width: 64, height: 64 },
+    guiScale: 2,
+    animationState: 'idle' as const,
+    frame: 0,
+    presentation: {
+      stackCount: 64,
+      showGlint: true,
+      durabilityFraction: 0.5,
+    },
+  };
+}
+
+function vanillaFirstPersonScene() {
+  return {
+    id: 'first_person_vanilla--fp_right_steve',
+    baseSceneId: 'fp_right_steve',
+    viewKind: 'first_person_vanilla' as const,
+    requiredForAuthority: true,
+    camera: 'first_person' as const,
+    context: 'world' as const,
+    hand: 'right' as const,
+    playerModel: 'steve' as const,
+    fov: 70,
+    resolution: { width: 64, height: 64 },
+    guiScale: 0,
+    animationState: 'aim' as const,
+    frame: 7,
+  };
+}
+
+function scaleReferenceScene() {
+  return {
+    ...vanillaFirstPersonScene(),
+    id: 'first_person_scale_reference--fp_right_steve',
+    viewKind: 'first_person_scale_reference' as const,
+    requiredForAuthority: false,
+    presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' as const },
+  };
+}
+
 function planInput(
   executionId = 'capture-001',
   gameDirectory = '/private/tmp/packwright-game-001',
   outputDirectory = '/private/tmp/packwright-game-001/packwright-output',
+  includeScaleReference = false,
 ) {
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     kind: 'packwright.client-capture-plan' as const,
     minecraftVersion: '26.2' as const,
     provenance: {
@@ -76,36 +129,9 @@ function planInput(
     },
     // Deliberately out of order: the creator canonicalizes scene ordering.
     scenes: [
-      {
-        id: 'inventory',
-        camera: 'neutral' as const,
-        context: 'inventory' as const,
-        hand: 'right' as const,
-        playerModel: 'alex' as const,
-        fov: 70,
-        resolution: { width: 64, height: 64 },
-        guiScale: 2,
-        animationState: 'idle' as const,
-        frame: 0,
-        presentation: {
-          stackCount: 64,
-          showGlint: true,
-          durabilityFraction: 0.5,
-        },
-      },
-      {
-        id: 'first_person_right',
-        camera: 'first_person' as const,
-        context: 'world' as const,
-        hand: 'right' as const,
-        playerModel: 'steve' as const,
-        fov: 70,
-        resolution: { width: 64, height: 64 },
-        guiScale: 0,
-        animationState: 'aim' as const,
-        frame: 7,
-        presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' as const },
-      },
+      inventoryScene(),
+      ...(includeScaleReference ? [scaleReferenceScene()] : []),
+      vanillaFirstPersonScene(),
     ],
     execution: { executionId, gameDirectory, outputDirectory },
   };
@@ -140,7 +166,7 @@ function completeFixture(plan: ClientCapturePlan) {
     '[Render thread/INFO]: Reloading ResourceManager\n[Render thread/INFO]: Packwright capture complete\n',
   );
   const report: ClientCaptureCompleteReport = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: 'packwright.client-capture-report',
     status: 'complete',
     executionId: plan.execution.executionId,
@@ -177,7 +203,10 @@ describe('client capture plan protocol', () => {
       ),
     );
 
-    expect(first.scenes.map(({ id }) => id)).toEqual(['first_person_right', 'inventory']);
+    expect(first.scenes.map(({ id }) => id)).toEqual([
+      'first_person_vanilla--fp_right_steve',
+      'inventory',
+    ]);
     expect(clientCaptureIdentityForPlan(first).runtimeManifestSha256).toBe('5'.repeat(64));
     expect(first.planSha256).toBe(second.planSha256);
     expect(canonicalClientCapturePlanBytes(first)).toEqual(canonicalJsonBytes(first));
@@ -189,10 +218,59 @@ describe('client capture plan protocol', () => {
     expect(changed.planSha256).not.toBe(first.planSha256);
   });
 
+  it('keeps authoritative vanilla first-person evidence unaugmented and hash-binds opt-in scale pairs', () => {
+    const vanillaPlan = createClientCapturePlan(planInput());
+    const vanilla = vanillaPlan.scenes.find((scene) => scene.viewKind === 'first_person_vanilla');
+    expect(vanilla).toMatchObject({
+      id: 'first_person_vanilla--fp_right_steve',
+      baseSceneId: 'fp_right_steve',
+      requiredForAuthority: true,
+    });
+    expect(vanilla?.presentation).toBeUndefined();
+    expect(vanilla === undefined ? undefined : clientCaptureViewAuthority(vanilla)).toBe(
+      'authoritative_environment_capture',
+    );
+
+    const pairedPlan = createClientCapturePlan(
+      planInput(
+        'capture-paired',
+        '/private/tmp/packwright-game-paired',
+        '/private/tmp/packwright-game-paired/output',
+        true,
+      ),
+    );
+    const scaleReference = pairedPlan.scenes.find(
+      (scene) => scene.viewKind === 'first_person_scale_reference',
+    );
+    const pairedVanilla = pairedPlan.scenes.find(
+      (scene) => scene.viewKind === 'first_person_vanilla',
+    );
+    expect(scaleReference).toMatchObject({
+      id: 'first_person_scale_reference--fp_right_steve',
+      baseSceneId: 'fp_right_steve',
+      requiredForAuthority: false,
+      presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' },
+    });
+    expect(
+      scaleReference === undefined ? undefined : clientCaptureViewAuthority(scaleReference),
+    ).toBe('augmented_qa_reference');
+    expect(pairedVanilla?.presentation).toBeUndefined();
+    expect(scaleReference).toMatchObject({
+      camera: pairedVanilla?.camera,
+      context: pairedVanilla?.context,
+      hand: pairedVanilla?.hand,
+      playerModel: pairedVanilla?.playerModel,
+      fov: pairedVanilla?.fov,
+      resolution: pairedVanilla?.resolution,
+      guiScale: pairedVanilla?.guiScale,
+      animationState: pairedVanilla?.animationState,
+      frame: pairedVanilla?.frame,
+    });
+  });
+
   it('rejects hash tampering, duplicate or unsafe scenes, unsafe host paths, and unknown fields', () => {
     const input = planInput();
-    const firstScene = input.scenes[0];
-    if (firstScene === undefined) throw new Error('Expected a fixture scene.');
+    const firstScene = inventoryScene();
     const plan = createClientCapturePlan(input);
     expect(() => parseClientCapturePlan({ ...plan, planSha256: '9'.repeat(64) })).toThrow(
       /hash does not match/u,
@@ -226,20 +304,26 @@ describe('client capture plan protocol', () => {
         scenes: [{ ...firstScene, fov: 121 }],
       }),
     ).toThrow();
-    const firstPerson = input.scenes[1];
+    const firstPerson = input.scenes.at(-1);
     if (firstPerson === undefined) throw new Error('Expected a first-person fixture scene.');
     expect(() =>
       createClientCapturePlan({
         ...input,
-        scenes: [{ ...firstPerson, presentation: undefined }],
+        scenes: [
+          {
+            ...firstPerson,
+            presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' as const },
+          },
+        ],
       }),
-    ).toThrow(/reference-arm augmentation/u);
+    ).toThrow(/only valid for first-person scale-reference/u);
     expect(() =>
       createClientCapturePlan({
         ...input,
         scenes: [
           {
             ...firstScene,
+            viewKind: 'first_person_scale_reference' as const,
             presentation: {
               ...firstScene.presentation,
               referenceArm: true,
@@ -248,7 +332,41 @@ describe('client capture plan protocol', () => {
           },
         ],
       }),
-    ).toThrow(/only valid for first-person world/u);
+    ).toThrow(/First-person view kinds are only valid/u);
+  });
+
+  it('rejects orphaned, mismatched, and misclassified scale-reference scenes', () => {
+    const input = planInput();
+    const vanilla = vanillaFirstPersonScene();
+    const scaleReference = scaleReferenceScene();
+
+    expect(() => createClientCapturePlan({ ...input, scenes: [scaleReference] })).toThrow(
+      /no matching vanilla first-person scene/u,
+    );
+    expect(() =>
+      createClientCapturePlan({
+        ...input,
+        scenes: [vanilla, { ...scaleReference, fov: 100 }],
+      }),
+    ).toThrow(/does not match its vanilla first-person pair/u);
+    expect(() =>
+      createClientCapturePlan({
+        ...input,
+        scenes: [{ ...vanilla, viewKind: 'minecraft_vanilla' as const }],
+      }),
+    ).toThrow(/explicitly classified as vanilla gameplay or a scale reference/u);
+    expect(() =>
+      createClientCapturePlan({
+        ...input,
+        scenes: [{ ...scaleReference, requiredForAuthority: true }, vanilla],
+      }),
+    ).toThrow(/scale-reference views are supplemental/u);
+    expect(() =>
+      createClientCapturePlan({
+        ...input,
+        scenes: [{ ...scaleReference, id: 'first_person_scale_reference--wrong' }, vanilla],
+      }),
+    ).toThrow(/does not match its hash-bound view kind and base scene id/u);
   });
 });
 
@@ -268,7 +386,7 @@ describe('client capture completion evidence', () => {
     });
 
     expect(evidence.views.map(({ sceneId }) => sceneId)).toEqual([
-      'first_person_right',
+      'first_person_vanilla--fp_right_steve',
       'inventory',
     ]);
     expect(evidence.log.sha256).toBe(sha256Buffer(fixture.log));
@@ -293,7 +411,11 @@ describe('client capture completion evidence', () => {
             {
               ...report.views[1],
               sceneId: 'unplanned',
-              scene: { ...report.views[1]?.scene, id: 'unplanned' },
+              scene: {
+                ...report.views[1]?.scene,
+                id: 'unplanned',
+                baseSceneId: 'unplanned',
+              },
             },
           ],
         },
@@ -390,7 +512,7 @@ describe('client capture completion evidence', () => {
     const reportBytes = canonicalJsonBytes(fixture.report);
     await writeFile(path.join(outputDirectory, 'capture-report.json'), reportBytes);
     const sentinelBytes = canonicalJsonBytes({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'packwright.client-capture-complete',
       executionId: plan.execution.executionId,
       planSha256: plan.planSha256,

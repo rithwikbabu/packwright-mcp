@@ -442,7 +442,7 @@ try {
           forwardAxis: [0, 0, -1],
           handedness: 'either',
           twoHanded: false,
-          itemKind: 'generic',
+          itemKind: 'weapon',
           usePose: 'aim',
         },
         display: {
@@ -535,7 +535,7 @@ try {
     typeof connection.proposalSha256 === 'string',
     'Paired visual connection did not produce an accepted proposal hash.',
   );
-  const clientCapture = runClientCapture
+  const vanillaClientCapture = runClientCapture
     ? await application.captureVisual(
         VisualClientCaptureInputSchema.parse({
           projectId: 'firestaff',
@@ -550,11 +550,67 @@ try {
         serviceContext,
       )
     : undefined;
-  if (clientCapture !== undefined) {
-    requireSuccess(clientCapture, 'official Minecraft client framebuffer capture');
+  let clientCapture = vanillaClientCapture;
+  if (vanillaClientCapture !== undefined) {
+    requireSuccess(vanillaClientCapture, 'official vanilla Minecraft client framebuffer capture');
     requireCondition(
-      clientCapture.status === 'passed' && typeof clientCapture.reportSha256 === 'string',
-      `Official client capture did not return signed evidence:\n${JSON.stringify(clientCapture, null, 2)}`,
+      vanillaClientCapture.status === 'passed' &&
+        typeof vanillaClientCapture.reportSha256 === 'string' &&
+        vanillaClientCapture.requiredViewIds.length === 15 &&
+        vanillaClientCapture.supplementalViewIds.length === 0 &&
+        vanillaClientCapture.scaleReferenceContactSheet === undefined &&
+        vanillaClientCapture.scaleReferenceContactSheetUri === undefined,
+      `Default client capture did not return exactly 15 authoritative vanilla views and no augmented QA sheet:\n${JSON.stringify(vanillaClientCapture, null, 2)}`,
+    );
+    requireCondition(
+      vanillaClientCapture.views.every(
+        (view) =>
+          view.requiredForAuthority &&
+          view.authority === 'authoritative_environment_capture' &&
+          view.viewKind !== 'first_person_scale_reference',
+      ) &&
+        vanillaClientCapture.views.filter((view) => view.viewKind === 'first_person_vanilla')
+          .length === 8,
+      `Default client capture mislabeled an augmented view as authoritative gameplay:\n${JSON.stringify(vanillaClientCapture.views, null, 2)}`,
+    );
+
+    clientCapture = await application.captureVisual(
+      VisualClientCaptureInputSchema.parse({
+        projectId: 'firestaff',
+        runId: initialDraft.runId,
+        revisionId: repairedDraft.revisionId,
+        proposalSha256: connection.proposalSha256,
+        confirm: true,
+        timeoutMs: 300_000,
+        resolution: { width: 1280, height: 720 },
+        guiScale: 2,
+        includeScaleReferenceViews: true,
+      }),
+      serviceContext,
+    );
+    requireSuccess(clientCapture, 'official Minecraft scale-reference QA capture');
+    const vanillaViews = clientCapture.views.filter(
+      (view) => view.viewKind === 'first_person_vanilla',
+    );
+    const scaleReferenceViews = clientCapture.views.filter(
+      (view) => view.viewKind === 'first_person_scale_reference',
+    );
+    requireCondition(
+      clientCapture.status === 'passed' &&
+        typeof clientCapture.reportSha256 === 'string' &&
+        clientCapture.requiredViewIds.length === 15 &&
+        clientCapture.supplementalViewIds.length === 8 &&
+        clientCapture.scaleReferenceContactSheet !== undefined &&
+        clientCapture.scaleReferenceContactSheetUri !== undefined &&
+        vanillaViews.length === 8 &&
+        scaleReferenceViews.length === 8 &&
+        scaleReferenceViews.every(
+          (view) =>
+            !view.requiredForAuthority &&
+            view.authority === 'augmented_qa_reference' &&
+            vanillaViews.some((vanilla) => vanilla.baseSceneId === view.baseSceneId),
+        ),
+      `Opt-in client capture did not keep 15 authoritative views separate from eight paired QA references:\n${JSON.stringify(clientCapture, null, 2)}`,
     );
   }
   const visualValidation = await application.validateVisual(
