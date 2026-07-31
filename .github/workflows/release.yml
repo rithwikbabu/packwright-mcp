@@ -34,7 +34,7 @@ jobs:
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       - name: Set up Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -149,7 +149,7 @@ jobs:
           path: release-package
 
       - name: Set up Node.js for npm trusted publishing
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           registry-url: https://registry.npmjs.org
