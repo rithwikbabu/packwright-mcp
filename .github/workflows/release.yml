@@ -90,7 +90,7 @@ jobs:
 
       - name: Verify bundled capture mod contents
         run: |
-          capture_mod="capture-mod/runtime/packwright-capture-mod-0.4.1.jar"
+          capture_mod="capture-mod/runtime/packwright-capture-mod-0.5.0.jar"
           entries="$RUNNER_TEMP/packwright-capture-mod-entries.txt"
           test -f "$capture_mod"
           test "$(wc -c < "$capture_mod")" -le 16777216
@@ -101,7 +101,7 @@ jobs:
           fi
           metadata="$RUNNER_TEMP/packwright-capture-mod.json"
           unzip -p "$capture_mod" fabric.mod.json > "$metadata"
-          node --input-type=module -e 'import fs from "node:fs"; const m=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (m.id !== "packwright_capture" || m.version !== "0.4.1" || m.environment !== "client" || m.depends?.fabricloader !== "=0.19.3" || m.depends?.minecraft !== "=26.2" || m.depends?.java !== ">=25") throw new Error("Unexpected capture-mod metadata");' "$metadata"
+          node --input-type=module -e 'import fs from "node:fs"; const m=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (m.id !== "packwright_capture" || m.version !== "0.5.0" || m.environment !== "client" || m.depends?.fabricloader !== "=0.19.3" || m.depends?.minecraft !== "=26.2" || m.depends?.java !== ">=25") throw new Error("Unexpected capture-mod metadata");' "$metadata"
 
       - name: Create release staging directory
         run: mkdir release-package

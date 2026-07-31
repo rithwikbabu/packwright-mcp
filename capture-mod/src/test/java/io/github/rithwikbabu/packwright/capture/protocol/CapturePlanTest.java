@@ -854,7 +854,7 @@ final class CapturePlanTest {
         provenance.put("client", Map.of("jarSha1", SHA1, "jarSha256", "3".repeat(64)));
         provenance.put("captureMod", Map.of(
                 "id", "packwright_capture",
-                "version", "0.5.0-dev",
+                "version", "0.5.0",
                 "sha256", "4".repeat(64)));
 
         Map<String, Object> stable = new LinkedHashMap<>();

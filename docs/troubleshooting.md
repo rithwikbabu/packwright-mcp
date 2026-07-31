@@ -124,7 +124,7 @@ Run `doctor` and inspect `minecraft_client_capture`. All of these must be true:
 
 - `setup-version 26.2 --accept-minecraft-eula --client-capture` completed in the same cache.
 - `PACKWRIGHT_JAVA` resolves to Java 25.
-- The installed npm package contains `capture-mod/runtime/packwright-capture-mod-0.5.0-dev.jar`.
+- The installed npm package contains `capture-mod/runtime/packwright-capture-mod-0.5.0.jar`.
 - The process is running in an interactive macOS graphical session that can create a real OpenGL window.
 
 Remote shells, headless launch agents, Linux CI, and macOS sessions without an active WindowServer are intentionally not treated as capture-ready. Packwright does not emulate a display or fall back to its software renderer. If `PACKWRIGHT_OFFLINE=true`, rerun setup without offline mode; capture itself remains offline once the cache is complete.

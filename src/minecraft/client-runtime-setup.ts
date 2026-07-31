@@ -165,7 +165,7 @@ async function downloadArtifact(
   }
   const url = trustedRuntimeUrl(artifact.url);
   const response = await fetch(url, {
-    headers: { 'user-agent': 'packwright-mcp/0.4.1' },
+    headers: { 'user-agent': 'packwright-mcp/0.5.0' },
     redirect: 'error',
     ...(signal === undefined ? {} : { signal }),
   });

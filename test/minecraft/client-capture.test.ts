@@ -320,7 +320,7 @@ async function captureFixture(includeScaleReference = false) {
     client: { jarSha1: SHA1, jarSha256: HASH_B },
     captureMod: {
       id: 'packwright_capture',
-      version: '0.4.1',
+      version: '0.5.0',
       sha256: sha256Buffer(captureModData),
       data: captureModData,
     },
@@ -453,31 +453,28 @@ describe('official Minecraft client capture orchestration', () => {
     const bundled = await readBundledCaptureMod();
     expect(bundled).toMatchObject({
       id: 'packwright_capture',
-      version: '0.5.0-dev',
-      sha256: '7b84fae8a9a080742fb982cdad6d144a07f621303e0f995006e3c0a6af3562d4',
+      version: '0.5.0',
+      sha256: '03b61c9a6d532fe93065bbefec8ee8134d96b103e22d8a1035651f2a85ad5a16',
     });
-    expect(bundled.data).toHaveLength(263_539);
+    expect(bundled.data).toHaveLength(263_533);
 
     const packageRoot = await mkdtemp(path.join(tmpdir(), 'packwright-capture-package-test-'));
     cleanups.push(packageRoot);
     const buildDirectory = path.join(packageRoot, 'capture-mod/build/libs');
     await mkdir(buildDirectory, { recursive: true });
-    await writeFile(
-      path.join(buildDirectory, 'packwright-capture-mod-0.5.0-dev.jar'),
-      bundled.data,
-    );
+    await writeFile(path.join(buildDirectory, 'packwright-capture-mod-0.5.0.jar'), bundled.data);
     await expect(readBundledCaptureMod(packageRoot)).rejects.toMatchObject({ code: 'not_found' });
 
     const runtimeDirectory = path.join(packageRoot, 'capture-mod/runtime');
     await mkdir(runtimeDirectory, { recursive: true });
     await writeFile(
-      path.join(runtimeDirectory, 'packwright-capture-mod-0.5.0-dev.jar'),
+      path.join(runtimeDirectory, 'packwright-capture-mod-0.5.0.jar'),
       Buffer.from('substituted capture mod'),
     );
     await expect(readBundledCaptureMod(packageRoot)).rejects.toMatchObject({
       code: 'precondition_failed',
       details: {
-        expectedSha256: '7b84fae8a9a080742fb982cdad6d144a07f621303e0f995006e3c0a6af3562d4',
+        expectedSha256: '03b61c9a6d532fe93065bbefec8ee8134d96b103e22d8a1035651f2a85ad5a16',
       },
     });
   });

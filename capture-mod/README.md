@@ -39,7 +39,7 @@ its SHA-256 before running the build.
 `build/libs/` stays ignored because it is generated. After unit tests and a
 reproducible local build, a maintainer copies only the non-sources Packwright
 JAR to
-`capture-mod/runtime/packwright-capture-mod-0.5.0-dev.jar`. The npm package
+`capture-mod/runtime/packwright-capture-mod-0.5.0.jar`. The npm package
 allow-lists that exact runtime path; release and ordinary CI do not resolve
 Minecraft to rebuild the mod. The TypeScript launcher resolves that exact
 filename, verifies its SHA-256, and binds the digest into every capture plan
