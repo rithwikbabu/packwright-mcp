@@ -2,24 +2,24 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.rithwikbabu/packwright-mcp",
   "title": "Packwright MCP",
-  "description": "Local-first MCP server for creating, validating, testing, and packaging Minecraft Java datapacks.",
+  "description": "Local-first MCP visual compiler for paired Minecraft Java datapacks and resource packs.",
   "repository": {
     "url": "https://github.com/rithwikbabu/packwright-mcp",
     "source": "github"
   },
-  "version": "0.2.0",
+  "version": "0.3.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@rithwikbabu/packwright-mcp",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "transport": {
         "type": "stdio"
       },
       "environmentVariables": [
         {
           "name": "PACKWRIGHT_WORKSPACE",
-          "description": "Absolute path to the directory containing datapack projects Packwright may access.",
+          "description": "Absolute path containing datapacks and optional sibling resource packs Packwright may access.",
           "format": "string",
           "isRequired": true,
           "isSecret": false
@@ -33,7 +33,7 @@
         },
         {
           "name": "PACKWRIGHT_CACHE_DIR",
-          "description": "Optional absolute path for verified Minecraft artifacts and local reference data.",
+          "description": "Optional absolute path for verified Minecraft artifacts, visual generation runs, and local reference data.",
           "format": "string",
           "isRequired": false,
           "isSecret": false

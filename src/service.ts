@@ -1,23 +1,27 @@
-import { lstat, readdir } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import {
   Workspace,
   PackwrightError,
+  assertScanSnapshotUnchanged,
   buildDatapack,
   createDatapack,
   deleteResource,
   inspectDatapack,
   readResource,
   sha256Buffer,
+  scanDatapack,
   upsertResource,
   validateDatapack,
   type Diagnostic,
   type ResourceLocator,
+  type ScanResult,
   type ValidationAdapter,
   type ValidationResult,
 } from './core/index.js';
-import type { RuntimeConfig } from './config.js';
+import { assertRuntimePathSeparation, type RuntimeConfig } from './config.js';
 import { getCacheStatus } from './minecraft/cache.js';
 import { runGameTests } from './minecraft/gametest.js';
 import { VanillaCommandValidationAdapter } from './minecraft/command-validation.js';
@@ -45,7 +49,37 @@ import type {
   ResourceUpsertInput,
 } from './mcp/schemas.js';
 import type { PackwrightService, PackwrightServiceContext } from './mcp/service.js';
+import type { VisualResourceInput, VisualResourceResult } from './mcp/service.js';
+import type {
+  ProjectBuildInput,
+  ProjectBuildResult,
+  TextureImportInput,
+  VisualAssetInspectInput,
+  VisualAssetInspectResult,
+  VisualCapabilitiesInput,
+  VisualCapabilitiesResult,
+  VisualCommitInput,
+  VisualCommitResult,
+  VisualCompileInput,
+  VisualConnectInput,
+  VisualDraftResult,
+  VisualProjectAttachInput,
+  VisualProjectAttachResult,
+  VisualRenderInput,
+  VisualRenderResult,
+  VisualRevisionCreateInput,
+  VisualSpecUpsertInput,
+  VisualValidateInput,
+  VisualValidateResult,
+} from './mcp/visual-schemas.js';
 import type { BuildResult, GameTestResult, OperationResult } from './core/types.js';
+import { MINECRAFT_26_2 } from './core/version.js';
+import { readStableFile } from './core/stable-file.js';
+import { listVisualCapabilities } from './visual/capabilities.js';
+import { createDeterministicZipArchive } from './visual/builder.js';
+import { validateResourcePackSnapshot } from './visual/resourcepack-validation.js';
+import { commitFileTransaction, VISUAL_TRANSACTION_LIMITS } from './visual/transaction.js';
+import { VisualWorkflow, visualDiagnostic } from './visual/workflow.js';
 import {
   ExternalSpyglassAdapter,
   getSpyglassStatus,
@@ -226,18 +260,125 @@ function gameTestTimeout(startedAt: number, timeoutMs: number): GameTestResult {
   };
 }
 
+async function readPackSnapshot(
+  workspace: Workspace,
+  packPath: string,
+  signal?: AbortSignal,
+  preparedScan?: ScanResult,
+): Promise<{
+  readonly entries: readonly { path: string; data: Buffer }[];
+  readonly count: number;
+  readonly scan: ScanResult;
+}> {
+  const scan = preparedScan ?? (await scanDatapack(workspace, packPath, { signal }));
+  const entries: { path: string; data: Buffer }[] = [];
+  for (const entry of scan.entries) {
+    const absolute = await workspace.resolve(`${packPath}/${entry.path}`, {
+      mustExist: true,
+      rejectSymlinks: true,
+    });
+    const stable = await readStableFile(absolute, {
+      maxBytes: Math.max(1, entry.size),
+      expected: entry,
+      collect: true,
+      signal,
+      pathLabel: `${packPath}/${entry.path}`,
+    });
+    if (stable.data === undefined) {
+      throw new PackwrightError(
+        'precondition_failed',
+        'Pack file changed while preparing a paired build.',
+        { path: `${packPath}/${entry.path}` },
+      );
+    }
+    entries.push({ path: entry.path, data: stable.data });
+  }
+  assertScanSnapshotUnchanged(scan, await scanDatapack(workspace, packPath, { signal }));
+  return { entries, count: scan.entries.length, scan };
+}
+
+export function assertPairedBuildByteBudget(
+  stage: 'source snapshots' | 'ZIP artifacts',
+  totalBytes: number,
+): void {
+  if (
+    !Number.isSafeInteger(totalBytes) ||
+    totalBytes < 0 ||
+    totalBytes > VISUAL_TRANSACTION_LIMITS.maxBytes
+  ) {
+    throw new PackwrightError(
+      'size_limit',
+      `Paired build ${stage} exceed the ${String(VISUAL_TRANSACTION_LIMITS.maxBytes)}-byte transaction budget.`,
+      {
+        stage,
+        totalBytes,
+        maxBytes: VISUAL_TRANSACTION_LIMITS.maxBytes,
+      },
+    );
+  }
+}
+
+async function withStagedDatapack<T>(
+  snapshot: Awaited<ReturnType<typeof readPackSnapshot>>,
+  overlay: readonly { path: string; data: Buffer }[],
+  task: (workspace: Workspace, project: string) => Promise<T>,
+): Promise<T> {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'packwright-visual-overlay-'));
+  const project = 'pack-under-validation';
+  const packRoot = path.join(temporaryRoot, project);
+  try {
+    const files = new Map(snapshot.entries.map((entry) => [entry.path, entry.data]));
+    for (const file of overlay) {
+      if (
+        file.path.length === 0 ||
+        file.path.includes('\\') ||
+        path.posix.isAbsolute(file.path) ||
+        path.posix.normalize(file.path) !== file.path ||
+        file.path === '..' ||
+        file.path.startsWith('../')
+      ) {
+        throw new PackwrightError('unsafe_path', 'Proposal overlay contains an unsafe path.', {
+          path: file.path,
+        });
+      }
+      files.set(file.path, file.data);
+    }
+    for (const [relative, data] of files) {
+      const destination = path.join(packRoot, ...relative.split('/'));
+      await mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
+      await writeFile(destination, data, { flag: 'wx', mode: 0o600 });
+    }
+    const workspace = await Workspace.open(temporaryRoot, { readOnly: true });
+    return await task(workspace, project);
+  } finally {
+    await rm(temporaryRoot, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function applySnapshotOverlay(
+  snapshot: Awaited<ReturnType<typeof readPackSnapshot>>,
+  overlay: readonly { path: string; data: Buffer }[],
+): readonly { path: string; data: Buffer }[] {
+  const files = new Map(snapshot.entries.map((entry) => [entry.path, entry.data]));
+  for (const file of overlay) files.set(file.path, file.data);
+  return [...files].map(([entryPath, data]) => ({ path: entryPath, data }));
+}
+
 export class PackwrightApplication implements PackwrightService {
   readonly config: RuntimeConfig;
   readonly workspace: Workspace;
+  readonly visual: VisualWorkflow;
   private readonly lastDiagnostics = new Map<string, StoredDiagnostics>();
   private projectListTruncated = false;
 
   private constructor(config: RuntimeConfig, workspace: Workspace) {
     this.config = config;
     this.workspace = workspace;
+    this.visual = new VisualWorkflow(workspace, config.cacheDir);
   }
 
   static async open(config: RuntimeConfig): Promise<PackwrightApplication> {
+    await assertRuntimePathSeparation(config);
     const workspace = await Workspace.open(config.workspaceRoot, {
       readOnly: config.readOnly,
     });
@@ -361,6 +502,15 @@ export class PackwrightApplication implements PackwrightService {
     input: DatapackValidateInput,
     context: PackwrightServiceContext,
   ): Promise<ValidationResult> {
+    return this.validateDatapackAt(this.workspace, input, context, true);
+  }
+
+  private async validateDatapackAt(
+    workspace: Workspace,
+    input: DatapackValidateInput,
+    context: PackwrightServiceContext,
+    recordDiagnostics: boolean,
+  ): Promise<ValidationResult> {
     const total = 1 + (input.includeVanilla ? 1 : 0) + (input.includeSpyglass ? 1 : 0);
     await context.reportProgress({
       progress: 0,
@@ -386,7 +536,7 @@ export class PackwrightApplication implements PackwrightService {
     const adapters: ValidationAdapter[] = [];
     if (vanillaAdapter !== undefined) adapters.push(vanillaAdapter);
     if (spyglassAdapter !== undefined) adapters.push(spyglassAdapter);
-    const result = await validateDatapack(this.workspace, input.project, {
+    const result = await validateDatapack(workspace, input.project, {
       adapters,
       signal: context.signal,
     });
@@ -413,10 +563,12 @@ export class PackwrightApplication implements PackwrightService {
           }),
       truncated: bounded.truncated,
     };
-    this.lastDiagnostics.set(input.project, {
-      validation: normalized,
-      updatedAt: new Date().toISOString(),
-    });
+    if (recordDiagnostics) {
+      this.lastDiagnostics.set(input.project, {
+        validation: normalized,
+        updatedAt: new Date().toISOString(),
+      });
+    }
     await context.reportProgress({
       progress: total,
       total,
@@ -636,6 +788,470 @@ export class PackwrightApplication implements PackwrightService {
 
   async getCachedRegistries(): Promise<CachedRegistriesResult> {
     return await readCachedRegistries(this.config.cacheDir);
+  }
+
+  getVisualCapabilities(input: VisualCapabilitiesInput): Promise<VisualCapabilitiesResult> {
+    const capabilities = listVisualCapabilities(MINECRAFT_26_2.visualCapabilities).filter(
+      (entry) => input.target === undefined || entry.target === input.target,
+    );
+    return Promise.resolve({
+      ok: true,
+      minecraftVersion: '26.2',
+      resourcePackFormat: [...MINECRAFT_26_2.resourcePack.packFormat],
+      capabilities: capabilities.map((entry) => ({
+        ...entry,
+        strategies: [...entry.strategies],
+      })),
+    });
+  }
+
+  async attachVisualProject(
+    input: VisualProjectAttachInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualProjectAttachResult> {
+    await context.reportProgress({ progress: 0, total: 1, message: 'Attaching paired packs' });
+    const result = await this.visual.attachProject(input);
+    await context.reportProgress({ progress: 1, total: 1, message: 'Paired project ready' });
+    return result;
+  }
+
+  async inspectVisualAsset(input: VisualAssetInspectInput): Promise<VisualAssetInspectResult> {
+    return await this.visual.inspect(input.projectId, input.assetId);
+  }
+
+  async upsertVisualSpec(
+    input: VisualSpecUpsertInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult> {
+    return await this.visual.upsertSpec(input, context.signal);
+  }
+
+  async importTexture(
+    input: TextureImportInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult> {
+    return await this.visual.importTexture(input, context.signal);
+  }
+
+  async compileVisual(
+    input: VisualCompileInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult> {
+    await context.reportProgress({ progress: 0, total: 1, message: 'Compiling visual draft' });
+    const result = await this.visual.compile(
+      input.projectId,
+      input.runId,
+      input.revisionId,
+      context.signal,
+    );
+    await context.reportProgress({ progress: 1, total: 1, message: 'Visual draft compiled' });
+    return result;
+  }
+
+  async connectVisual(
+    input: VisualConnectInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult> {
+    return await this.visual.connect(input, context.signal);
+  }
+
+  async renderVisual(
+    input: VisualRenderInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualRenderResult> {
+    await context.reportProgress({ progress: 0, total: 2, message: 'Rendering standard views' });
+    const result = await this.visual.render(input, context.signal);
+    await context.reportProgress({ progress: 2, total: 2, message: 'Contact sheet ready' });
+    return result;
+  }
+
+  async createVisualRevision(
+    input: VisualRevisionCreateInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult> {
+    return await this.visual.revise(input, context.signal);
+  }
+
+  async commitVisual(
+    input: VisualCommitInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualCommitResult> {
+    return await this.visual.commit(
+      input.projectId,
+      input.runId,
+      input.revisionId,
+      input.proposalSha256,
+      context.signal,
+    );
+  }
+
+  async validateVisual(
+    input: VisualValidateInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualValidateResult> {
+    await context.reportProgress({ progress: 0, total: 3, message: 'Validating visual graph' });
+    const draft = await this.visual.validateDraft(input.projectId, input.runId, input.revisionId);
+    const diagnostics: Diagnostic[] = draft.result?.diagnostics.map(visualDiagnostic) ?? [];
+    if (draft.result === undefined) {
+      diagnostics.push({
+        engine: 'packwright.visual',
+        authority: 'structural',
+        severity: 'error',
+        code: 'visual.draft.required',
+        message: 'Create a visual draft before running paired-project validation.',
+      });
+    }
+    const readiness = draft.readiness;
+    const selectedRunId = draft.runId;
+    const selectedRevisionId = draft.revisionId;
+    if (draft.project.resourcepack.present) {
+      const snapshot = await readPackSnapshot(
+        this.workspace,
+        draft.project.manifest.resourcepack,
+        context.signal,
+      );
+      const overlay =
+        selectedRunId !== undefined &&
+        selectedRevisionId !== undefined &&
+        readiness?.binding === true
+          ? (
+              await this.visual.readProposalOverlay(
+                input.projectId,
+                selectedRunId,
+                selectedRevisionId,
+              )
+            ).files
+              .filter((file) => file.pack === 'resourcepack')
+              .map((file) => ({ path: file.path, data: file.data }))
+          : [];
+      diagnostics.push(
+        ...validateResourcePackSnapshot(applySnapshotOverlay(snapshot, overlay)).diagnostics.map(
+          visualDiagnostic,
+        ),
+      );
+    }
+    const visualFailed =
+      draft.result === undefined || diagnostics.some((entry) => entry.severity === 'error');
+    const layers: VisualValidateResult['layers'] = [
+      { name: 'metadata', status: draft.project.ready ? 'passed' : 'failed' },
+      { name: 'schema', status: visualFailed ? 'failed' : 'passed' },
+      {
+        name: 'texture',
+        status: readiness?.textures === true ? 'passed' : 'failed',
+      },
+      { name: 'asset_graph', status: visualFailed ? 'failed' : 'passed' },
+      { name: 'geometry', status: visualFailed ? 'failed' : 'passed' },
+      { name: 'render', status: readiness?.rendered === true ? 'passed' : 'failed' },
+      { name: 'binding', status: readiness?.binding === true ? 'passed' : 'failed' },
+    ];
+
+    await context.reportProgress({
+      progress: 1,
+      total: 3,
+      message: 'Validating datapack commands',
+    });
+    const validationInput: DatapackValidateInput = {
+      project: draft.project.manifest.datapack,
+      includeSpyglass: true,
+      includeVanilla: input.includeVanilla,
+    };
+    const datapack =
+      selectedRunId !== undefined && selectedRevisionId !== undefined && readiness?.binding === true
+        ? await (async (): Promise<ValidationResult> => {
+            const [snapshot, proposal] = await Promise.all([
+              readPackSnapshot(this.workspace, draft.project.manifest.datapack, context.signal),
+              this.visual.readProposalOverlay(input.projectId, selectedRunId, selectedRevisionId),
+            ]);
+            return withStagedDatapack(
+              snapshot,
+              proposal.files
+                .filter((file) => file.pack === 'datapack')
+                .map((file) => ({ path: file.path, data: file.data })),
+              (workspace, project) =>
+                this.validateDatapackAt(workspace, { ...validationInput, project }, context, false),
+            );
+          })()
+        : await this.validateDatapack(validationInput, context);
+    diagnostics.push(...datapack.diagnostics);
+    layers.push({
+      name: 'vanilla_commands',
+      status: !input.includeVanilla
+        ? 'skipped'
+        : datapack.vanilla?.status === 'setup_required'
+          ? 'setup_required'
+          : datapack.ok
+            ? 'passed'
+            : 'failed',
+    });
+
+    if (input.includeGameTests) {
+      const tested =
+        selectedRunId !== undefined &&
+        selectedRevisionId !== undefined &&
+        readiness?.binding === true
+          ? await (async (): Promise<GameTestResult> => {
+              const [snapshot, proposal] = await Promise.all([
+                readPackSnapshot(this.workspace, draft.project.manifest.datapack, context.signal),
+                this.visual.readProposalOverlay(input.projectId, selectedRunId, selectedRevisionId),
+              ]);
+              return withStagedDatapack(
+                snapshot,
+                proposal.files
+                  .filter((file) => file.pack === 'datapack')
+                  .map((file) => ({ path: file.path, data: file.data })),
+                (workspace, project) =>
+                  runGameTests(
+                    this.config,
+                    workspace,
+                    { project, timeoutMs: 300_000 },
+                    context.signal,
+                  ),
+              );
+            })()
+          : await this.testDatapack(
+              { project: draft.project.manifest.datapack, timeoutMs: 300_000 },
+              context,
+            );
+      diagnostics.push(...tested.diagnostics);
+      layers.push({
+        name: 'gametest',
+        status:
+          tested.status === 'setup_required' ? 'setup_required' : tested.ok ? 'passed' : 'failed',
+      });
+    } else {
+      layers.push({ name: 'gametest', status: 'skipped' });
+    }
+    await context.reportProgress({ progress: 3, total: 3, message: 'Visual validation complete' });
+    const bounded = boundedDiagnostics(diagnostics);
+    return {
+      ok:
+        draft.project.ready &&
+        !bounded.diagnostics.some((entry) => entry.severity === 'error') &&
+        !layers.some((entry) => entry.status === 'failed' || entry.status === 'setup_required'),
+      projectId: input.projectId,
+      ...(draft.runId === undefined ? {} : { runId: draft.runId }),
+      ...(draft.revisionId === undefined ? {} : { revisionId: draft.revisionId }),
+      layers,
+      diagnostics: bounded.diagnostics,
+      truncated: bounded.truncated,
+    };
+  }
+
+  async buildProject(
+    input: ProjectBuildInput,
+    context: PackwrightServiceContext,
+  ): Promise<ProjectBuildResult> {
+    return this.visual.runProjectOperation(input.projectId, () =>
+      this.buildProjectUnlocked(input, context),
+    );
+  }
+
+  private async buildProjectUnlocked(
+    input: ProjectBuildInput,
+    context: PackwrightServiceContext,
+  ): Promise<ProjectBuildResult> {
+    let expectedDatapackSha256: string | null;
+    let expectedResourcepackSha256: string | null;
+    if (input.overwrite) {
+      if (
+        input.expectedDatapackSha256 === undefined ||
+        input.expectedResourcepackSha256 === undefined
+      ) {
+        throw new PackwrightError(
+          'precondition_required',
+          'Both paired ZIP preconditions are required when overwrite is true.',
+        );
+      }
+      expectedDatapackSha256 = input.expectedDatapackSha256;
+      expectedResourcepackSha256 = input.expectedResourcepackSha256;
+    } else {
+      if (
+        input.expectedDatapackSha256 !== undefined ||
+        input.expectedResourcepackSha256 !== undefined
+      ) {
+        throw new PackwrightError(
+          'invalid_argument',
+          'Paired ZIP preconditions may only be supplied when overwrite is true.',
+        );
+      }
+      expectedDatapackSha256 = null;
+      expectedResourcepackSha256 = null;
+    }
+    const inspection = await this.visual.validateDraft(input.projectId);
+    const readiness = inspection.readiness;
+    if (
+      !inspection.project.ready ||
+      inspection.result?.ok !== true ||
+      !readiness?.textures ||
+      !readiness.compiled ||
+      !readiness.rendered ||
+      !readiness.binding ||
+      !readiness.committed
+    ) {
+      throw new PackwrightError(
+        'validation_failed',
+        'The latest visual revision must be compiled, rendered, connected, validated, and committed before building.',
+        {
+          readiness,
+          diagnostics: inspection.result?.diagnostics,
+        },
+      );
+    }
+    const selectedRunId = inspection.runId;
+    const selectedRevisionId = inspection.revisionId;
+    if (selectedRunId === undefined || selectedRevisionId === undefined) {
+      throw new PackwrightError('precondition_required', 'No latest visual revision is selected.');
+    }
+    const outputDirectory = input.outputDirectory ?? 'build';
+    const normalizedOutput = this.workspace.normalize(outputDirectory);
+    for (const pack of [
+      inspection.project.manifest.datapack,
+      inspection.project.manifest.resourcepack,
+    ]) {
+      if (normalizedOutput === pack || normalizedOutput.startsWith(`${pack}/`)) {
+        throw new PackwrightError(
+          'invalid_argument',
+          'Paired build output cannot be inside either source pack.',
+          { outputDirectory: normalizedOutput, pack },
+        );
+      }
+    }
+    const datapackOutput = `${normalizedOutput}/${input.projectId}-data-26.2.zip`;
+    const resourcepackOutput = `${normalizedOutput}/${input.projectId}-assets-26.2.zip`;
+    const [datapackScan, resourcepackScan] = await Promise.all([
+      scanDatapack(this.workspace, inspection.project.manifest.datapack, {
+        signal: context.signal,
+      }),
+      scanDatapack(this.workspace, inspection.project.manifest.resourcepack, {
+        signal: context.signal,
+      }),
+    ]);
+    assertPairedBuildByteBudget(
+      'source snapshots',
+      datapackScan.totalBytes + resourcepackScan.totalBytes,
+    );
+    const [datapackSnapshot, resourcepackSnapshot] = await Promise.all([
+      readPackSnapshot(
+        this.workspace,
+        inspection.project.manifest.datapack,
+        context.signal,
+        datapackScan,
+      ),
+      readPackSnapshot(
+        this.workspace,
+        inspection.project.manifest.resourcepack,
+        context.signal,
+        resourcepackScan,
+      ),
+    ]);
+    const datapackValidation = await withStagedDatapack(
+      datapackSnapshot,
+      [],
+      (workspace, project) =>
+        this.validateDatapackAt(
+          workspace,
+          {
+            project,
+            includeSpyglass: false,
+            includeVanilla: true,
+          },
+          context,
+          false,
+        ),
+    );
+    const resourcepackValidation = validateResourcePackSnapshot(resourcepackSnapshot.entries);
+    const allDiagnostics: Diagnostic[] = [
+      ...inspection.result.diagnostics.map(visualDiagnostic),
+      ...datapackValidation.diagnostics,
+      ...resourcepackValidation.diagnostics.map(visualDiagnostic),
+    ];
+    const bounded = boundedDiagnostics(allDiagnostics);
+    if (
+      !datapackValidation.ok ||
+      !resourcepackValidation.ok ||
+      bounded.diagnostics.some((entry) => entry.severity === 'error')
+    ) {
+      throw new PackwrightError(
+        'validation_failed',
+        'The exact paired-pack snapshots failed validation before build.',
+        { diagnostics: bounded.diagnostics, truncated: bounded.truncated },
+      );
+    }
+    const [datapackArchive, resourcepackArchive] = await Promise.all([
+      createDeterministicZipArchive(datapackSnapshot.entries),
+      createDeterministicZipArchive(resourcepackSnapshot.entries),
+    ]);
+    assertPairedBuildByteBudget('ZIP artifacts', datapackArchive.size + resourcepackArchive.size);
+    const [currentDatapackScan, currentResourcepackScan] = await Promise.all([
+      scanDatapack(this.workspace, inspection.project.manifest.datapack, {
+        signal: context.signal,
+      }),
+      scanDatapack(this.workspace, inspection.project.manifest.resourcepack, {
+        signal: context.signal,
+      }),
+      this.visual.assertCurrentSelection(
+        input.projectId,
+        selectedRunId,
+        selectedRevisionId,
+        inspection.project.manifestSha256,
+      ),
+    ]);
+    assertScanSnapshotUnchanged(datapackSnapshot.scan, currentDatapackScan);
+    assertScanSnapshotUnchanged(resourcepackSnapshot.scan, currentResourcepackScan);
+    const transaction = await commitFileTransaction(
+      this.workspace,
+      [
+        {
+          path: datapackOutput,
+          content: datapackArchive.data,
+          expectedSha256: expectedDatapackSha256,
+        },
+        {
+          path: resourcepackOutput,
+          content: resourcepackArchive.data,
+          expectedSha256: expectedResourcepackSha256,
+        },
+      ],
+      context.signal,
+    );
+    const datapackInstalled = transaction.files.find((file) => file.path === datapackOutput);
+    const resourcepackInstalled = transaction.files.find(
+      (file) => file.path === resourcepackOutput,
+    );
+    if (datapackInstalled === undefined || resourcepackInstalled === undefined) {
+      throw new Error('Paired build transaction did not install both archives.');
+    }
+    return {
+      ok: true,
+      projectId: input.projectId,
+      datapack: {
+        path: datapackOutput,
+        size: datapackArchive.size,
+        sha256: datapackInstalled.sha256,
+        entries: datapackSnapshot.count,
+      },
+      resourcepack: {
+        path: resourcepackOutput,
+        size: resourcepackArchive.size,
+        sha256: resourcepackInstalled.sha256,
+        entries: resourcepackSnapshot.count,
+      },
+      diagnostics: bounded.diagnostics,
+      truncated: bounded.truncated || (datapackValidation.truncated ?? false),
+    };
+  }
+
+  async readVisualResource(input: VisualResourceInput): Promise<VisualResourceResult> {
+    const result = await this.visual.readResource(input);
+    return {
+      mimeType: result.mimeType,
+      encoding: result.mimeType === 'image/png' ? 'base64' : 'utf8',
+      data:
+        result.mimeType === 'image/png'
+          ? result.data.toString('base64')
+          : result.data.toString('utf8'),
+      sha256: sha256Buffer(result.data),
+    };
   }
 
   projectsWereTruncated(): boolean {

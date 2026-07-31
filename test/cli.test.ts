@@ -32,6 +32,18 @@ describe('compiled CLI', () => {
     expect(result.stdout).toContain('Usage: packwright-mcp');
   });
 
+  it('exposes explicit client-assets setup without changing the default setup command', async () => {
+    const result = await runProcess({
+      command: process.execPath,
+      args: [cli, 'setup-version', '--help'],
+      timeoutMs: 5_000,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toContain('--accept-minecraft-eula');
+    expect(result.stdout).toContain('--client-assets');
+  });
+
   it('emits a structured failure when --json is requested', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'packwright-cli-json-'));
     cleanups.push(async () => rm(root, { recursive: true, force: true }));

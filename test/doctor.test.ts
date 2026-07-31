@@ -33,4 +33,22 @@ describe('doctor', () => {
       required: true,
     });
   });
+
+  it('reports overlapping workspace and cache trees as a required failure', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'packwright-doctor-'));
+    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+
+    const result = await runDoctor({
+      workspaceRoot: root,
+      cacheDir: path.join(root, '.cache'),
+      javaCommand: path.join(root, 'missing-java'),
+      readOnly: false,
+      offline: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(
+      result.checks.find((check) => check.name === 'workspace_cache_separation'),
+    ).toMatchObject({ ok: false, required: true });
+  });
 });

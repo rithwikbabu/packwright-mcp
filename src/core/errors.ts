@@ -13,6 +13,7 @@ export type PackwrightErrorCode =
   | 'scan_limit'
   | 'precondition_required'
   | 'precondition_failed'
+  | 'transaction_recovery_required'
   | 'confirmation_required'
   | 'validation_failed'
   | 'cancelled';

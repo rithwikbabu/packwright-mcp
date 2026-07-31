@@ -1,6 +1,6 @@
 # CLI reference
 
-The `packwright-mcp` executable serves MCP by default and also exposes operator-friendly versions of diagnostics, setup, validation, testing, and build operations.
+The `packwright-mcp` executable serves MCP by default and also exposes operator-friendly versions of diagnostics, setup, datapack validation, testing, and build operations. The paired visual workflow is currently MCP-first; use the twelve visual tools rather than expecting separate visual CLI subcommands.
 
 ## Global options
 
@@ -33,18 +33,21 @@ Starts the local stdio MCP server. Omitting the subcommand has the same effect. 
 packwright-mcp doctor --workspace /absolute/path/to/datapacks [--json]
 ```
 
-Reports Node, workspace read/write, Java 25, Minecraft cache, and external-validator readiness. Java and cache readiness are required by default validation, every build, and GameTest; Spyglass remains optional. Required Node/workspace failures produce exit code 1.
+Reports Node, workspace read/write, Java 25, server-validation cache, optional client-asset cache, and external-validator readiness. Java and the server cache are required by default validation, every build, and GameTest; client assets and Spyglass remain optional. Required Node/workspace failures produce exit code 1.
 
 ## `setup-version`
 
 ```text
 packwright-mcp setup-version 26.2 \
   --accept-minecraft-eula \
+  [--client-assets] \
   --workspace /absolute/path/to/datapacks \
   [--json]
 ```
 
 Requires explicit human EULA acceptance and Java 25. Downloads only allow-listed official Mojang metadata/artifacts, verifies the server jar SHA-1, and prepares cache reports. Only version `26.2` is accepted. Offline mode prevents downloads.
+
+`--client-assets` explicitly opts into caching the official client jar and asset index declared by the same manifest. Packwright verifies both SHA-1 values and sizes before reporting client-profile readiness. The option does not fetch every object named by the asset index, install or launch Minecraft, or redistribute client files. In v0.3 it is a setup/readiness signal, not a built-in asset resolver; compilation, rendering, and validation do not load built-in asset content from this cache.
 
 ## `validate`
 
@@ -87,6 +90,8 @@ packwright-mcp build <project> \
 ```
 
 Runs structural checks and mandatory vanilla-backed command validation, then creates a deterministic ZIP. Build has no `--no-vanilla` option: Java 25, the prepared 26.2 cache, and commands accepted by Minecraft are required before packaging. The default output is `<project>.zip` beneath the workspace and outside the pack. Replacing an existing output requires both `--overwrite` and its current SHA-256. Validation/build failures produce exit code 1.
+
+The CLI `build` command remains datapack-only for backward compatibility. Use the MCP `project_build` tool for an attached visual project; it emits separate deterministic datapack and resource-pack ZIPs.
 
 ## Exit codes
 

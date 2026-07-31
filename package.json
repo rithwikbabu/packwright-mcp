@@ -1,7 +1,7 @@
 {
   "name": "@rithwikbabu/packwright-mcp",
-  "version": "0.2.0",
-  "description": "A local-first MCP server for developing Minecraft Java Edition datapacks.",
+  "version": "0.3.0",
+  "description": "A local-first MCP visual compiler for paired Minecraft Java datapacks and resource packs.",
   "type": "module",
   "bin": {
     "packwright-mcp": "dist/cli.js"
@@ -40,6 +40,9 @@
     "model-context-protocol",
     "minecraft",
     "datapack",
+    "resource-pack",
+    "minecraft-models",
+    "visual-compiler",
     "mcfunction"
   ],
   "scripts": {

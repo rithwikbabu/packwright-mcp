@@ -1,6 +1,34 @@
 # Validation and vanilla testing
 
-Packwright separates checks it owns from diagnostics supplied by external tooling and results observed from vanilla Minecraft. Each diagnostic identifies its engine and authority so clients do not confuse a heuristic with a game result.
+Packwright separates checks it owns from diagnostics supplied by external tooling, deterministic visual previews, agent review, and results observed from vanilla Minecraft. Each diagnostic identifies its engine and authority so clients do not confuse a heuristic or render with a game result.
+
+## Paired visual validation
+
+`visual_validate` composes nine named layers:
+
+1. Paired datapack/resource-pack metadata and 26.2 format compatibility.
+2. Strict semantic `ModelSpec` and canonical compiled JSON.
+3. PNG texture presence, decoding, dimensions, and hashes.
+4. Asset-graph endpoints, cycles, reachability, paths, and component/model links.
+5. Geometry, hierarchy, material/tint, rotation, and deterministic UV checks.
+6. Deterministic render readiness and approximate display clipping checks.
+7. Declarative carrier, `minecraft:item_model`, item-definition, model, and texture binding.
+8. Existing vanilla-backed command validation for the associated datapack.
+9. Optional GameTests.
+
+The result reports each layer as `passed`, `failed`, `skipped`, or `setup_required`. Visual diagnostics use `packwright.visual` structural authority and include the logical asset plus an exact semantic part, material, display context, or generated path when available:
+
+```text
+arcana:firestaff / part crystal
+The north face has a zero-pixel UV region in its assigned texture.
+
+arcana:firestaff / display.firstperson_righthand
+The transform may move geometry outside the standard preview volume.
+```
+
+For an uncommitted bound revision, `visual_validate` reads stable snapshots of both sibling packs and applies the exact current proposal as an overlay. Resource-pack validation checks the full resource-pack snapshot plus that overlay, and vanilla command validation or optional GameTests run against the full datapack snapshot plus its overlay. This proves that the proposed bytes and their surrounding pack structure were checked; it does not prove that every unrelated resource-pack file is visually correct. The renderer proves deterministic raster output from the supported cuboid/plane subset, not exact Minecraft client output. Agent contact-sheet review supplies aesthetic judgment but is neither structural nor authoritative evidence. Actual-client reload/capture is not implemented in this release.
+
+Keep `includeVanilla: true` for release validation so the proposed `/give` helper and other datapack functions are parsed with the real 26.2 dispatcher/codecs. Use `includeGameTests: true` only when the datapack provides meaningful test instances. A release-quality review should retain all three distinct evidence types: visual structural checks, human/agent preview judgment, and vanilla validation/testing.
 
 ## Structural validation
 
@@ -66,6 +94,17 @@ The command:
 
 The jar and generated data are cache entries, not project files, npm package contents, GitHub artifacts, or release assets. Setup fails when offline mode is enabled or verification does not match.
 
+When client-reference setup and readiness reporting are needed, select the separate client-assets step:
+
+```sh
+packwright-mcp setup-version 26.2 \
+  --accept-minecraft-eula \
+  --client-assets \
+  --workspace /absolute/path/to/datapacks
+```
+
+Packwright then verifies and caches the official client jar plus the version's asset index. It does not fetch every indexed asset, redistribute client content, or launch the client. In v0.3 this is setup/readiness data only, not a built-in asset resolver; compilation, rendering, and validation do not load built-in model or texture content from it. A custom external texture or item-state model must already exist at `assets/<namespace>/textures/<path>.png` or `assets/<namespace>/models/<path>.json` in the sibling resource pack.
+
 Run `packwright-mcp doctor --workspace /absolute/path/to/datapacks` to see Node, workspace, Java, cache, and validator readiness.
 
 ## Disposable GameTest runs
@@ -86,11 +125,19 @@ Validation authority increases from left to right:
 Packwright structural checks -> Spyglass static diagnostics -> vanilla command parser -> vanilla GameTest
 ```
 
-A passing structural or Spyglass result is not proof that Minecraft can parse every command. Vanilla-backed validation closes that gap for command syntax and codecs, but it still does not execute commands or prove runtime state. Use a vanilla test for release-critical predicates, scheduled behavior, world-state interactions, and GameTest resources. Conversely, a GameTest run only exercises selected behavior; retain structural validation, command validation, and code review.
+Visual evidence is a separate axis:
+
+```text
+visual structural/graph checks -> deterministic render checks -> agent visual review -> future actual-client capture
+```
+
+A passing structural or Spyglass result is not proof that Minecraft can parse every command. Vanilla-backed validation closes that gap for command syntax and codecs, but it still does not execute commands or prove runtime state. Use a vanilla test for release-critical predicates, scheduled behavior, world-state interactions, and GameTest resources. Conversely, a GameTest run only exercises selected behavior; retain structural validation, command validation, and code review. Likewise, a passing CPU render is not proof that the real client resolves every parent, special model, atlas, or built-in asset exactly as shown. v0.3 recognizes an allow-list of built-in parent identifiers but does not load their model or texture content from the optional client cache.
 
 ## Continuous integration
 
-Ordinary CI never downloads Minecraft artifacts. The repository's separate `Minecraft integration` workflow is manual, uses a protected GitHub environment, requires an explicit EULA-acceptance input, and never uploads the server jar or generated vanilla cache. Its acceptance path creates a new pack, adds a load function and an explicit `minecraft:always_pass` runner smoke test, validates it, passes the selected vanilla test, builds a deterministic ZIP, extracts that artifact, and loads the built contents through the vanilla runner again.
+Ordinary CI never downloads Minecraft artifacts. It can exercise the semantic compiler, safe PNG decoder, deterministic renderer/contact-sheet pixel hashes, graph checks, transaction failure/rollback behavior, and deterministic resource-pack ZIPs entirely from original fixtures. The repository's separate `Minecraft integration` workflow is manual, uses a protected GitHub environment, requires an explicit EULA-acceptance input, and never uploads the server/client jars or generated vanilla cache. Its first path creates a datapack, proves intentionally invalid commands are rejected by the 26.2 dispatcher, repairs them, passes an explicit `minecraft:always_pass` GameTest, builds a deterministic ZIP, and loads the extracted artifact through vanilla again. Its paired visual path attaches a resource pack, drafts and renders a deliberately clipped fire staff, applies a targeted transform repair, connects a recipe and `/give` helper, runs full overlay command validation and a GameTest, commits transactionally, proves repeated paired ZIPs are byte-identical, loads the built datapack through vanilla, and verifies the resource-pack ZIP and its complete reference graph. This release does not claim an actual-client screenshot or resource-reload harness.
+
+The current automated suite does not launch a clean Minecraft client to verify a paired visual project. Treat actual-client load with no missing-model/texture errors as a manual release check until a dedicated capture/reload harness exists.
 
 For an explicitly approved local run, set an isolated absolute cache and the acceptance guard yourself:
 
