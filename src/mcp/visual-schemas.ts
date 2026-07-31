@@ -3,13 +3,28 @@ import { z } from 'zod/v4';
 import { MAX_MCP_PAYLOAD_BYTES } from '../core/limits.js';
 import { VISUAL_TARGETS } from '../visual/capabilities.js';
 import {
+  ArmorReviewSchema,
+  BlockReviewSchema,
   DISPLAY_CONTEXTS,
+  DirectionVectorSchema,
   DisplayTransformSchema,
   ElementRotationSchema,
+  EntityModelReviewSchema,
+  GuiItemReviewSchema,
+  HELD_ITEM_USE_POSES,
+  HeadWearableReviewSchema,
   MaterialSpecSchema,
   ModelSpecSchema,
+  PlaceableReviewSchema,
+  ProjectileReviewSchema,
+  REVIEW_PROFILE_IDS,
   Vector3Schema,
 } from '../visual/model-spec.js';
+import {
+  REVIEW_MEASUREMENT_IDS,
+  REVIEW_MEASUREMENT_UNITS,
+  REVIEW_SCENE_CATEGORIES,
+} from '../visual/review-profile.js';
 import {
   DiagnosticSchema,
   MinecraftVersionSchema,
@@ -104,6 +119,15 @@ export const VisualCapabilitiesResultSchema = z.strictObject({
   minecraftVersion: MinecraftVersionSchema,
   resourcePackFormat: z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()]),
   capabilities: z.array(VisualCapabilitySchema),
+  reviewProfiles: z.array(
+    z.strictObject({
+      id: z.enum(REVIEW_PROFILE_IDS),
+      version: z.number().int().positive(),
+      targetKind: z.literal('item'),
+      support: z.literal('full'),
+      clientCaptureSupport: z.enum(['full', 'limited', 'unsupported']),
+    }),
+  ),
 });
 
 export const VisualProjectAttachInputSchema = z
@@ -177,8 +201,10 @@ export const VisualAssetInspectResultSchema = z.strictObject({
     textures: z.boolean(),
     compiled: z.boolean(),
     rendered: z.boolean(),
+    reviewProfile: z.boolean(),
     binding: z.boolean(),
     committed: z.boolean(),
+    clientCaptured: z.boolean(),
   }),
   diagnostics: z.array(DiagnosticSchema),
   truncated: z.boolean(),
@@ -350,7 +376,12 @@ export const VisualRenderInputSchema = z
     projectId: VisualProjectIdSchema,
     runId: VisualDraftIdSchema,
     revisionId: VisualDraftIdSchema.optional(),
-    includeContexts: z.boolean().default(true),
+    includeContexts: z
+      .boolean()
+      .default(true)
+      .describe(
+        'Compatibility flag for legacy renderer callers; scene-profile required views are never removed.',
+      ),
     viewSize: z.number().int().min(32).max(256).default(128),
   })
   .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
@@ -360,18 +391,94 @@ export const VisualRenderResultSchema = z.strictObject({
   projectId: VisualProjectIdSchema,
   runId: VisualDraftIdSchema,
   revisionId: VisualDraftIdSchema,
+  reviewProfile: z.enum(REVIEW_PROFILE_IDS),
+  profileVersion: z.number().int().positive(),
+  reviewReady: z.boolean(),
+  reportUri: z.url(),
   contactSheet: VisualFileSchema,
   contactSheetUri: z.url(),
   views: z.array(
     z.strictObject({
       name: z.string().min(1).max(128),
+      required: z.boolean(),
+      category: z.enum(REVIEW_SCENE_CATEGORIES),
       width: z.number().int().positive(),
       height: z.number().int().positive(),
       file: VisualFileSchema,
       uri: z.url(),
     }),
   ),
+  measurements: z.array(
+    z.strictObject({
+      metric: z.enum(REVIEW_MEASUREMENT_IDS),
+      view: z.string().min(1).max(64).optional(),
+      status: z.enum(['passed', 'warning', 'failed', 'skipped']),
+      value: z.number().optional(),
+      threshold: z.number().optional(),
+      unit: z.enum(REVIEW_MEASUREMENT_UNITS),
+      message: z.string().min(1).max(4096),
+      partId: z.string().min(1).max(64).optional(),
+    }),
+  ),
   pixelSha256: Sha256Schema,
+  diagnostics: z.array(DiagnosticSchema),
+});
+
+export const VisualClientCaptureInputSchema = z
+  .strictObject({
+    projectId: VisualProjectIdSchema,
+    runId: VisualDraftIdSchema,
+    revisionId: VisualDraftIdSchema.optional(),
+    proposalSha256: Sha256Schema,
+    confirm: z.literal(true),
+    timeoutMs: z.number().int().min(30_000).max(600_000).default(300_000),
+    resolution: z
+      .strictObject({
+        width: z.number().int().min(640).max(1920).default(1280),
+        height: z.number().int().min(360).max(1080).default(720),
+      })
+      .default({ width: 1280, height: 720 }),
+    guiScale: z.number().int().min(0).max(8).default(2),
+  })
+  .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
+
+export const VisualClientCaptureResultSchema = z.strictObject({
+  ok: z.boolean(),
+  status: z.enum(['passed', 'failed', 'setup_required', 'cancelled', 'timeout']),
+  authority: z.literal('authoritative_environment_capture'),
+  projectId: VisualProjectIdSchema,
+  runId: VisualDraftIdSchema,
+  revisionId: VisualDraftIdSchema,
+  reviewProfile: z.enum(REVIEW_PROFILE_IDS),
+  profileVersion: z.number().int().positive(),
+  clientCaptureSupport: z.enum(['full', 'limited', 'unsupported']),
+  captureReady: z.boolean(),
+  planSha256: Sha256Schema.optional(),
+  reportSha256: Sha256Schema.optional(),
+  reportUri: z.url().optional(),
+  contactSheet: VisualFileSchema.optional(),
+  contactSheetUri: z.url().optional(),
+  views: z.array(
+    z.strictObject({
+      name: z.string().min(1).max(128),
+      width: z.number().int().positive(),
+      height: z.number().int().positive(),
+      sourceSha256: Sha256Schema,
+      normalizedSha256: Sha256Schema,
+      bytes: z.number().int().positive(),
+      uri: z.url(),
+    }),
+  ),
+  environment: z
+    .strictObject({
+      rendererBackend: z.enum(['opengl', 'vulkan']),
+      operatingSystem: z.string().min(1).max(512),
+      javaVersion: z.string().min(1).max(512),
+      gpuVendor: z.string().min(1).max(512),
+      gpuRenderer: z.string().min(1).max(512),
+      driverVersion: z.string().min(1).max(512),
+    })
+    .optional(),
   diagnostics: z.array(DiagnosticSchema),
 });
 
@@ -396,6 +503,35 @@ const DisplayRepairSchema = z.strictObject({
   transform: DisplayTransformSchema,
 });
 
+const HeldItemRepairSchema = z
+  .strictObject({
+    kind: z.literal('held_item'),
+    primaryGrip: Vector3Schema.optional(),
+    secondaryGrip: Vector3Schema.nullable().optional(),
+    muzzle: Vector3Schema.nullable().optional(),
+    forwardAxis: DirectionVectorSchema.nullable().optional(),
+    handedness: z.enum(['right', 'left', 'either']).optional(),
+    twoHanded: z.boolean().optional(),
+    itemKind: z
+      .enum(['generic', 'weapon', 'tool', 'bow', 'shield', 'horn', 'food', 'spyglass'])
+      .optional(),
+    usePose: z.enum(HELD_ITEM_USE_POSES).optional(),
+  })
+  .refine(
+    (value) => Object.keys(value).some((key) => key !== 'kind'),
+    'A held-item repair must change at least one semantic field',
+  );
+
+const ProfileReviewRepairSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('block_review'), value: BlockReviewSchema }),
+  z.strictObject({ kind: z.literal('placeable_review'), value: PlaceableReviewSchema }),
+  z.strictObject({ kind: z.literal('armor_review'), value: ArmorReviewSchema }),
+  z.strictObject({ kind: z.literal('head_wearable_review'), value: HeadWearableReviewSchema }),
+  z.strictObject({ kind: z.literal('projectile_review'), value: ProjectileReviewSchema }),
+  z.strictObject({ kind: z.literal('gui_item_review'), value: GuiItemReviewSchema }),
+  z.strictObject({ kind: z.literal('entity_model_review'), value: EntityModelReviewSchema }),
+]);
+
 export const VisualRevisionCreateInputSchema = z
   .strictObject({
     projectId: VisualProjectIdSchema,
@@ -408,7 +544,13 @@ export const VisualRevisionCreateInputSchema = z
       .max(16 * 1024),
     repairs: z
       .array(
-        z.discriminatedUnion('kind', [PartRepairSchema, MaterialRepairSchema, DisplayRepairSchema]),
+        z.discriminatedUnion('kind', [
+          PartRepairSchema,
+          MaterialRepairSchema,
+          DisplayRepairSchema,
+          HeldItemRepairSchema,
+          ...ProfileReviewRepairSchema.options,
+        ]),
       )
       .min(1)
       .max(128),
@@ -421,6 +563,7 @@ export const VisualCommitInputSchema = z
     runId: VisualDraftIdSchema,
     revisionId: VisualDraftIdSchema.optional(),
     proposalSha256: Sha256Schema,
+    expectedClientCaptureReportSha256: Sha256Schema.optional(),
     confirm: z.literal(true),
   })
   .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
@@ -432,6 +575,7 @@ export const VisualCommitResultSchema = z.strictObject({
   runId: VisualDraftIdSchema,
   revisionId: VisualDraftIdSchema,
   transactionId: z.string().min(1),
+  clientCaptureReportSha256: Sha256Schema.optional(),
   files: z.array(VisualFileSchema),
   diagnostics: z.array(DiagnosticSchema),
 });
@@ -443,6 +587,7 @@ export const VisualValidateInputSchema = z
     revisionId: VisualDraftIdSchema.optional(),
     includeVanilla: z.boolean().default(true),
     includeGameTests: z.boolean().default(false),
+    requireClientCapture: z.boolean().optional(),
   })
   .superRefine((value, context) => {
     if (value.revisionId !== undefined && value.runId === undefined) {
@@ -469,6 +614,8 @@ export const VisualValidateResultSchema = z.strictObject({
         'asset_graph',
         'geometry',
         'render',
+        'review_profile',
+        'client_capture',
         'binding',
         'vanilla_commands',
         'gametest',
@@ -545,6 +692,8 @@ export type VisualConnectInput = z.infer<typeof VisualConnectInputSchema>;
 export type VisualDraftResult = z.infer<typeof VisualDraftResultSchema>;
 export type VisualRenderInput = z.infer<typeof VisualRenderInputSchema>;
 export type VisualRenderResult = z.infer<typeof VisualRenderResultSchema>;
+export type VisualClientCaptureInput = z.infer<typeof VisualClientCaptureInputSchema>;
+export type VisualClientCaptureResult = z.infer<typeof VisualClientCaptureResultSchema>;
 export type VisualRevisionCreateInput = z.infer<typeof VisualRevisionCreateInputSchema>;
 export type VisualCommitInput = z.infer<typeof VisualCommitInputSchema>;
 export type VisualCommitResult = z.infer<typeof VisualCommitResultSchema>;

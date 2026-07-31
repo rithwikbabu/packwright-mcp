@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-31
+
+### Added
+
+- Added eight versioned visual review profiles: `held_item`, `block`, `placeable`, `armor`, `head_wearable`, `projectile`, `gui_item`, and `entity_model`, each with specialized bounded scenes and Packwright-authored reference geometry.
+- Added profile-specific semantic metadata, immutable render reports, MCP image/report resources, targeted metadata repairs, and guarded advisory checks spanning held fit, placement, GUI occupancy, armor/head presentation, projectile direction, scale, hitboxes, and frame retention.
+- Added the explicitly configured `visual_capture` workflow for hash-bound framebuffer evidence from the actual official Minecraft 26.2 client renderer, with dedicated report, contact-sheet, and individual-view MCP resources.
+- Added a client-only Fabric capture mod, a strict versioned plan/report protocol, complete manifest-hashed launcher runtime setup, resource reload/model-bake coordination, fixed offline launch arguments, and capture provenance covering the exact packs, item components, client/mod identities, graphics environment, and PNG hashes.
+
+### Changed
+
+- The visual renderer now compiles model-specific profile scenes instead of applying one universal contact sheet to every semantic item, while leaving Minecraft display transforms and compiled pack JSON unchanged. Selecting a review profile does not expand the item-only compiler or native capability claims.
+- Visual commit, validation, and paired build now verify the exact renderer/profile versions, scene plan, report, required image hashes, and advisory readiness result for the selected revision.
+- The deterministic CPU renderer remains the portable, advisory first gate. Official-client screenshots have the distinct `authoritative_environment_capture` authority for their recorded OS/GPU/driver/OpenGL environment and are not represented as cross-GPU pixel-deterministic output.
+- Official-client capture is `limited` for one-handed `held_item` scenes and `full` for `gui_item`. Two-handed held items are rejected until the adapter can pose and verify a secondary Minecraft-rendered arm at `secondaryGrip`; the other six review profiles report `unsupported` and never substitute synthetic images for Minecraft frames.
+- Production validation now requires verified client evidence by default for capture-supported profiles, while `requireClientCapture: false` explicitly selects advisory/fast validation. Production commit requires the exact current capture-report SHA-256 and binds the accepted plan, source report, runtime manifest, client/mod, and pack hashes into its durable receipt.
+
+### Security
+
+- Client setup is an explicit EULA-accepting CLI action that verifies the official client, asset objects, libraries, natives, and pinned Fabric Loader `0.19.3`; Minecraft artifacts are cached locally and never redistributed.
+- Client capture launches only the bundled Packwright capture mod in a disposable game directory, accepts no account credentials, user save path, arbitrary command, JVM arguments, or shell input, and disables multiplayer and chat.
+- Capture evidence binds the immutable proposal and pack snapshots to the client JAR, capture-mod, framebuffer, report, completion-sentinel, and bounded log hashes; stale or tampered evidence fails verification.
+
+### Fixed
+
+- Advisory held-item CPU evidence now honors one-handed declarations, uses the declared primary hand for action scenes, independently measures secondary-grip reach, alpha-weights screen obstruction, preserves omitted Minecraft model faces, and measures retained projected face area instead of sampling only face vertices. Official first-person frames sign their Minecraft-rendered reference arm as `scale_only` and make no palm-to-grip authority claim.
+
 ## [0.3.0] - 2026-07-30
 
 ### Added
@@ -91,7 +118,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Excluded Spyglass from runtime dependencies because its current dependency tree contains an unfixed critical archive-extraction advisory; external use requires explicit operator configuration.
 
-[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.1...v0.1.2

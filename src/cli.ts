@@ -30,6 +30,21 @@ function integer(value: string): number {
   return parsed;
 }
 
+function nonNegativeInteger(value: string): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) {
+    throw new InvalidArgumentError('Expected a non-negative integer.');
+  }
+  return parsed;
+}
+
+function sha256(value: string): string {
+  if (!/^[a-f0-9]{64}$/u.test(value)) {
+    throw new InvalidArgumentError('Expected a lowercase SHA-256 digest.');
+  }
+  return value;
+}
+
 function globalOptions(command: Command): GlobalOptions {
   return command.optsWithGlobals<GlobalOptions>();
 }
@@ -144,7 +159,7 @@ export function createCli(): Command {
   program
     .name('packwright-mcp')
     .description('Local-first MCP server and visual compiler for Minecraft Java 26.2 packs')
-    .version('0.3.0')
+    .version('0.4.0')
     .showSuggestionAfterError()
     .showHelpAfterError();
   addGlobalOptions(program);
@@ -196,30 +211,127 @@ export function createCli(): Command {
       'also cache the manifest-verified official client jar and asset index',
       false,
     )
-    .action(async (version: string, local: { clientAssets: boolean }, command: Command) => {
-      if (version !== '26.2') throw new InvalidArgumentError('Only Minecraft 26.2 is supported.');
-      const options = globalOptions(command);
-      const config = resolveRuntimeConfig(configOverrides(options));
-      const abort = installAbortHandlers();
-      try {
-        const result = await setupVersion(config, true, abort.controller.signal, {
-          clientAssets: local.clientAssets,
-        });
-        emitResult(result, options.json ?? false, [
-          `Minecraft ${result.minecraftVersion} validation cache is ready.`,
-          `Cache: ${result.cacheDir}`,
-          `Verified server SHA-1: ${result.serverSha1}`,
-          ...(result.clientAssets.selected
-            ? [
-                `Verified client SHA-1: ${result.clientAssets.clientSha1 ?? 'unknown'}`,
-                `Verified asset index: ${result.clientAssets.assetIndexId ?? 'unknown'} (${result.clientAssets.assetIndexSha1 ?? 'unknown'})`,
-              ]
-            : []),
-        ]);
-      } finally {
-        abort.dispose();
-      }
-    });
+    .option(
+      '--client-capture',
+      'prepare the complete hash-verified client, assets, libraries, natives, and Fabric capture runtime',
+      false,
+    )
+    .action(
+      async (
+        version: string,
+        local: { clientAssets: boolean; clientCapture: boolean },
+        command: Command,
+      ) => {
+        if (version !== '26.2') throw new InvalidArgumentError('Only Minecraft 26.2 is supported.');
+        const options = globalOptions(command);
+        const config = resolveRuntimeConfig(configOverrides(options));
+        const abort = installAbortHandlers();
+        try {
+          const result = await setupVersion(config, true, abort.controller.signal, {
+            clientAssets: local.clientAssets,
+            clientCapture: local.clientCapture,
+          });
+          emitResult(result, options.json ?? false, [
+            `Minecraft ${result.minecraftVersion} validation cache is ready.`,
+            `Cache: ${result.cacheDir}`,
+            `Verified server SHA-1: ${result.serverSha1}`,
+            ...(result.clientAssets.selected
+              ? [
+                  `Verified client SHA-1: ${result.clientAssets.clientSha1 ?? 'unknown'}`,
+                  `Verified asset index: ${result.clientAssets.assetIndexId ?? 'unknown'} (${result.clientAssets.assetIndexSha1 ?? 'unknown'})`,
+                ]
+              : []),
+            ...(result.clientCapture.selected
+              ? [
+                  `Verified client-capture runtime: ${String(result.clientCapture.artifacts ?? 0)} artifacts (${result.clientCapture.manifestSha256 ?? 'unknown'})`,
+                  `Capture platform: ${result.clientCapture.platform ?? 'unknown'}/${result.clientCapture.architecture ?? 'unknown'}`,
+                ]
+              : []),
+          ]);
+        } finally {
+          abort.dispose();
+        }
+      },
+    );
+
+  program
+    .command('capture')
+    .description('capture a connected visual proposal with the actual Minecraft 26.2 renderer')
+    .argument('<project-id>', 'attached Packwright visual project ID')
+    .requiredOption('--run <sha256>', 'immutable visual run ID', sha256)
+    .option('--revision <sha256>', 'immutable visual revision ID', sha256)
+    .requiredOption('--proposal-sha256 <sha256>', 'current connected proposal hash', sha256)
+    .requiredOption('--confirm', 'launch the graphical client in a disposable game directory')
+    .option('--timeout-ms <milliseconds>', 'timeout from 30000 to 600000', integer, 300_000)
+    .option('--width <pixels>', 'framebuffer width from 640 to 1920', integer, 1280)
+    .option('--height <pixels>', 'framebuffer height from 360 to 1080', integer, 720)
+    .option('--gui-scale <scale>', 'Minecraft GUI scale from 0 to 8', nonNegativeInteger, 2)
+    .action(
+      async (
+        projectId: string,
+        local: {
+          run: string;
+          revision?: string;
+          proposalSha256: string;
+          confirm: true;
+          timeoutMs: number;
+          width: number;
+          height: number;
+          guiScale: number;
+        },
+        command: Command,
+      ) => {
+        if (local.timeoutMs < 30_000 || local.timeoutMs > 600_000) {
+          throw new InvalidArgumentError('--timeout-ms must be between 30000 and 600000.');
+        }
+        if (local.width < 640 || local.width > 1920) {
+          throw new InvalidArgumentError('--width must be between 640 and 1920.');
+        }
+        if (local.height < 360 || local.height > 1080) {
+          throw new InvalidArgumentError('--height must be between 360 and 1080.');
+        }
+        if (local.guiScale < 0 || local.guiScale > 8) {
+          throw new InvalidArgumentError('--gui-scale must be between 0 and 8.');
+        }
+        const options = globalOptions(command);
+        const config = resolveRuntimeConfig(configOverrides(options));
+        const application = await PackwrightApplication.open(config);
+        const abort = installAbortHandlers();
+        try {
+          const result = await application.captureVisual(
+            {
+              projectId,
+              runId: local.run,
+              ...(local.revision === undefined ? {} : { revisionId: local.revision }),
+              proposalSha256: local.proposalSha256,
+              confirm: true,
+              timeoutMs: local.timeoutMs,
+              resolution: { width: local.width, height: local.height },
+              guiScale: local.guiScale,
+            },
+            operationContext(abort.controller.signal),
+          );
+          emitResult(
+            result,
+            options.json ?? false,
+            [
+              `${result.status.toUpperCase()}: ${String(result.views.length)} Minecraft framebuffer views`,
+              ...(result.reportSha256 === undefined
+                ? []
+                : [`Accepted report SHA-256: ${result.reportSha256}`]),
+              ...(result.reportUri === undefined ? [] : [`Report: ${result.reportUri}`]),
+              ...(result.contactSheetUri === undefined
+                ? []
+                : [`Contact sheet: ${result.contactSheetUri}`]),
+            ],
+            result.diagnostics,
+          );
+          if (!result.ok) process.exitCode = result.status === 'setup_required' ? 2 : 1;
+        } finally {
+          abort.dispose();
+        }
+      },
+    );
 
   program
     .command('validate')

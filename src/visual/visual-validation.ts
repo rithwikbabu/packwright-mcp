@@ -13,7 +13,7 @@ export type VisualDiagnosticSeverity = 'error' | 'warning' | 'information';
 
 export interface VisualDiagnostic {
   readonly engine: 'packwright.visual';
-  readonly authority: 'structural';
+  readonly authority: 'structural' | 'advisory';
   readonly severity: VisualDiagnosticSeverity;
   readonly code: string;
   readonly message: string;
@@ -21,6 +21,9 @@ export interface VisualDiagnostic {
   readonly partId?: string | undefined;
   readonly materialId?: string | undefined;
   readonly displayContext?: DisplayContext | undefined;
+  readonly reviewProfile?: string | undefined;
+  readonly reviewView?: string | undefined;
+  readonly reviewMetric?: string | undefined;
   readonly path?: string | undefined;
   readonly suggestedFix?: string | undefined;
 }
@@ -589,6 +592,9 @@ export function formatVisualDiagnostic(entry: VisualDiagnostic): string {
     entry.partId === undefined ? undefined : `part ${entry.partId}`,
     entry.materialId === undefined ? undefined : `material ${entry.materialId}`,
     entry.displayContext === undefined ? undefined : `display.${entry.displayContext}`,
+    entry.reviewProfile === undefined ? undefined : `profile ${entry.reviewProfile}`,
+    entry.reviewView === undefined ? undefined : `view ${entry.reviewView}`,
+    entry.reviewMetric === undefined ? undefined : `metric ${entry.reviewMetric}`,
   ].filter((value): value is string => value !== undefined);
   return `${target}${semantic.length === 0 ? '' : ` / ${semantic.join(' / ')}`}\n${entry.message}${
     entry.suggestedFix === undefined ? '' : `\n${entry.suggestedFix}`

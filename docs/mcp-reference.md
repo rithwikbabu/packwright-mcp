@@ -2,7 +2,7 @@
 
 Packwright exposes strict JSON Schema 2020-12 inputs and outputs. Successful calls include structured content and a short text fallback for clients that do not render structured results. Expected business failures—such as a stale hash, invalid datapack, or missing setup—are tool execution errors with structured details; malformed MCP requests are protocol errors.
 
-Use MCP discovery from the connected client as the authoritative machine-readable schema. This document describes stable behavior without duplicating every schema field. The original nine datapack tools remain compatible; the paired visual compiler adds twelve tools.
+Use MCP discovery from the connected client as the authoritative machine-readable schema. This document describes stable behavior without duplicating every schema field. The original nine datapack tools remain compatible; the paired visual compiler adds thirteen tools.
 
 ## Tools
 
@@ -60,11 +60,11 @@ Runs structural checks and mandatory vanilla-backed command validation, then cre
 
 ## Paired visual tools
 
-The v0.3 visual surface implements the custom-item vertical slice described in [Paired visual compiler](visual-compiler.md). Minecraft `support` is distinct from Packwright `compilerSupport`: `custom_item` reports `full`, `conditional_item_state` reports `limited`, and every other target reports `unsupported`. The state DSL exists, but broad property and built-in resolution are not exhaustive. Capability results for the other targets describe Minecraft's truthful representation boundary; they do not imply that a block, equipment, mob, display-rig, GUI, or mod compiler is present. Each paired project has exactly one active workflow head; v0.3 does not aggregate multiple independently active assets.
+The v0.4 visual surface implements the custom-item vertical slice described in [Paired visual compiler](visual-compiler.md). Minecraft `support` is distinct from Packwright `compilerSupport`: `custom_item` reports `full`, `conditional_item_state` reports `limited`, and every other target reports `unsupported`. The state DSL exists, but broad property and built-in resolution are not exhaustive. Capability results for the other targets describe Minecraft's truthful representation boundary; they do not imply that a block, equipment, mob, display-rig, GUI, or mod compiler is present. Each review profile also reports `clientCaptureSupport`: `held_item` is `limited`, `gui_item` is `full`, and every profile outside the current item compiler is explicitly `unsupported`. Each paired project has exactly one active workflow head; v0.4 does not aggregate multiple independently active assets.
 
 ### `visual_capabilities`
 
-Returns the Minecraft 26.2 resource-pack format and either one requested visual target or the complete capability matrix. Every entry includes `status` (`native`, `simulated`, `replacement`, or `requires_mod`), Minecraft `support`, Packwright `compilerSupport`, strategy names, `nativeIdentity`, and any required disclosure/limitation. `compilerSupport` is the field clients should use to decide whether the current server can compile a target. This operation is cache- and network-independent.
+Returns the Minecraft 26.2 resource-pack format and either one requested visual target or the complete capability matrix. Every entry includes `status` (`native`, `simulated`, `replacement`, or `requires_mod`), Minecraft `support`, Packwright `compilerSupport`, strategy names, `nativeIdentity`, and any required disclosure/limitation. The response also reports every review profile and its independent `clientCaptureSupport`. `compilerSupport` determines whether Packwright can compile a target; capture support determines whether the actual-client adapter can truthfully stage that selected profile. This operation is cache- and network-independent.
 
 ### `visual_project_attach`
 
@@ -72,11 +72,11 @@ Associates sibling datapack and resource-pack directories in `.packwright/projec
 
 ### `visual_asset_inspect`
 
-Returns the paired manifest, the active head's logical item graph, optional asset-filtered nodes/edges, latest run, readiness for specification/textures/compile/render/binding/commit, and semantic diagnostics. `assetId` only filters that active graph; it does not select another project head or historical run. It never modifies a pack or draft.
+Returns the paired manifest, the active head's logical item graph, optional asset-filtered nodes/edges, latest run, readiness for specification/textures/compile/CPU render/client capture/binding/commit, and semantic diagnostics. Client-capture readiness is true only after the stored environment evidence re-verifies against the current revision. `assetId` only filters that active graph; it does not select another project head or historical run. Inspection never modifies a pack or draft.
 
 ### `visual_spec_upsert`
 
-Validates a strict custom-item `ModelSpec` and creates a new immutable content-addressed run and initial revision. The request includes creative intent and provider-neutral provenance. `parentRunId` and `expectedSpecSha256` guard updates relative to a previously inspected latest draft. This writes only private cache artifacts, never generated files into either pack.
+Validates a strict custom-item `ModelSpec` and creates a new immutable content-addressed run and initial revision. `reviewProfile` accepts `held_item`, `block`, `placeable`, `armor`, `head_wearable`, `projectile`, `gui_item`, or `entity_model`. The matching optional metadata field is `heldItem`, `blockReview`, `placeableReview`, `armorReview`, `headWearableReview`, `projectileReview`, `guiItemReview`, or `entityModelReview`; metadata for a different selected profile is rejected. Review metadata is never serialized into Minecraft JSON, so selecting a profile does not change compiler output or add support for that target. The request includes creative intent and provider-neutral provenance. `parentRunId` and `expectedSpecSha256` guard updates relative to a previously inspected latest draft. This writes only private cache artifacts, never generated files into either pack.
 
 ### `texture_import`
 
@@ -84,7 +84,7 @@ Imports one named material texture into a run from canonical base64 or an exact 
 
 ### `visual_compile`
 
-Compiles a selected immutable `ModelSpec` into exact 26.2 item-definition/model JSON, deterministic UV assignments, and required/generated texture drafts. Output remains in the run store. Compilation validates canonical serialization, texture readiness, geometry/UV constraints, graph relationships, and a fail-closed allow-list of supported 26.2 item properties and codec parameters. Any custom external texture or item-state model dependency must already exist at `assets/<namespace>/textures/<path>.png` or `assets/<namespace>/models/<path>.json` in the attached sibling resource pack. v0.3 does not search dependency packs, Mojang asset objects, the optional client-assets cache, or another filesystem location for it.
+Compiles a selected immutable `ModelSpec` into exact 26.2 item-definition/model JSON, deterministic UV assignments, and required/generated texture drafts. Output remains in the run store. Compilation validates canonical serialization, texture readiness, geometry/UV constraints, graph relationships, and a fail-closed allow-list of supported 26.2 item properties and codec parameters. Any custom external texture or item-state model dependency must already exist at `assets/<namespace>/textures/<path>.png` or `assets/<namespace>/models/<path>.json` in the attached sibling resource pack. v0.4 does not search dependency packs, Mojang asset objects, the client cache, or another filesystem location for it.
 
 ### `visual_connect`
 
@@ -92,21 +92,52 @@ Creates a guarded cross-pack proposal. The current binding strategy uses a calle
 
 ### `visual_render`
 
-Runs the deterministic CPU renderer for eight turntable angles and standardized inventory, ground, fixed, first-person, and third-person contexts. `viewSize` is bounded to 32–256 pixels. The result includes structured hashes/URIs, returns the contact sheet as MCP image content, and exposes individual views as image resources.
+Runs the selected model-specific scene-review profile through the deterministic CPU renderer. The eight version-1 profiles use these specialized scene families:
+
+| Profile         | Deterministic review scenes                                                                                            |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `held_item`     | Steve/Alex first- and third-person hands, wide FOV, neutral item, and declared swing/use/two-hand/aim poses            |
+| `block`         | Inventory presentation, placed-world view, six sides, adjacent-block context, and representative lighting/culling cues |
+| `placeable`     | Declared orientations, floor/wall/ceiling attachments, a neutral comparison, and collision-footprint context           |
+| `armor`         | Steve/Alex bodies, declared armor slots, front/rear/side views, and representative walking/crouching poses             |
+| `head_wearable` | Steve/Alex head views, first-person obstruction, and armor-stand presentation                                          |
+| `projectile`    | In-hand, in-flight angles, impact/stuck orientation, and declared forward-axis context                                 |
+| `gui_item`      | Inventory and hotbar sizes plus declared count, durability, glint, and tooltip presentation cues                       |
+| `entity_model`  | Turntable, declared pose snapshots, player-scale comparison, and hitbox-overlay views                                  |
+
+Packwright-authored arms, bodies, heads, adjacent blocks, attachment planes, footprint/hitbox guides, GUI frames, and armor stands are reference geometry only; they never enter compiled pack output. `viewSize` is bounded to 32–256 pixels, and every resolved profile plan is bounded to 16 scenes.
+
+The retained `includeContexts` field is a compatibility input for older callers; it cannot remove profile-required scenes. A render therefore returns the same profile-required plan whether that field is true or false.
+
+The result reports `reviewProfile`, `profileVersion`, `reviewReady`, individual scene category/readiness data, and the selected profile's advisory measurements. Those include common frame retention plus applicable grip/intersection, placement/attachment, icon occupancy, forward-orientation, reference-scale, obstruction, or hitbox-containment checks. It returns the contact sheet as MCP image content, exposes individual views as image resources, and returns the URI of an immutable JSON report bound to the spec, compiled artifact, scene plan, renderer/profile versions, and view hashes. Missing optional semantic metadata reports the measurements it prevents as `skipped`; this preserves older visual specifications without claiming those checks passed. A configured failed measurement makes `reviewReady` false, while warnings and inapplicable skipped measurements do not. The image and measurements remain available for repair.
+
+### `visual_capture`
+
+Launches the pinned official Minecraft 26.2 client to capture the exact current uncommitted proposal through Minecraft's screenshot API. It requires the exact `projectId`, run/revision, current `proposalSha256`, `confirm: true`, Java 25, prior operator-run `setup-version 26.2 --accept-minecraft-eula --client-capture`, and an interactive macOS graphical session. Resolution is bounded to 640×360–1920×1080, GUI scale to 0–8, and timeout to 30–600 seconds.
+
+Packwright snapshots both packs, applies the proposal, creates deterministic staging ZIPs, and launches a fresh disposable game directory in offline developer mode with multiplayer and chat disabled. Only the bundled Packwright capture mod is installed. The operation accepts no account credentials, user save path, arbitrary command, shell input, mod path, or JVM arguments; it never installs into a live game and never falls back to a CPU image.
+
+The capture mod waits for resource reload/model baking, parses the exact bound item stack/components, configures every planned scene, and writes framebuffer PNGs through the actual client screenshot API. First-person visible-arm scenes sign `referenceArm: true` with `referenceArmPurpose: "scale_only"`; the report identifies this Minecraft-rendered review aid explicitly because it supplies only scale/occlusion context, is not the stock 26.2 composition, makes no palm-to-`primaryGrip` alignment claim, and never enters pack output. Grip-distance checks remain CPU advisory measurements, and the client image requires human/agent visual review. Packwright verifies the atomic completion sentinel, canonical report, complete scene set, full bounded log, PNG dimensions/hashes, and all plan/proposal/runtime identities before storing immutable evidence. The plan/report bind the complete verified platform runtime-manifest hash in addition to the client and capture-mod hashes. The report retains the source framebuffer hashes. MCP image resources are bounded, deterministically normalized previews derived from those frames and carry their source hashes; they are not a claim that the returned preview bytes equal Minecraft's original screenshot bytes. The result has `authority: authoritative_environment_capture`, includes environment metadata and resource URIs, and reports `passed`, `failed`, `setup_required`, `cancelled`, or `timeout`. `passed` means evidence collection and verification completed; it does not judge composition, appearance, or fitness for release. The CPU renderer remains only the fast, deterministic advisory first gate.
+
+Client capture is `limited` for `held_item` and `full` for `gui_item`. A held-item spec with `twoHanded: true` is rejected until the adapter can pose and verify a secondary Minecraft-rendered arm at `secondaryGrip`; supported one-handed plans retain their declared item stack, hand, player variant, and scene inputs, but client authority does not include a semantic grip-distance measurement. `block`, `placeable`, `armor`, `head_wearable`, `projectile`, and `entity_model` return an explicit unsupported diagnostic because their corresponding compiler/binding paths are not implemented. Minecraft frames are authoritative for the recorded client JAR, packs, item, mod, OS, Java runtime, GPU, driver, OpenGL backend, resolution, FOV/GUI scale, hand/player variant, and frame—not pixel-deterministic across different hardware or operating systems.
 
 ### `visual_revision_create`
 
-Creates an immutable child revision from an exact parent revision and `expectedSpecSha256`. Repairs are constrained to named part bounds/rotation/material, material values, or one display transform; free-form generated JSON replacement is not accepted. The instruction and targeted repairs become the immutable review record.
+Creates an immutable child revision from an exact parent revision and `expectedSpecSha256`. Repairs are constrained to named part bounds/rotation/material, material values, one display transform, or explicit `held_item` metadata fields such as grip points, muzzle/axis, handedness, item kind, two-handed intent, and use pose. Free-form generated JSON replacement is not accepted. The instruction and targeted repairs become the immutable review record; the child must be recompiled and rerendered because its prior report is intentionally not inherited.
 
 ### `visual_commit`
 
-Installs an explicitly accepted proposal into both packs. It requires `confirm: true` and the exact current `proposalSha256`, verifies proposal content and every captured destination precondition, then uses a sorted-lock, staged, journaled transaction. A stale or mismatched file prevents the transaction; no force option exists.
+Installs an explicitly accepted proposal into both packs. It requires `confirm: true`, the exact current `proposalSha256`, and a current CPU report from the selected review profile for the same spec and compiled proposal with no failed advisory measurement. In production application instances, a profile with full or limited client-capture support additionally requires `expectedClientCaptureReportSha256` equal to the exact current verified report. Omitting it, supplying stale evidence, or supplying a different digest fails the precondition; a supported proposal cannot use advisory validation to bypass commit authority. Capture-unsupported profiles remain CPU-only.
+
+Commit independently re-renders the immutable spec and verified texture inputs, recomputes canonical measurements, compares proposal content, CPU report identity, scene/contact-sheet hashes, client evidence when required, and every captured destination precondition, then uses a sorted-lock, staged, journaled transaction. Its durable receipt binds accepted capture evidence, source report, plan, runtime manifest, client/mod, staged pack, manifest, proposal, and output hashes. Editing cached report statuses or references cannot make a failed/stale review committable. A stale or mismatched file prevents the transaction; no force option exists. The result repeats `clientCaptureReportSha256` when client evidence was accepted.
 
 ### `visual_validate`
 
-Combines paired pack metadata; strict spec, texture, asset-graph, geometry/UV, render-readiness, and binding checks; vanilla-backed command validation; and optional GameTests. For a selected uncommitted proposal, Packwright verifies and reads its exact proposal bytes without committing them, reads stable full-pack snapshots, and applies those bytes as overlays: the resource-pack validator checks the entire sibling resource pack plus its overlay, while command validation and GameTests use the entire datapack plus its overlay. `includeVanilla` defaults to true and `includeGameTests` defaults to false. The result reports each layer as `passed`, `failed`, `skipped`, or `setup_required` and identifies semantic parts/materials/display contexts in normalized diagnostics.
+Combines paired pack metadata; strict spec, texture, asset-graph, geometry/UV, profile-report readiness, existing client-capture evidence, and binding checks; vanilla-backed command validation; and optional GameTests. Render validation independently reconstructs the CPU render and measurements, then verifies its immutable report against the current spec hash, compiled artifact, profile plan, renderer/profile versions, required scenes, view hashes, and canonical evidence. Advisory profile findings identify the review profile, scene, metric, semantic part when available, and a targeted repair. For a selected uncommitted proposal, Packwright verifies and reads its exact proposal bytes without committing them, reads stable full-pack snapshots, and applies those bytes as overlays: the resource-pack validator checks the entire sibling resource pack plus its overlay, while command validation and GameTests use the entire datapack plus its overlay.
 
-The software renderer and agent review are not authoritative client-render evidence. Actual-client resource reload/capture is not implemented in this release.
+`includeVanilla` defaults to true and `includeGameTests` defaults to false. `requireClientCapture` is tri-state: when omitted, capture is required for every profile whose official-client support is `full` or `limited` and skipped for `unsupported`; `false` explicitly selects advisory/fast validation; `true` requires capture and therefore fails a capture-unsupported profile rather than pretending it passed. Validation only verifies stored evidence and never launches the graphical client. Missing required setup/evidence reports `setup_required`; invalid or unsupported required evidence reports `failed`.
+
+The software renderer and agent review are not authoritative client-render evidence. Transformed axis-aligned bounds are approximations, profile cameras/FOVs are representative, and conditional/action scenes pose the base compiled geometry rather than running Minecraft's gameplay or animation systems. Lighting, culling, collision, attachment, glint, durability, tooltip, equipment fit, projectile motion, entity animation, and hitbox scenes are deterministic review cues—not proof of their real-client behavior. Official-client capture supplies a separate environment-scoped authority and does not make the CPU report authoritative.
 
 ### `project_build`
 
@@ -137,6 +168,7 @@ The server advertises read-only, destructive, idempotent, and open-world hints f
 | `visual_compile`         | No        | Creates deterministic draft artifacts in the cache.                                           |
 | `visual_connect`         | No        | Creates a hash-guarded proposal in the cache; does not apply it.                              |
 | `visual_render`          | No        | Creates bounded preview artifacts in the cache.                                               |
+| `visual_capture`         | No        | Requires confirmation; launches a disposable client and creates hash-bound cache evidence.    |
 | `visual_revision_create` | No        | Creates an immutable child revision; does not modify its parent.                              |
 | `visual_commit`          | No        | Destructive hint: transactionally replaces only accepted, hash-matched proposal destinations. |
 | `visual_validate`        | Yes       | None in the workspace; optional vanilla processes use disposable state.                       |
@@ -152,17 +184,21 @@ Resource URIs returned by MCP discovery provide read-only views of:
 - Locally cached Minecraft 26.2 registries and lookup readiness.
 - The fixed Minecraft 26.2 visual capability matrix.
 
-The visual compiler additionally exposes seven parameterized resource families:
+The visual compiler additionally exposes eleven parameterized resource families:
 
 - Paired project manifest.
 - Project asset graph/readiness.
 - Immutable draft `ModelSpec`.
 - Generated contact sheet.
 - Individual render view.
+- Immutable profile render report with scene identities, measurements, thresholds, and artifact bindings.
 - Latest targeted repair/review record.
 - Declarative binding proposal.
+- Verified official-client capture report and provenance.
+- Official-client capture contact sheet.
+- Individual bounded deterministic client preview with its source framebuffer PNG hash retained in the report.
 
-The capability matrix is additionally available at its fixed URI listed above. Image resources use `image/png`; other visual resources use canonical JSON. A missing render, review, or binding returns `not_found` rather than inventing an empty artifact.
+The capability matrix is additionally available at its fixed URI listed above. Image resources use `image/png`; other visual resources use canonical JSON. CPU and client contact sheets/views use separate URI families and authority labels. The profile report is distinct from the client-capture report and latest targeted repair record. A missing render, capture, report, repair record, or binding returns `not_found` rather than inventing an empty artifact.
 
 Clients should use the URI returned by discovery rather than constructing URIs from this prose. Resource content may change after a write, validation, setup, or cache refresh; clients should re-read when freshness matters.
 
@@ -176,8 +212,8 @@ Five visual workflow prompts complement the three existing datapack prompts:
 | `review_datapack`       | Inspect and validate a pack, then organize findings by severity and authority.                 |
 | `author_gametest`       | Draft a vanilla-compatible GameTest workflow and surface missing structure/code prerequisites. |
 | `generate_visual_asset` | Turn creative intent into an uncommitted semantic custom-item draft and preview.               |
-| `review_visual_asset`   | Judge contact-sheet and individual views without mutating or accepting files.                  |
-| `repair_visual_asset`   | Translate one review finding into a targeted immutable revision workflow.                      |
+| `review_visual_asset`   | Judge the profile report, contact sheet, and individual scenes without mutating files.         |
+| `repair_visual_asset`   | Translate a profile finding into a targeted part/material/display/held-metadata revision.      |
 | `connect_custom_item`   | Propose and validate a vanilla carrier plus `minecraft:item_model` binding.                    |
 | `author_display_rig`    | Plan a truthful simulated display rig; automatic rig compilation is not implemented.           |
 

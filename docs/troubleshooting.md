@@ -55,11 +55,22 @@ packwright-mcp setup-version 26.2 \
   --workspace /absolute/path/to/datapacks
 ```
 
-This caches the manifest-verified client jar and asset index, not all client asset objects. In v0.3 it reports setup/readiness only; compilation, rendering, and validation do not load a missing built-in model or texture from it.
+This caches the manifest-verified client jar and asset index, not all client asset objects. It does not make official-client capture ready.
+
+If `minecraft_client_capture` is not ready, prepare the full platform-specific runtime explicitly:
+
+```sh
+packwright-mcp setup-version 26.2 \
+  --accept-minecraft-eula \
+  --client-capture \
+  --workspace /absolute/path/to/datapacks
+```
+
+Use the same `PACKWRIGHT_CACHE_DIR` and `PACKWRIGHT_JAVA` as the MCP server. This option implies client-assets setup and downloads every indexed 26.2 asset object plus required libraries, natives, and pinned Fabric Loader dependencies. An interrupted setup is safe to repeat; verified content-addressed files are reused. A digest, size, symlink, or incomplete-manifest failure remains `setup_required` rather than being ignored.
 
 ## Java is missing or incompatible
 
-Minecraft Java Edition 26.2 command validation, builds, and GameTests require Java 25. Set `PACKWRIGHT_JAVA` to the Java 25 executable when it is not first on `PATH`, then rerun `doctor`. Normal authoring and explicit structural-only validation do not need Java.
+Minecraft Java Edition 26.2 command validation, builds, GameTests, and official-client capture require Java 25. Set `PACKWRIGHT_JAVA` to the Java 25 executable when it is not first on `PATH`, then rerun `doctor`. Normal authoring, CPU rendering, and explicit structural-only validation do not need Java.
 
 ## A vanilla command diagnostic includes `Did you mean`
 
@@ -79,7 +90,7 @@ Do not point a function-type `test_instance` at a datapack `.mcfunction`. Vanill
 
 Run default `validate` and resolve both structural and vanilla command errors first. Also confirm Java 25 and the prepared 26.2 cache are available, check the 20,000-file/512-MiB scan limits and 20,000-logical-command probe limit, and confirm the output location is permitted. Build always runs vanilla command validation and cannot be forced past missing setup or an authoritative parse error. Warnings and informational macro findings alone do not block a build.
 
-For `project_build`, both associated packs must have compatible metadata: datapack format `107.1` and resource-pack format `88.0`, and the project's one active workflow head must have ready textures and compiled artifacts and be rendered, bound, and committed. Packwright validates exact stable snapshots of both committed packs rather than a draft overlay, creates both ZIPs, and installs them in one transaction. With `overwrite: true`, supply both expected fields. Use the current SHA-256 for an output that exists and `null` for an output that is expected to be absent; Packwright does not accept only one precondition. A true `truncated` result means the bounded diagnostic list was shortened, not that either ZIP was partial.
+For `project_build`, both associated packs must have compatible metadata: datapack format `107.1` and resource-pack format `88.0`, and the project's one active workflow head must have ready textures and compiled artifacts and be rendered, bound, and committed. A production commit of a capture-supported profile must already have accepted the exact verified client report hash. Packwright validates exact stable snapshots of both committed packs rather than a draft overlay, creates both ZIPs, and installs them in one transaction. With `overwrite: true`, supply both expected fields. Use the current SHA-256 for an output that exists and `null` for an output that is expected to be absent; Packwright does not accept only one precondition. A true `truncated` result means the bounded diagnostic list was shortened, not that either ZIP was partial.
 
 ## A visual target is reported as simulated or `requires_mod`
 
@@ -101,11 +112,40 @@ Call `visual_asset_inspect` to find the exact material and expected dimensions. 
 
 Use individual view resources to identify the failing semantic display context, then create a targeted child revision with `visual_revision_create`. Reduce its scale/translation or adjust the named part; compile and render again before acceptance.
 
-The CPU preview is deterministic and approximate. It does not run the actual Minecraft client, and the current release does not provide real-client capture or full special-model rendering. A clean contact sheet therefore needs agent review and is not authoritative client-render evidence.
+The CPU preview is deterministic and approximate. It does not run the actual Minecraft client and does not provide full special-model rendering. A clean CPU contact sheet therefore needs agent review and is not authoritative client-render evidence.
+
+For a current `held_item` or `gui_item` proposal, prepare client capture and call `visual_capture` (or the CLI `capture` mirror) after CPU review. Compare the separate client contact sheet and bounded normalized preview resources against the source-frame hashes in the report; Packwright never silently replaces these with CPU images.
+
+## Official-client capture returns `setup_required`
+
+Run `doctor` and inspect `minecraft_client_capture`. All of these must be true:
+
+- `setup-version 26.2 --accept-minecraft-eula --client-capture` completed in the same cache.
+- `PACKWRIGHT_JAVA` resolves to Java 25.
+- The installed npm package contains `capture-mod/runtime/packwright-capture-mod-0.4.0.jar`.
+- The process is running in an interactive macOS graphical session that can create a real OpenGL window.
+
+Remote shells, headless launch agents, Linux CI, and macOS sessions without an active WindowServer are intentionally not treated as capture-ready. Packwright does not emulate a display or fall back to its software renderer. If `PACKWRIGHT_OFFLINE=true`, rerun setup without offline mode; capture itself remains offline once the cache is complete.
+
+## Official-client capture says the profile is unsupported
+
+Client capture is `limited` for `held_item` and `full` for `gui_item` in v0.4. A held-item spec with `twoHanded: true` intentionally fails until the adapter can pose and verify a secondary Minecraft-rendered arm at `secondaryGrip`. `block`, `placeable`, `armor`, `head_wearable`, `projectile`, and `entity_model` intentionally fail because their compiler/binding strategies are not present. Changing the profile name to bypass this result would misrepresent the generated item as another Minecraft target; use the profile's CPU evidence or wait for its truthful client implementation.
+
+## Official-client capture fails or times out
+
+Read the bounded diagnostic and immutable capture report when available. Common causes are resource-pack reload/model-bake errors, an invalid exact item stack, an altered proposal, unavailable OpenGL initialization, or a scene that never reached its required frame. Resolve the pack/client error before increasing the timeout. Cancellation and timeout terminate the client and remove the disposable game directory; a user save is never involved.
+
+Do not attach full logs to a public issue without review. They can contain local paths, pack identifiers, graphics-driver details, or content from the staged project.
+
+## Client screenshots differ between machines
+
+This is expected across some GPU, driver, operating-system, OpenGL, resolution, FOV, and GUI-scale combinations. Client frames have `authoritative_environment_capture` authority for the environment recorded in their report, not a cross-GPU pixel-determinism guarantee. Compare proposal/client/mod hashes first; if those match, review the recorded environment fields before treating a pixel change as a regression. Use the CPU renderer's content hash for portable deterministic regression checks and the client frames for environment-specific visual evidence.
 
 ## `visual_commit` reports a stale proposal or hash
 
 Do not retry with guessed hashes. Inspect the project/revision again and recreate `visual_connect` so the proposal captures the current destinations. Review the new files and `proposalSha256`, revalidate, and commit only after explicit acceptance. Any changed destination intentionally invalidates the old proposal.
+
+For `held_item` or `gui_item`, production commit also requires `expectedClientCaptureReportSha256` equal to the current verified report returned by `visual_capture`. A new proposal, spec/revision, pack snapshot, client/mod, or recapture intentionally makes old evidence stale. `visual_validate` with `requireClientCapture: false` is advisory only and does not waive this commit precondition. Capture-unsupported profiles do not invent a report hash.
 
 If Packwright returns `transaction_recovery_required`, stop automated writes and preserve `.packwright/transactions/<transaction-id>.json`. It means a commit failed and safe rollback could not be proven. Review that journal and the named destinations in source control before any manual recovery.
 

@@ -1,0 +1,18 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "io.github.rithwikbabu.packwright.capture.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "AbstractContainerScreenAccessor",
+    "AbstractClientPlayerMixin",
+    "GameRendererMixin",
+    "ItemInHandRendererAccessor",
+    "ItemInHandRendererMixin",
+    "MinecraftMixin",
+    "MouseHandlerAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

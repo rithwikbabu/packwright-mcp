@@ -17,4 +17,5 @@
 - [ ] Tests cover the changed behavior.
 - [ ] User-facing docs and `CHANGELOG.md` are updated when needed.
 - [ ] The manual Minecraft integration workflow was run, or it is not relevant.
+- [ ] The protected macOS official-client capture gate was completed, or client capture is not affected.
 - [ ] No Minecraft jar, generated vanilla data, assets, credentials, or private pack content is included.

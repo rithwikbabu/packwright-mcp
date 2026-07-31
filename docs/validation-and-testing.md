@@ -4,17 +4,19 @@ Packwright separates checks it owns from diagnostics supplied by external toolin
 
 ## Paired visual validation
 
-`visual_validate` composes nine named layers:
+`visual_validate` composes eleven named layers:
 
 1. Paired datapack/resource-pack metadata and 26.2 format compatibility.
 2. Strict semantic `ModelSpec` and canonical compiled JSON.
 3. PNG texture presence, decoding, dimensions, and hashes.
 4. Asset-graph endpoints, cycles, reachability, paths, and component/model links.
 5. Geometry, hierarchy, material/tint, rotation, and deterministic UV checks.
-6. Deterministic render readiness and approximate display clipping checks.
-7. Declarative carrier, `minecraft:item_model`, item-definition, model, and texture binding.
-8. Existing vanilla-backed command validation for the associated datapack.
-9. Optional GameTests.
+6. Deterministic CPU render readiness and approximate display clipping checks.
+7. Selected review-profile report identity and advisory measurements.
+8. Optional hash-bound official-client capture evidence.
+9. Declarative carrier, `minecraft:item_model`, item-definition, model, and texture binding.
+10. Existing vanilla-backed command validation for the associated datapack.
+11. Optional GameTests.
 
 The result reports each layer as `passed`, `failed`, `skipped`, or `setup_required`. Visual diagnostics use `packwright.visual` structural authority and include the logical asset plus an exact semantic part, material, display context, or generated path when available:
 
@@ -26,9 +28,11 @@ arcana:firestaff / display.firstperson_righthand
 The transform may move geometry outside the standard preview volume.
 ```
 
-For an uncommitted bound revision, `visual_validate` reads stable snapshots of both sibling packs and applies the exact current proposal as an overlay. Resource-pack validation checks the full resource-pack snapshot plus that overlay, and vanilla command validation or optional GameTests run against the full datapack snapshot plus its overlay. This proves that the proposed bytes and their surrounding pack structure were checked; it does not prove that every unrelated resource-pack file is visually correct. The renderer proves deterministic raster output from the supported cuboid/plane subset, not exact Minecraft client output. Agent contact-sheet review supplies aesthetic judgment but is neither structural nor authoritative evidence. Actual-client reload/capture is not implemented in this release.
+For an uncommitted bound revision, `visual_validate` reads stable snapshots of both sibling packs and applies the exact current proposal as an overlay. Resource-pack validation checks the full resource-pack snapshot plus that overlay, and vanilla command validation or optional GameTests run against the full datapack snapshot plus its overlay. This proves that the proposed bytes and their surrounding pack structure were checked; it does not prove that every unrelated resource-pack file is visually correct. The CPU renderer proves deterministic raster output from the supported cuboid/plane subset, not exact Minecraft client output. Agent contact-sheet review supplies aesthetic judgment but is neither structural nor authoritative evidence.
 
-Keep `includeVanilla: true` for release validation so the proposed `/give` helper and other datapack functions are parsed with the real 26.2 dispatcher/codecs. Use `includeGameTests: true` only when the datapack provides meaningful test instances. A release-quality review should retain all three distinct evidence types: visual structural checks, human/agent preview judgment, and vanilla validation/testing.
+`requireClientCapture` is tri-state. Omit it to require already captured evidence for profiles with `full` or `limited` client support and skip the layer for `unsupported`; pass `false` for an explicitly advisory/fast validation; pass `true` to require capture even when that means an unsupported profile fails. Verification covers the exact current spec, compiled/proposal artifacts, project manifest, complete pack snapshots, client/mod identities, scene plan, completion sentinel, report, log, and source PNG hashes. Validation never launches the graphical client; call `visual_capture` or the CLI `capture` command first. A supported capture has `authoritative_environment_capture` authority for its recorded environment. It is not a claim that another OS/GPU/driver will produce identical pixels.
+
+Keep `includeVanilla: true` for release validation so the proposed `/give` helper and other datapack functions are parsed with the real 26.2 dispatcher/codecs. Use `includeGameTests: true` only when the datapack provides meaningful test instances. For a supported profile, omit `requireClientCapture` after storing a successful environment capture; use explicit `true` when policy should also reject unsupported profiles. A release-quality review should retain the distinct CPU structural/render report, human/agent judgment, required official-client environment evidence where supported, and vanilla validation/testing results.
 
 ## Structural validation
 
@@ -103,7 +107,18 @@ packwright-mcp setup-version 26.2 \
   --workspace /absolute/path/to/datapacks
 ```
 
-Packwright then verifies and caches the official client jar plus the version's asset index. It does not fetch every indexed asset, redistribute client content, or launch the client. In v0.3 this is setup/readiness data only, not a built-in asset resolver; compilation, rendering, and validation do not load built-in model or texture content from it. A custom external texture or item-state model must already exist at `assets/<namespace>/textures/<path>.png` or `assets/<namespace>/models/<path>.json` in the sibling resource pack.
+Packwright then verifies and caches the official client jar plus the version's asset index. It does not fetch every indexed asset, redistribute client content, or launch the client. A custom external texture or item-state model must still exist at `assets/<namespace>/textures/<path>.png` or `assets/<namespace>/models/<path>.json` in the sibling resource pack.
+
+Official-client capture needs the complete platform launcher graph:
+
+```sh
+packwright-mcp setup-version 26.2 \
+  --accept-minecraft-eula \
+  --client-capture \
+  --workspace /absolute/path/to/datapacks
+```
+
+This implies `--client-assets` and downloads every indexed asset object, allowed Mojang library/native classifier, pinned Fabric Loader `0.19.3`, and its required libraries. Mojang artifacts are checked against the manifest; pinned Fabric libraries are checked against committed hashes. They stay in the selected local cache and are never npm/GitHub release contents. Setup requires Java 25 but does not launch the client. Actual capture later requires an interactive macOS graphical session.
 
 Run `packwright-mcp doctor --workspace /absolute/path/to/datapacks` to see Node, workspace, Java, cache, and validator readiness.
 
@@ -128,21 +143,30 @@ Packwright structural checks -> Spyglass static diagnostics -> vanilla command p
 Visual evidence is a separate axis:
 
 ```text
-visual structural/graph checks -> deterministic render checks -> agent visual review -> future actual-client capture
+visual structural/graph checks -> deterministic CPU render -> agent visual review -> environment-scoped official-client capture
 ```
 
-A passing structural or Spyglass result is not proof that Minecraft can parse every command. Vanilla-backed validation closes that gap for command syntax and codecs, but it still does not execute commands or prove runtime state. Use a vanilla test for release-critical predicates, scheduled behavior, world-state interactions, and GameTest resources. Conversely, a GameTest run only exercises selected behavior; retain structural validation, command validation, and code review. Likewise, a passing CPU render is not proof that the real client resolves every parent, special model, atlas, or built-in asset exactly as shown. v0.3 recognizes an allow-list of built-in parent identifiers but does not load their model or texture content from the optional client cache.
+A passing structural or Spyglass result is not proof that Minecraft can parse every command. Vanilla-backed validation closes that gap for command syntax and codecs, but it still does not execute commands or prove runtime state. Use a vanilla test for release-critical predicates, scheduled behavior, world-state interactions, and GameTest resources. Conversely, a GameTest run only exercises selected behavior; retain structural validation, command validation, and code review. Likewise, a passing CPU render is not proof that the real client resolves every parent, special model, atlas, or built-in asset exactly as shown. For `held_item` and `gui_item`, client capture adds actual-renderer evidence scoped to its reported environment; it does not validate runtime datapack behavior or promise cross-hardware pixels.
 
 ## Continuous integration
 
-Ordinary CI never downloads Minecraft artifacts. It can exercise the semantic compiler, safe PNG decoder, deterministic renderer/contact-sheet pixel hashes, graph checks, transaction failure/rollback behavior, and deterministic resource-pack ZIPs entirely from original fixtures. The repository's separate `Minecraft integration` workflow is manual, uses a protected GitHub environment, requires an explicit EULA-acceptance input, and never uploads the server/client jars or generated vanilla cache. Its first path creates a datapack, proves intentionally invalid commands are rejected by the 26.2 dispatcher, repairs them, passes an explicit `minecraft:always_pass` GameTest, builds a deterministic ZIP, and loads the extracted artifact through vanilla again. Its paired visual path attaches a resource pack, drafts and renders a deliberately clipped fire staff, applies a targeted transform repair, connects a recipe and `/give` helper, runs full overlay command validation and a GameTest, commits transactionally, proves repeated paired ZIPs are byte-identical, loads the built datapack through vanilla, and verifies the resource-pack ZIP and its complete reference graph. This release does not claim an actual-client screenshot or resource-reload harness.
+Ordinary CI never downloads Minecraft artifacts. It can exercise the semantic compiler, safe PNG decoder, deterministic renderer/contact-sheet pixel hashes, strict client-capture protocol, runtime-manifest selection, graph checks, transaction failure/rollback behavior, and deterministic resource-pack ZIPs entirely from original fixtures. The repository's separate `Minecraft integration` workflow is manual, uses a protected GitHub environment, requires an explicit EULA-acceptance input, and never uploads the server/client jars or generated vanilla cache. Its server path creates a datapack, proves intentionally invalid commands are rejected by the 26.2 dispatcher, repairs them, passes an explicit `minecraft:always_pass` GameTest, builds a deterministic ZIP, and loads the extracted artifact through vanilla again. Its paired visual path exercises CPU render/repair, bindings, overlay validation, vanilla command parsing, and GameTests against the proposal overlay. It explicitly reports client capture as skipped and therefore does not claim a production visual commit or paired build.
 
-The current automated suite does not launch a clean Minecraft client to verify a paired visual project. Treat actual-client load with no missing-model/texture errors as a manual release check until a dedicated capture/reload harness exists.
+An official-client release gate is separate from hosted CI because current capture requires a real interactive macOS OpenGL session. Maintainers should use a protected, trusted macOS machine, explicitly accept the EULA, select an isolated cache, run `setup-version --client-capture`, capture a known held-item and GUI-item fixture, verify its environment/report/log/PNG bindings, then run `visual_validate` with its default capture-required policy and commit with each exact report hash. Do not upload the cache, client, assets, natives, full logs, or framebuffer evidence as workflow artifacts. A future self-hosted end-to-end harness may automate this gate; the repository does not claim that ordinary hosted CI performed a graphical capture.
 
 For an explicitly approved local run, set an isolated absolute cache and the acceptance guard yourself:
 
 ```sh
 PACKWRIGHT_CACHE_DIR=/absolute/path/to/disposable/cache \
 PACKWRIGHT_ACCEPT_MINECRAFT_EULA=true \
+npm run test:minecraft
+```
+
+On the required interactive macOS graphical session, opt into the complete release flow—including client-runtime setup, official framebuffer capture, exact evidence acceptance, transactional visual commit, deterministic dual builds, and final vanilla loading—with:
+
+```sh
+PACKWRIGHT_CACHE_DIR=/absolute/path/to/disposable/cache \
+PACKWRIGHT_ACCEPT_MINECRAFT_EULA=true \
+PACKWRIGHT_RUN_CLIENT_CAPTURE=true \
 npm run test:minecraft
 ```

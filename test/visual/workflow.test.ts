@@ -96,8 +96,13 @@ describe('paired visual workflow', () => {
         viewSize: 64,
       }),
     );
-    expect(firstRender.views).toHaveLength(15);
+    expect(firstRender.views).toHaveLength(12);
     expect(firstRender.contactSheet.size).toBeGreaterThan(100);
+    expect(firstRender.reviewProfile).toBe('held_item');
+    expect(firstRender.reviewReady).toBe(false);
+    expect(firstRender.measurements.some((measurement) => measurement.status === 'failed')).toBe(
+      true,
+    );
 
     const repaired = await workflow.revise(
       VisualRevisionCreateInputSchema.parse({
@@ -129,6 +134,7 @@ describe('paired visual workflow', () => {
       }),
     );
     expect(repairedRender.pixelSha256).not.toBe(firstRender.pixelSha256);
+    expect(repairedRender.reviewReady).toBe(true);
     const oldRevisionRender = await workflow.render(
       VisualRenderInputSchema.parse({
         projectId: 'firestaff',
@@ -138,7 +144,8 @@ describe('paired visual workflow', () => {
         viewSize: 64,
       }),
     );
-    expect(oldRevisionRender.views).toHaveLength(8);
+    expect(oldRevisionRender.views).toHaveLength(12);
+    expect(oldRevisionRender.reviewReady).toBe(false);
     expect((await workflow.validateDraft('firestaff')).revisionId).toBe(repaired.revisionId);
 
     const connected = await workflow.connect(
@@ -151,6 +158,21 @@ describe('paired visual workflow', () => {
     );
     expect(connected.ok).toBe(true);
     expect(connected.proposalSha256).toMatch(/^[a-f0-9]{64}$/u);
+    const authoritativeWorkflow = new VisualWorkflow(temporary.workspace, {
+      workspaceRoot: temporary.root,
+      cacheDir: path.join(temporary.root, 'cache'),
+      javaCommand: 'java',
+      readOnly: false,
+      offline: true,
+    });
+    await expect(
+      authoritativeWorkflow.commit(
+        'firestaff',
+        draft.runId,
+        repaired.revisionId,
+        connected.proposalSha256 ?? '',
+      ),
+    ).rejects.toMatchObject({ code: 'precondition_required' });
     const originalStateUpdate = workflow.states.update.bind(workflow.states);
     let stateUpdates = 0;
     const failedCacheWrite = vi

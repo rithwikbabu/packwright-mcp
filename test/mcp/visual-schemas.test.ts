@@ -6,6 +6,7 @@ import {
   VisualConnectInputSchema,
   VisualDraftIdSchema,
   VisualProjectIdSchema,
+  VisualRevisionCreateInputSchema,
 } from '../../src/mcp/visual-schemas.js';
 
 const CONTENT_ID = 'a'.repeat(64);
@@ -106,6 +107,75 @@ describe('visual MCP input schemas', () => {
         projectId: 'firestaff',
         expectedDatapackSha256: null,
         expectedResourcepackSha256: null,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts strict targeted repairs for every non-held review profile', () => {
+    const repairs = [
+      {
+        kind: 'block_review',
+        value: { adjacentBlocks: true, lightingChecks: true, cullingChecks: false },
+      },
+      {
+        kind: 'placeable_review',
+        value: {
+          orientations: ['north'],
+          attachments: ['floor'],
+          footprint: [16, 16],
+        },
+      },
+      {
+        kind: 'armor_review',
+        value: { slots: ['head'], bodyVariants: ['alex'], poses: ['walking'] },
+      },
+      {
+        kind: 'head_wearable_review',
+        value: { bodyVariants: ['steve'], firstPersonObstruction: true, armorStand: false },
+      },
+      {
+        kind: 'projectile_review',
+        value: { forwardAxis: [0, 0, -1], inHand: true, impact: true, stuckDepth: 2 },
+      },
+      {
+        kind: 'gui_item_review',
+        value: { counts: [1, 64], durability: true, glint: true, tooltip: 'Item' },
+      },
+      {
+        kind: 'entity_model_review',
+        value: {
+          hitbox: [8, 16, 8],
+          animationPoses: ['idle'],
+          playerScaleReference: true,
+        },
+      },
+    ];
+
+    for (const repair of repairs) {
+      expect(
+        VisualRevisionCreateInputSchema.safeParse({
+          projectId: 'firestaff',
+          runId: CONTENT_ID,
+          parentRevisionId: 'b'.repeat(64),
+          expectedSpecSha256: 'c'.repeat(64),
+          instructions: 'Targeted profile repair',
+          repairs: [repair],
+        }).success,
+      ).toBe(true);
+    }
+    expect(
+      VisualRevisionCreateInputSchema.safeParse({
+        projectId: 'firestaff',
+        runId: CONTENT_ID,
+        parentRevisionId: 'b'.repeat(64),
+        expectedSpecSha256: 'c'.repeat(64),
+        instructions: 'Reject an unbounded repair field',
+        repairs: [
+          {
+            kind: 'block_review',
+            value: { adjacentBlocks: true, lightingChecks: true, cullingChecks: true, extra: true },
+          },
+        ],
       }).success,
     ).toBe(false);
   });

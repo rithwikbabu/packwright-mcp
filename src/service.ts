@@ -60,6 +60,8 @@ import type {
   VisualCapabilitiesResult,
   VisualCommitInput,
   VisualCommitResult,
+  VisualClientCaptureInput,
+  VisualClientCaptureResult,
   VisualCompileInput,
   VisualConnectInput,
   VisualDraftResult,
@@ -77,7 +79,10 @@ import { MINECRAFT_26_2 } from './core/version.js';
 import { readStableFile } from './core/stable-file.js';
 import { listVisualCapabilities } from './visual/capabilities.js';
 import { createDeterministicZipArchive } from './visual/builder.js';
+import { REVIEW_PROFILE_IDS } from './visual/model-spec.js';
 import { validateResourcePackSnapshot } from './visual/resourcepack-validation.js';
+import { REVIEW_PROFILES } from './visual/review-profile.js';
+import { clientCaptureReviewSupport } from './visual/client-capture-support.js';
 import { commitFileTransaction, VISUAL_TRANSACTION_LIMITS } from './visual/transaction.js';
 import { VisualWorkflow, visualDiagnostic } from './visual/workflow.js';
 import {
@@ -374,7 +379,7 @@ export class PackwrightApplication implements PackwrightService {
   private constructor(config: RuntimeConfig, workspace: Workspace) {
     this.config = config;
     this.workspace = workspace;
-    this.visual = new VisualWorkflow(workspace, config.cacheDir);
+    this.visual = new VisualWorkflow(workspace, config);
   }
 
   static async open(config: RuntimeConfig): Promise<PackwrightApplication> {
@@ -802,6 +807,13 @@ export class PackwrightApplication implements PackwrightService {
         ...entry,
         strategies: [...entry.strategies],
       })),
+      reviewProfiles: REVIEW_PROFILE_IDS.map((id) => ({
+        id,
+        version: REVIEW_PROFILES[id].version,
+        targetKind: 'item' as const,
+        support: 'full' as const,
+        clientCaptureSupport: clientCaptureReviewSupport(id),
+      })),
     });
   }
 
@@ -865,6 +877,24 @@ export class PackwrightApplication implements PackwrightService {
     return result;
   }
 
+  async captureVisual(
+    input: VisualClientCaptureInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualClientCaptureResult> {
+    await context.reportProgress({ progress: 0, total: 5, message: 'Checking client runtime' });
+    await context.reportProgress({ progress: 1, total: 5, message: 'Staging disposable packs' });
+    const result = await this.visual.capture(input, context.signal);
+    await context.reportProgress({
+      progress: 5,
+      total: 5,
+      message:
+        result.status === 'passed'
+          ? 'Minecraft framebuffer captures are ready'
+          : `Minecraft client capture ${result.status}`,
+    });
+    return result;
+  }
+
   async createVisualRevision(
     input: VisualRevisionCreateInput,
     context: PackwrightServiceContext,
@@ -881,6 +911,7 @@ export class PackwrightApplication implements PackwrightService {
       input.runId,
       input.revisionId,
       input.proposalSha256,
+      input.expectedClientCaptureReportSha256,
       context.signal,
     );
   }
@@ -904,6 +935,24 @@ export class PackwrightApplication implements PackwrightService {
     const readiness = draft.readiness;
     const selectedRunId = draft.runId;
     const selectedRevisionId = draft.revisionId;
+    const requireClientCapture =
+      input.requireClientCapture ??
+      (draft.clientCaptureSupport !== undefined && draft.clientCaptureSupport !== 'unsupported');
+    if (requireClientCapture && readiness?.clientCaptured !== true) {
+      diagnostics.push({
+        engine: 'minecraft-client',
+        authority: 'authoritative',
+        severity: 'error',
+        code:
+          draft.clientCaptureSupport === 'unsupported'
+            ? 'minecraft.client_capture.profile_unsupported'
+            : 'minecraft.client_capture.required',
+        message:
+          draft.clientCaptureSupport === 'unsupported'
+            ? 'The current review profile has no truthful official-client capture implementation.'
+            : 'Run visual_capture and preserve its verified evidence before requiring authoritative client rendering.',
+      });
+    }
     if (draft.project.resourcepack.present) {
       const snapshot = await readPackSnapshot(
         this.workspace,
@@ -931,7 +980,8 @@ export class PackwrightApplication implements PackwrightService {
       );
     }
     const visualFailed =
-      draft.result === undefined || diagnostics.some((entry) => entry.severity === 'error');
+      draft.result === undefined ||
+      diagnostics.some((entry) => entry.authority === 'structural' && entry.severity === 'error');
     const layers: VisualValidateResult['layers'] = [
       { name: 'metadata', status: draft.project.ready ? 'passed' : 'failed' },
       { name: 'schema', status: visualFailed ? 'failed' : 'passed' },
@@ -942,6 +992,22 @@ export class PackwrightApplication implements PackwrightService {
       { name: 'asset_graph', status: visualFailed ? 'failed' : 'passed' },
       { name: 'geometry', status: visualFailed ? 'failed' : 'passed' },
       { name: 'render', status: readiness?.rendered === true ? 'passed' : 'failed' },
+      {
+        name: 'review_profile',
+        status: readiness?.reviewProfile === true ? 'passed' : 'failed',
+      },
+      {
+        name: 'client_capture',
+        status:
+          readiness?.clientCaptured === true
+            ? 'passed'
+            : diagnostics.some((entry) => entry.code === 'visual.client_capture.unreadable') ||
+                (requireClientCapture && draft.clientCaptureSupport === 'unsupported')
+              ? 'failed'
+              : requireClientCapture
+                ? 'setup_required'
+                : 'skipped',
+      },
       { name: 'binding', status: readiness?.binding === true ? 'passed' : 'failed' },
     ];
 
@@ -1079,18 +1145,23 @@ export class PackwrightApplication implements PackwrightService {
     }
     const inspection = await this.visual.validateDraft(input.projectId);
     const readiness = inspection.readiness;
+    const clientCaptureRequired =
+      inspection.clientCaptureSupport !== undefined &&
+      inspection.clientCaptureSupport !== 'unsupported';
     if (
       !inspection.project.ready ||
       inspection.result?.ok !== true ||
       !readiness?.textures ||
       !readiness.compiled ||
       !readiness.rendered ||
+      !readiness.reviewProfile ||
       !readiness.binding ||
-      !readiness.committed
+      !readiness.committed ||
+      (clientCaptureRequired && !readiness.clientCaptured)
     ) {
       throw new PackwrightError(
         'validation_failed',
-        'The latest visual revision must be compiled, rendered, connected, validated, and committed before building.',
+        'The latest visual revision must be compiled, rendered, connected, authoritatively captured where supported, validated, and committed before building.',
         {
           readiness,
           diagnostics: inspection.result?.diagnostics,

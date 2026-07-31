@@ -26,6 +26,33 @@ function structured(result: { structuredContent?: unknown }): Record<string, unk
   return content as Record<string, unknown>;
 }
 
+function objectRecords(value: unknown, label: string): Record<string, unknown>[] {
+  if (!Array.isArray(value)) throw new Error(`Expected ${label} to be an array.`);
+  return value.map((entry) => {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`Expected every ${label} entry to be an object.`);
+    }
+    return entry as Record<string, unknown>;
+  });
+}
+
+const REQUIRED_HELD_ITEM_VIEWS = [
+  'fp_right_steve',
+  'fp_right_alex',
+  'fp_left_steve',
+  'fp_left_alex',
+  'fp_right_wide',
+  'tp_rear_right_steve',
+  'tp_rear_right_alex',
+  'tp_front_right_steve',
+  'tp_front_right_alex',
+  'tp_rear_left_steve',
+  'tp_rear_left_alex',
+  'item_neutral',
+  'active_use',
+  'aiming',
+] as const;
+
 describe('visual MCP flow', () => {
   it('drives paired attachment, semantic drafting, compilation, and image rendering', async () => {
     const temporary = await temporaryWorkspace();
@@ -53,6 +80,27 @@ describe('visual MCP flow', () => {
       () => client.close(),
       () => server.close(),
     );
+
+    const capabilities = await client.callTool({
+      name: 'visual_capabilities',
+      arguments: {},
+    });
+    expect(capabilities.isError).not.toBe(true);
+    expect(structured(capabilities)).toMatchObject({ ok: true });
+    expect(
+      objectRecords(structured(capabilities).reviewProfiles, 'review profiles').map(
+        (entry) => entry.id,
+      ),
+    ).toEqual([
+      'held_item',
+      'block',
+      'placeable',
+      'armor',
+      'head_wearable',
+      'projectile',
+      'gui_item',
+      'entity_model',
+    ]);
 
     const attached = await client.callTool({
       name: 'visual_project_attach',
@@ -103,7 +151,43 @@ describe('visual MCP flow', () => {
     if (rendered.isError === true) {
       throw new Error(`Visual render failed: ${JSON.stringify(rendered)}`);
     }
-    expect(structured(rendered)).toMatchObject({ ok: true, runId, revisionId });
+    const renderResult = structured(rendered);
+    expect(renderResult).toMatchObject({
+      ok: true,
+      runId,
+      revisionId,
+      reviewProfile: 'held_item',
+      profileVersion: 1,
+      reviewReady: true,
+    });
+    expect(renderResult.reportUri).toBe(
+      `packwright://visual/runs/${runId}/revisions/${revisionId}/render-report`,
+    );
+    const views = objectRecords(renderResult.views, 'render views');
+    expect(views.map((view) => view.name)).toEqual(REQUIRED_HELD_ITEM_VIEWS);
+    expect(views.filter((view) => view.required === true).map((view) => view.name)).toEqual(
+      REQUIRED_HELD_ITEM_VIEWS,
+    );
+    expect(
+      views.filter((view) => view.category === 'conditional').map((view) => view.name),
+    ).toEqual(['active_use', 'aiming']);
+
+    const measurements = objectRecords(renderResult.measurements, 'render measurements');
+    expect(new Set(measurements.map((measurement) => measurement.metric))).toEqual(
+      new Set([
+        'primary_grip_distance',
+        'secondary_grip_distance',
+        'arm_intersection',
+        'torso_intersection',
+        'screen_obscuration',
+        'forward_axis',
+        'hand_symmetry',
+        'frame_retention',
+      ]),
+    );
+    expect(measurements.some((measurement) => measurement.view === 'aiming')).toBe(true);
+    expect(measurements.every((measurement) => measurement.status !== 'failed')).toBe(true);
+
     expect(rendered.content.some((entry) => entry.type === 'image')).toBe(true);
     const image = rendered.content.find((entry) => entry.type === 'image');
     expect(image).toMatchObject({ type: 'image', mimeType: 'image/png' });
@@ -111,6 +195,38 @@ describe('visual MCP flow', () => {
     expect(Buffer.from(image.data, 'base64').subarray(0, 8)).toEqual(
       Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
     );
+
+    if (typeof renderResult.reportUri !== 'string') {
+      throw new Error('Visual render did not return a report URI.');
+    }
+    const reportResource = await client.readResource({ uri: renderResult.reportUri });
+    const reportContent = reportResource.contents[0];
+    if (reportContent === undefined || !('text' in reportContent)) {
+      throw new Error('Expected the render-profile report as JSON text.');
+    }
+    expect(reportContent.mimeType).toBe('application/json');
+    const reportValue = JSON.parse(reportContent.text) as unknown;
+    if (reportValue === null || typeof reportValue !== 'object' || Array.isArray(reportValue)) {
+      throw new Error('Expected the render-profile report to contain an object.');
+    }
+    const report = reportValue as Record<string, unknown>;
+    expect(report).toMatchObject({
+      schemaVersion: 1,
+      kind: 'packwright.render-profile-report',
+      projectId: 'firestaff',
+      runId,
+      revisionId,
+      rendererVersion: 'packwright-cpu-v2',
+      profileId: 'held_item',
+      profileVersion: 1,
+      viewSize: 64,
+      reviewReady: true,
+      requiredViewIds: REQUIRED_HELD_ITEM_VIEWS,
+    });
+    expect(objectRecords(report.views, 'report views').map((view) => view.id)).toEqual(
+      REQUIRED_HELD_ITEM_VIEWS,
+    );
+    expect(report.measurements).toEqual(renderResult.measurements);
 
     const connected = await client.callTool({
       name: 'visual_connect',
@@ -131,6 +247,10 @@ describe('visual MCP flow', () => {
         runId,
         revisionId,
         includeVanilla: false,
+        // This transport-only CPU-preview fixture intentionally has no opted-in
+        // graphical Minecraft runtime. Production validation requires client
+        // evidence by default for profiles that support it.
+        requireClientCapture: false,
       },
     });
     expect(validated.isError).not.toBe(true);
@@ -138,6 +258,8 @@ describe('visual MCP flow', () => {
     expect(validation).toMatchObject({ ok: true });
     if (!Array.isArray(validation.layers)) throw new Error('Expected visual validation layers.');
     expect(validation.layers).toContainEqual({ name: 'asset_graph', status: 'passed' });
+    expect(validation.layers).toContainEqual({ name: 'review_profile', status: 'passed' });
+    expect(validation.layers).toContainEqual({ name: 'client_capture', status: 'skipped' });
     expect(validation.layers).toContainEqual({ name: 'vanilla_commands', status: 'skipped' });
   });
 });

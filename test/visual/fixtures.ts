@@ -34,6 +34,16 @@ export const fireStaffInput = {
     },
   ],
   displayPreset: 'handheld_3d',
+  reviewProfile: 'held_item',
+  heldItem: {
+    primaryGrip: [8, 5.5, 11],
+    muzzle: [8, 15, 8],
+    forwardAxis: [0, 0, -1],
+    handedness: 'either',
+    twoHanded: false,
+    itemKind: 'generic',
+    usePose: 'aim',
+  },
   states: [
     {
       id: 'casting',

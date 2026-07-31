@@ -41,6 +41,8 @@ import {
   VisualCapabilitiesResultSchema,
   VisualCommitInputSchema,
   VisualCommitResultSchema,
+  VisualClientCaptureInputSchema,
+  VisualClientCaptureResultSchema,
   VisualCompileInputSchema,
   VisualConnectInputSchema,
   VisualDraftResultSchema,
@@ -74,7 +76,11 @@ import {
   VISUAL_PROJECT_GRAPH_URI_TEMPLATE,
   VISUAL_PROJECT_MANIFEST_URI_TEMPLATE,
   VISUAL_RUN_BINDING_URI_TEMPLATE,
+  VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE,
+  VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE,
+  VISUAL_RUN_CLIENT_CAPTURE_VIEW_URI_TEMPLATE,
   VISUAL_RUN_CONTACT_SHEET_URI_TEMPLATE,
+  VISUAL_RUN_RENDER_REPORT_URI_TEMPLATE,
   VISUAL_RUN_REVIEW_URI_TEMPLATE,
   VISUAL_RUN_SPEC_URI_TEMPLATE,
   VISUAL_RUN_VIEW_URI_TEMPLATE,
@@ -90,7 +96,7 @@ const SERVER_INSTRUCTIONS = [
   'Packwright edits paired Minecraft Java Edition 26.2 datapacks and resource packs inside one configured workspace.',
   'Inspect or read a resource before overwriting it, then provide its current SHA-256 as expectedSha256.',
   'Use dryRun for proposed creates and updates. Validate before testing, and test before building a ZIP.',
-  'For visual assets use describe, immutable draft, connect, render, review, targeted repair, validate, explicit commit, then paired build.',
+  'For visual assets use describe, immutable draft, connect, profile render, report review, targeted repair, validate, explicit commit, then paired build.',
   'Treat simulated and replacement capabilities literally; display carriers are not new native blocks or entities.',
   'Minecraft lookups are cache-only and never access the network implicitly.',
 ].join(' ');
@@ -285,6 +291,49 @@ async function executeVisualRender(
       ],
     };
     return enforceToolPayloadLimit(response);
+  } catch (error) {
+    return enforceToolPayloadLimit(executionError(error));
+  }
+}
+
+async function executeVisualClientCapture(
+  service: PackwrightService,
+  input: Parameters<PackwrightService['captureVisual']>[0],
+  context: PackwrightServiceContext,
+): Promise<CallToolResult> {
+  try {
+    const result = await service.captureVisual(input, context);
+    const content: CallToolResult['content'] = [{ type: 'text', text: textFallback(result) }];
+    if (result.contactSheetUri !== undefined) {
+      const contactSheet = await service.readVisualResource(
+        {
+          kind: 'client_contact_sheet',
+          runId: result.runId,
+          revisionId: result.revisionId,
+        },
+        context,
+      );
+      if (contactSheet.mimeType !== 'image/png' || contactSheet.encoding !== 'base64') {
+        throw new Error('Client capture returned an invalid contact-sheet resource.');
+      }
+      content.push({ type: 'image', data: contactSheet.data, mimeType: 'image/png' });
+    }
+    const response: CallToolResult = {
+      ...(result.ok && result.status === 'passed' ? {} : { isError: true }),
+      structuredContent: result,
+      content,
+    };
+    if (fitsSerializedPayload(response)) return response;
+
+    // Full-resolution Minecraft framebuffers remain available through the
+    // hash-bound resource URI in structuredContent. Do not turn a successful,
+    // expensive capture into a size-limit failure solely because its optional
+    // inline convenience image does not fit MCP's one-MiB envelope.
+    return enforceToolPayloadLimit({
+      ...(result.ok && result.status === 'passed' ? {} : { isError: true }),
+      structuredContent: result,
+      content: [{ type: 'text', text: textFallback(result) }],
+    });
   } catch (error) {
     return enforceToolPayloadLimit(executionError(error));
   }
@@ -588,7 +637,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Create Visual Draft',
       description:
-        'Validate a semantic custom-item ModelSpec and create an immutable, content-addressed draft run. This never writes generated assets into either pack.',
+        'Validate a semantic custom-item ModelSpec, including its selected review-profile metadata, and create an immutable, content-addressed draft run. Review profiles stage the same compiled item output and never imply new native target support.',
       inputSchema: VisualSpecUpsertInputSchema,
       outputSchema: VisualDraftResultSchema,
       annotations: {
@@ -668,7 +717,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Render Visual Draft',
       description:
-        'Use Packwright’s deterministic CPU renderer to create eight turntable angles and standardized inventory, ground, fixed, and hand previews. Returns the contact sheet as image content.',
+        'Render the selected model-specific scene-review profile with Packwright’s deterministic CPU renderer. All profiles produce bounded original-reference scenes, advisory measurements, an immutable report, individual image resources, and a contact sheet returned as image content.',
       inputSchema: VisualRenderInputSchema,
       outputSchema: VisualRenderResultSchema,
       annotations: {
@@ -686,11 +735,30 @@ function registerTools(server: McpServer, service: PackwrightService): void {
   );
 
   server.registerTool(
+    'visual_capture',
+    {
+      title: 'Capture With Minecraft Client',
+      description:
+        'Launch the pinned official Minecraft 26.2 client in a disposable game directory with only Packwright’s capture mod, load the exact proposal, and return hash-bound framebuffer evidence from Minecraft’s actual renderer. Requires explicit client-capture setup and a graphical macOS session; never falls back to CPU images.',
+      inputSchema: VisualClientCaptureInputSchema,
+      outputSchema: VisualClientCaptureResultSchema,
+      annotations: {
+        title: 'Capture With Minecraft Client',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) => executeVisualClientCapture(service, input, serviceContext(context)),
+  );
+
+  server.registerTool(
     'visual_revision_create',
     {
       title: 'Repair Visual Draft',
       description:
-        'Create an immutable child revision by changing only named parts, materials, or display transforms against the reviewed spec hash.',
+        'Create an immutable child revision by changing only named parts, materials, display transforms, or selected review-profile metadata against the reviewed spec hash.',
       inputSchema: VisualRevisionCreateInputSchema,
       outputSchema: VisualDraftResultSchema,
       annotations: {
@@ -710,7 +778,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Commit Accepted Visual',
       description:
-        'After explicit visual acceptance, atomically install every proposed datapack and resource-pack file using the proposal hash and captured per-file SHA preconditions.',
+        'After explicit acceptance, atomically install every proposed datapack and resource-pack file. Profiles supported by the official client require the exact verified client-capture report SHA-256, which is bound into the durable commit receipt.',
       inputSchema: VisualCommitInputSchema,
       outputSchema: VisualCommitResultSchema,
       annotations: {
@@ -730,7 +798,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Validate Paired Visual Project',
       description:
-        'Combine paired-pack metadata, strict ModelSpec, PNG, geometry, graph, render, binding, vanilla-command, and optional GameTest validation with normalized diagnostics.',
+        'Combine paired-pack, model, graph, CPU preview, binding, vanilla-command, and optional GameTest validation. Existing official-client evidence is authoritative by default for supported profiles; set requireClientCapture false only for an explicit fast advisory pass.',
       inputSchema: VisualValidateInputSchema,
       outputSchema: VisualValidateResultSchema,
       annotations: {
@@ -1018,7 +1086,14 @@ function registerResources(server: McpServer, service: PackwrightService): void 
 
   const runResourceInput = (
     variables: Record<string, string | string[]>,
-    kind: 'spec' | 'contact_sheet' | 'review' | 'binding',
+    kind:
+      | 'spec'
+      | 'contact_sheet'
+      | 'render_report'
+      | 'review'
+      | 'binding'
+      | 'client_capture_report'
+      | 'client_contact_sheet',
   ) =>
     ({
       kind,
@@ -1052,12 +1127,38 @@ function registerResources(server: McpServer, service: PackwrightService): void 
       mimeType: 'application/json',
     },
     {
+      name: 'visual-render-report',
+      template: VISUAL_RUN_RENDER_REPORT_URI_TEMPLATE,
+      title: 'Visual Render Profile Report',
+      description:
+        'The immutable profile plan, required-scene identity, and deterministic held-item measurements for a visual revision.',
+      kind: 'render_report' as const,
+      mimeType: 'application/json',
+    },
+    {
       name: 'visual-binding-proposal',
       template: VISUAL_RUN_BINDING_URI_TEMPLATE,
       title: 'Visual Binding Proposal',
       description: 'The declarative vanilla carrier and minecraft:item_model binding proposal.',
       kind: 'binding' as const,
       mimeType: 'application/json',
+    },
+    {
+      name: 'visual-client-capture-report',
+      template: VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE,
+      title: 'Minecraft Client Capture Report',
+      description:
+        'Hash-bound provenance and environment evidence from the actual Minecraft 26.2 renderer.',
+      kind: 'client_capture_report' as const,
+      mimeType: 'application/json',
+    },
+    {
+      name: 'visual-client-contact-sheet',
+      template: VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE,
+      title: 'Minecraft Client Capture Contact Sheet',
+      description: 'A bounded composition of verified Minecraft framebuffer captures.',
+      kind: 'client_contact_sheet' as const,
+      mimeType: 'image/png',
     },
   ]) {
     server.registerResource(
@@ -1093,6 +1194,30 @@ function registerResources(server: McpServer, service: PackwrightService): void 
         await service.readVisualResource(
           {
             kind: 'view',
+            runId: templateValue(variables, 'runId'),
+            revisionId: templateValue(variables, 'revisionId'),
+            view: templateValue(variables, 'view'),
+          },
+          serviceContext(context),
+        ),
+      ),
+  );
+
+  server.registerResource(
+    'visual-client-capture-view',
+    new ResourceTemplate(VISUAL_RUN_CLIENT_CAPTURE_VIEW_URI_TEMPLATE, { list: undefined }),
+    {
+      title: 'Minecraft Client Framebuffer Preview',
+      description:
+        'A bounded deterministic preview of one actual Minecraft framebuffer; the capture report retains the full-resolution source and normalized PNG hashes.',
+      mimeType: 'image/png',
+    },
+    async (uri, variables, context) =>
+      visualResource(
+        uri,
+        await service.readVisualResource(
+          {
+            kind: 'client_view',
             runId: templateValue(variables, 'runId'),
             revisionId: templateValue(variables, 'revisionId'),
             view: templateValue(variables, 'view'),
@@ -1233,8 +1358,8 @@ function registerPrompts(server: McpServer): void {
             text: [
               `Create a visual draft for project "${projectId}": ${request}`,
               `Requested target: ${target}. Begin with visual_capabilities and disclose whether the result is native, simulated, replacement, or requires_mod.`,
-              'For the supported custom-item slice, author a semantic ModelSpec with named parts and materials, call visual_spec_upsert, import textures only when needed, then call visual_compile and visual_render.',
-              'Do not call visual_commit. Return the contact sheet for review and retain all creative provenance.',
+              'For the supported custom-item compiler slice, author a semantic ModelSpec with named parts and materials, select the review profile that matches the intended presentation, and provide that profile’s semantic metadata. Call visual_spec_upsert, import textures only when needed, then call visual_compile and visual_render.',
+              'Inspect reviewReady, the immutable selected-profile report, and its specialized contact sheet. The profile does not expand compiler support. Do not call visual_commit. Retain all creative provenance.',
             ].join('\n'),
           },
         },
@@ -1246,7 +1371,8 @@ function registerPrompts(server: McpServer): void {
     'review_visual_asset',
     {
       title: 'Review a Visual Asset',
-      description: 'Judge a deterministic contact sheet against a semantic visual-review rubric.',
+      description:
+        'Judge a deterministic profile report, contact sheet, and individual scenes against a semantic visual-review rubric.',
       argsSchema: z.strictObject({
         projectId: VisualProjectIdSchema,
         runId: VisualDraftIdSchema,
@@ -1262,9 +1388,9 @@ function registerPrompts(server: McpServer): void {
             type: 'text' as const,
             text: [
               `Visually review project ${projectId}, run ${runId}, revision ${revisionId}. Intended result: ${intent}`,
-              `Read ${visualRunContactSheetUri(runId, revisionId)} and inspect individual views when a defect is ambiguous.`,
-              'Check silhouette, semantic part proportions, palette/material separation, UV artifacts, transparency, inventory readability, hand transforms, clipping, and consistency across angles.',
-              'Return accept or repair. For repair, name the exact part, material, or display context and propose the smallest measurable change. Do not mutate or commit files.',
+              `Read packwright://visual/runs/${runId}/revisions/${revisionId}/render-report and ${visualRunContactSheetUri(runId, revisionId)}; inspect individual profile views when a finding is ambiguous.`,
+              'Review every required scene defined by the selected profile, including its original Packwright reference geometry. Treat all CPU-rendered fit, overlap, lighting, GUI, pose, scale, hitbox, and frame measurements as advisory rather than authoritative client evidence.',
+              'Return accept or repair. A failed measurement or reviewReady=false requires repair. Name the exact part, material, display context, profile metadata field, scene, and metric when available. Do not mutate or commit files.',
             ].join('\n'),
           },
         },
@@ -1292,8 +1418,8 @@ function registerPrompts(server: McpServer): void {
             type: 'text' as const,
             text: [
               `Repair visual project ${projectId}, run ${runId}, revision ${revisionId}: ${finding}`,
-              'Read the draft spec and contact sheet resources. Use visual_revision_create with the current spec SHA and only targeted part, material, or display-transform repairs.',
-              'Compile and render the child revision, then compare the same views. Do not commit until a subsequent visual review explicitly accepts it.',
+              'Read the draft spec, immutable profile report, contact sheet, and implicated scene resources. Use visual_revision_create with the current spec SHA and only targeted part, material, display-transform, or selected-profile metadata repairs.',
+              'Compile and profile-render the child revision, then compare the same selected-profile scenes and advisory measurements. Do not commit until reviewReady is true and a subsequent visual review explicitly accepts it.',
             ].join('\n'),
           },
         },
@@ -1378,7 +1504,7 @@ export function createPackwrightMcpServer(
   const server = new McpServer(
     {
       name: options.name ?? 'packwright-mcp',
-      version: options.version ?? '0.3.0',
+      version: options.version ?? '0.4.0',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );

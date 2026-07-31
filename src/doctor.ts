@@ -4,6 +4,7 @@ import { access, stat } from 'node:fs/promises';
 import { assertRuntimePathSeparation, type RuntimeConfig } from './config.js';
 import { getCacheStatus } from './minecraft/cache.js';
 import { getJavaVersion } from './minecraft/java.js';
+import { preflightMinecraftClientCapture } from './minecraft/client-capture.js';
 import { getSpyglassStatus, PINNED_SPYGLASS_VERSION } from './validation/spyglass.js';
 
 export interface DoctorCheck {
@@ -126,7 +127,23 @@ export async function runDoctor(
     message:
       clientAssets?.ready === true
         ? 'Verified Minecraft 26.2 client jar and asset index are ready for client-profile lookups'
-        : 'Optional client metadata is not prepared; --client-assets only caches verified setup/readiness artifacts, and v0.3 does not resolve built-in assets from them',
+        : 'Optional client metadata is not prepared; use setup-version 26.2 --accept-minecraft-eula --client-assets',
+  });
+
+  const clientCapture = await preflightMinecraftClientCapture(config, signal).catch(
+    (error: unknown) => ({
+      ready: false,
+      status: 'setup_required' as const,
+      messages: [error instanceof Error ? error.message : String(error)],
+    }),
+  );
+  checks.push({
+    name: 'minecraft_client_capture',
+    ok: clientCapture.ready,
+    required: false,
+    message: clientCapture.ready
+      ? 'The hash-verified Minecraft 26.2 client runtime, capture mod, and graphical session are ready'
+      : `Authoritative client capture needs setup: ${clientCapture.messages.join(' ')}`,
   });
 
   if (config.spyglassCommand === undefined) {

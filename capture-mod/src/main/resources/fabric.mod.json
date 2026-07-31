@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "packwright_capture",
+  "version": "${version}",
+  "name": "Packwright Capture Mod",
+  "description": "Private, deterministic visual evidence capture for Packwright MCP.",
+  "authors": ["Packwright contributors"],
+  "contact": {
+    "sources": "https://github.com/rithwikbabu/packwright-mcp"
+  },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["io.github.rithwikbabu.packwright.capture.PackwrightCaptureClient"]
+  },
+  "mixins": ["packwright-capture.mixins.json"],
+  "depends": {
+    "fabricloader": "=0.19.3",
+    "java": ">=25",
+    "minecraft": "=26.2"
+  }
+}

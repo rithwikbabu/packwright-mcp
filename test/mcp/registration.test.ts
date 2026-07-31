@@ -8,6 +8,15 @@ import type { PackwrightService } from '../../src/mcp/service.js';
 
 const unused = (): Promise<never> => Promise.reject(new Error('Unexpected service method call'));
 
+interface JsonSchemaShape {
+  readonly type?: string | undefined;
+  readonly const?: unknown;
+  readonly additionalProperties?: boolean | undefined;
+  readonly required?: readonly string[] | undefined;
+  readonly properties?: Readonly<Record<string, JsonSchemaShape>> | undefined;
+  readonly items?: JsonSchemaShape | undefined;
+}
+
 const service: PackwrightService = {
   createDatapack: unused,
   inspectDatapack: unused,
@@ -29,6 +38,7 @@ const service: PackwrightService = {
   compileVisual: unused,
   connectVisual: unused,
   renderVisual: unused,
+  captureVisual: unused,
   createVisualRevision: unused,
   commitVisual: unused,
   validateVisual: unused,
@@ -53,7 +63,7 @@ describe('Packwright MCP registration', () => {
       () => client.close(),
       () => server.close(),
     );
-    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.3.0' });
+    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.4.0' });
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
@@ -74,6 +84,7 @@ describe('Packwright MCP registration', () => {
       'visual_compile',
       'visual_connect',
       'visual_render',
+      'visual_capture',
       'visual_revision_create',
       'visual_commit',
       'visual_validate',
@@ -88,6 +99,63 @@ describe('Packwright MCP registration', () => {
       openWorldHint: false,
     });
 
+    const capabilitiesSchema = tools.tools.find((tool) => tool.name === 'visual_capabilities')
+      ?.outputSchema as JsonSchemaShape | undefined;
+    expect(capabilitiesSchema?.required).toEqual(
+      expect.arrayContaining(['capabilities', 'reviewProfiles']),
+    );
+    const reviewProfiles = capabilitiesSchema?.properties?.reviewProfiles;
+    expect(reviewProfiles).toMatchObject({
+      type: 'array',
+    });
+    expect(reviewProfiles?.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+    });
+    expect(reviewProfiles?.items?.required).toEqual(
+      expect.arrayContaining(['id', 'version', 'targetKind', 'support', 'clientCaptureSupport']),
+    );
+
+    const renderSchema = tools.tools.find((tool) => tool.name === 'visual_render')?.outputSchema as
+      JsonSchemaShape | undefined;
+    expect(renderSchema?.required).toEqual(
+      expect.arrayContaining([
+        'reviewProfile',
+        'profileVersion',
+        'reviewReady',
+        'reportUri',
+        'views',
+        'measurements',
+      ]),
+    );
+    expect(renderSchema?.properties?.reviewProfile).toMatchObject({
+      type: 'string',
+      enum: [
+        'held_item',
+        'block',
+        'placeable',
+        'armor',
+        'head_wearable',
+        'projectile',
+        'gui_item',
+        'entity_model',
+      ],
+    });
+    expect(renderSchema?.properties?.views?.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+    });
+    expect(renderSchema?.properties?.views?.items?.required).toEqual(
+      expect.arrayContaining(['name', 'required', 'category', 'file', 'uri']),
+    );
+    expect(renderSchema?.properties?.measurements?.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+    });
+    expect(renderSchema?.properties?.measurements?.items?.required).toEqual(
+      expect.arrayContaining(['metric', 'status', 'unit', 'message']),
+    );
+
     const templates = await client.listResourceTemplates();
     expect(templates.resourceTemplates.map((template) => template.name)).toEqual([
       'pack-manifest',
@@ -99,8 +167,12 @@ describe('Packwright MCP registration', () => {
       'visual-draft-model-spec',
       'visual-contact-sheet',
       'visual-latest-review',
+      'visual-render-report',
       'visual-binding-proposal',
+      'visual-client-capture-report',
+      'visual-client-contact-sheet',
       'visual-render-view',
+      'visual-client-capture-view',
     ]);
 
     const resources = await client.listResources();
@@ -163,6 +235,78 @@ describe('Packwright MCP registration', () => {
       ok: false,
       error: { code: 'size_limit' },
     });
+    expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(
+      MAX_MCP_PAYLOAD_BYTES,
+    );
+  });
+
+  it('keeps a successful client capture when its optional inline contact sheet is oversized', async () => {
+    const identity = 'a'.repeat(64);
+    const oversizedPng = Buffer.alloc(MAX_MCP_PAYLOAD_BYTES, 0xa5).toString('base64');
+    const captureService: PackwrightService = {
+      ...service,
+      captureVisual: () =>
+        Promise.resolve({
+          ok: true,
+          status: 'passed',
+          authority: 'authoritative_environment_capture',
+          projectId: 'example',
+          runId: identity,
+          revisionId: identity,
+          reviewProfile: 'held_item',
+          profileVersion: 1,
+          clientCaptureSupport: 'full',
+          captureReady: true,
+          planSha256: identity,
+          reportSha256: identity,
+          reportUri: `packwright://visual-runs/${identity}/revisions/${identity}/client-capture-report`,
+          contactSheet: {
+            path: `visual-runs/${identity}/captures/contact-${identity}.png`,
+            sha256: identity,
+            size: MAX_MCP_PAYLOAD_BYTES,
+            mediaType: 'image/png',
+            role: 'render',
+          },
+          contactSheetUri: `packwright://visual-runs/${identity}/revisions/${identity}/client-contact-sheet`,
+          views: [],
+          diagnostics: [],
+        }),
+      readVisualResource: () =>
+        Promise.resolve({
+          mimeType: 'image/png',
+          encoding: 'base64',
+          data: oversizedPng,
+          sha256: identity,
+        }),
+    };
+    const server = createPackwrightMcpServer(captureService);
+    const client = new Client({ name: 'packwright-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    closeCallbacks.push(
+      () => client.close(),
+      () => server.close(),
+    );
+
+    const result = await client.callTool({
+      name: 'visual_capture',
+      arguments: {
+        projectId: 'example',
+        runId: identity,
+        proposalSha256: identity,
+        confirm: true,
+      },
+    });
+
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({
+      ok: true,
+      captureReady: true,
+      contactSheetUri: `packwright://visual-runs/${identity}/revisions/${identity}/client-contact-sheet`,
+    });
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]?.type).toBe('text');
     expect(Buffer.byteLength(JSON.stringify(result), 'utf8')).toBeLessThanOrEqual(
       MAX_MCP_PAYLOAD_BYTES,
     );

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { Workspace, createDatapack, upsertResource } from '../dist/core/index.js';
 import {
   ProjectBuildInputSchema,
+  VisualClientCaptureInputSchema,
   VisualCommitInputSchema,
   VisualConnectInputSchema,
   VisualProjectAttachInputSchema,
@@ -45,6 +46,7 @@ const serviceContext = {
   signal: new globalThis.AbortController().signal,
   reportProgress: () => Promise.resolve(),
 };
+const runClientCapture = process.env.PACKWRIGHT_RUN_CLIENT_CAPTURE === 'true';
 
 /**
  * @param {{ readonly ok: boolean }} result
@@ -116,7 +118,7 @@ async function requireMissing(filename, stage) {
 }
 
 try {
-  await setupVersion(config, true);
+  await setupVersion(config, true, undefined, runClientCapture ? { clientCapture: true } : {});
   const workspace = await Workspace.open(workspaceRoot);
   requireSuccess(
     await createDatapack(workspace, {
@@ -433,6 +435,16 @@ try {
           },
         ],
         displayPreset: 'handheld_3d',
+        reviewProfile: 'held_item',
+        heldItem: {
+          primaryGrip: [8, 5.5, 11],
+          muzzle: [8, 15, 8],
+          forwardAxis: [0, 0, -1],
+          handedness: 'either',
+          twoHanded: false,
+          itemKind: 'generic',
+          usePose: 'aim',
+        },
         display: {
           firstperson_righthand: {
             rotation: [0, -90, 25],
@@ -440,7 +452,7 @@ try {
             scale: [0.68, 0.68, 0.68],
           },
         },
-        connection: { carrierItem: 'minecraft:blaze_rod' },
+        connection: { carrierItem: 'minecraft:shield' },
       },
     }),
     serviceContext,
@@ -455,7 +467,14 @@ try {
     }),
     serviceContext,
   );
-  requireSuccess(clippedRender, 'paired visual clipped render');
+  requireCondition(
+    clippedRender.ok === false && clippedRender.reviewReady === false,
+    `The intentionally clipped held-item render unexpectedly passed review:\n${JSON.stringify(clippedRender, null, 2)}`,
+  );
+  requireCondition(
+    clippedRender.measurements.some((measurement) => measurement.status === 'failed'),
+    'The intentionally clipped held-item render did not produce a failed profile measurement.',
+  );
   const repairedDraft = await application.createVisualRevision(
     VisualRevisionCreateInputSchema.parse({
       projectId: 'firestaff',
@@ -497,7 +516,7 @@ try {
       projectId: 'firestaff',
       runId: initialDraft.runId,
       revisionId: repairedDraft.revisionId,
-      carrierItem: 'minecraft:blaze_rod',
+      carrierItem: 'minecraft:shield',
       generateGiveFunction: true,
       generateRecipe: true,
       recipe: {
@@ -516,6 +535,28 @@ try {
     typeof connection.proposalSha256 === 'string',
     'Paired visual connection did not produce an accepted proposal hash.',
   );
+  const clientCapture = runClientCapture
+    ? await application.captureVisual(
+        VisualClientCaptureInputSchema.parse({
+          projectId: 'firestaff',
+          runId: initialDraft.runId,
+          revisionId: repairedDraft.revisionId,
+          proposalSha256: connection.proposalSha256,
+          confirm: true,
+          timeoutMs: 300_000,
+          resolution: { width: 1280, height: 720 },
+          guiScale: 2,
+        }),
+        serviceContext,
+      )
+    : undefined;
+  if (clientCapture !== undefined) {
+    requireSuccess(clientCapture, 'official Minecraft client framebuffer capture');
+    requireCondition(
+      clientCapture.status === 'passed' && typeof clientCapture.reportSha256 === 'string',
+      `Official client capture did not return signed evidence:\n${JSON.stringify(clientCapture, null, 2)}`,
+    );
+  }
   const visualValidation = await application.validateVisual(
     VisualValidateInputSchema.parse({
       projectId: 'firestaff',
@@ -523,6 +564,7 @@ try {
       revisionId: repairedDraft.revisionId,
       includeVanilla: true,
       includeGameTests: true,
+      requireClientCapture: runClientCapture,
     }),
     serviceContext,
   );
@@ -533,73 +575,85 @@ try {
     ),
     `Paired visual validation did not pass every selected layer:\n${JSON.stringify(visualValidation, null, 2)}`,
   );
-  requireSuccess(
-    await application.commitVisual(
-      VisualCommitInputSchema.parse({
+  if (clientCapture === undefined) {
+    requireCondition(
+      visualValidation.layers.some(
+        (layer) => layer.name === 'client_capture' && layer.status === 'skipped',
+      ),
+      'Server-only integration must explicitly report client capture as skipped.',
+    );
+  } else {
+    requireSuccess(
+      await application.commitVisual(
+        VisualCommitInputSchema.parse({
+          projectId: 'firestaff',
+          runId: initialDraft.runId,
+          revisionId: repairedDraft.revisionId,
+          proposalSha256: connection.proposalSha256,
+          expectedClientCaptureReportSha256: clientCapture.reportSha256,
+          confirm: true,
+        }),
+        serviceContext,
+      ),
+      'paired visual transaction commit',
+    );
+    const pairedBuild = await application.buildProject(
+      ProjectBuildInputSchema.parse({
         projectId: 'firestaff',
-        runId: initialDraft.runId,
-        revisionId: repairedDraft.revisionId,
-        proposalSha256: connection.proposalSha256,
-        confirm: true,
+        outputDirectory: 'visual-build',
       }),
       serviceContext,
-    ),
-    'paired visual transaction commit',
-  );
-  const pairedBuild = await application.buildProject(
-    ProjectBuildInputSchema.parse({
-      projectId: 'firestaff',
-      outputDirectory: 'visual-build',
-    }),
-    serviceContext,
-  );
-  requireSuccess(pairedBuild, 'paired deterministic build');
-  const repeatBuild = await application.buildProject(
-    ProjectBuildInputSchema.parse({
-      projectId: 'firestaff',
-      outputDirectory: 'visual-build-repeat',
-    }),
-    serviceContext,
-  );
-  requireSuccess(repeatBuild, 'repeated paired deterministic build');
-  requireCondition(
-    pairedBuild.datapack.sha256 === repeatBuild.datapack.sha256 &&
-      pairedBuild.resourcepack.sha256 === repeatBuild.resourcepack.sha256,
-    'Repeated paired builds were not byte-identical.',
-  );
+    );
+    requireSuccess(pairedBuild, 'paired deterministic build');
+    const repeatBuild = await application.buildProject(
+      ProjectBuildInputSchema.parse({
+        projectId: 'firestaff',
+        outputDirectory: 'visual-build-repeat',
+      }),
+      serviceContext,
+    );
+    requireSuccess(repeatBuild, 'repeated paired deterministic build');
+    requireCondition(
+      pairedBuild.datapack.sha256 === repeatBuild.datapack.sha256 &&
+        pairedBuild.resourcepack.sha256 === repeatBuild.resourcepack.sha256,
+      'Repeated paired builds were not byte-identical.',
+    );
 
-  const builtVisualData = path.join(workspaceRoot, 'built-visual-data');
-  await mkdir(builtVisualData, { mode: 0o700 });
-  const unpackVisualData = await runProcess({
-    command: 'unzip',
-    args: ['-q', path.join(workspaceRoot, pairedBuild.datapack.path), '-d', builtVisualData],
-    timeoutMs: 30_000,
-  });
-  requireCondition(
-    unpackVisualData.exitCode === 0 && !unpackVisualData.timedOut && !unpackVisualData.cancelled,
-    `Could not extract the paired datapack ZIP: ${unpackVisualData.stderr}`,
-  );
-  requireSuccess(
-    await runGameTests(config, workspace, {
-      project: 'built-visual-data',
-      tests: ['arcana:visual_smoke'],
-      timeoutMs: 300_000,
-    }),
-    'built paired datapack vanilla load',
-  );
-  const resourcepackArchiveCheck = await runProcess({
-    command: 'unzip',
-    args: ['-tq', path.join(workspaceRoot, pairedBuild.resourcepack.path)],
-    timeoutMs: 30_000,
-  });
-  requireCondition(
-    resourcepackArchiveCheck.exitCode === 0 &&
-      !resourcepackArchiveCheck.timedOut &&
-      !resourcepackArchiveCheck.cancelled,
-    `Could not verify the paired resource-pack ZIP: ${resourcepackArchiveCheck.stderr}`,
-  );
+    const builtVisualData = path.join(workspaceRoot, 'built-visual-data');
+    await mkdir(builtVisualData, { mode: 0o700 });
+    const unpackVisualData = await runProcess({
+      command: 'unzip',
+      args: ['-q', path.join(workspaceRoot, pairedBuild.datapack.path), '-d', builtVisualData],
+      timeoutMs: 30_000,
+    });
+    requireCondition(
+      unpackVisualData.exitCode === 0 && !unpackVisualData.timedOut && !unpackVisualData.cancelled,
+      `Could not extract the paired datapack ZIP: ${unpackVisualData.stderr}`,
+    );
+    requireSuccess(
+      await runGameTests(config, workspace, {
+        project: 'built-visual-data',
+        tests: ['arcana:visual_smoke'],
+        timeoutMs: 300_000,
+      }),
+      'built paired datapack vanilla load',
+    );
+    const resourcepackArchiveCheck = await runProcess({
+      command: 'unzip',
+      args: ['-tq', path.join(workspaceRoot, pairedBuild.resourcepack.path)],
+      timeoutMs: 30_000,
+    });
+    requireCondition(
+      resourcepackArchiveCheck.exitCode === 0 &&
+        !resourcepackArchiveCheck.timedOut &&
+        !resourcepackArchiveCheck.cancelled,
+      `Could not verify the paired resource-pack ZIP: ${resourcepackArchiveCheck.stderr}`,
+    );
+  }
   process.stderr.write(
-    'Packwright Minecraft 26.2 datapack and paired visual acceptance flows passed.\n',
+    runClientCapture
+      ? 'Packwright Minecraft 26.2 datapack and official-client paired visual acceptance flows passed.\n'
+      : 'Packwright Minecraft 26.2 datapack and server-side paired proposal acceptance flows passed; official client capture was explicitly skipped.\n',
   );
 } finally {
   await rm(workspaceRoot, { recursive: true, force: true });

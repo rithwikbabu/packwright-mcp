@@ -32,6 +32,8 @@ import type {
   VisualCapabilitiesResult,
   VisualCommitInput,
   VisualCommitResult,
+  VisualClientCaptureInput,
+  VisualClientCaptureResult,
   VisualCompileInput,
   VisualConnectInput,
   VisualDraftResult,
@@ -48,12 +50,19 @@ import type {
 export type VisualResourceInput =
   | { readonly kind: 'project_manifest' | 'project_graph'; readonly projectId: string }
   | {
-      readonly kind: 'spec' | 'contact_sheet' | 'review' | 'binding';
+      readonly kind:
+        | 'spec'
+        | 'contact_sheet'
+        | 'render_report'
+        | 'review'
+        | 'binding'
+        | 'client_capture_report'
+        | 'client_contact_sheet';
       readonly runId: string;
       readonly revisionId: string;
     }
   | {
-      readonly kind: 'view';
+      readonly kind: 'view' | 'client_view';
       readonly runId: string;
       readonly revisionId: string;
       readonly view: string;
@@ -184,6 +193,11 @@ export interface PackwrightService {
     input: VisualRenderInput,
     context: PackwrightServiceContext,
   ): Promise<VisualRenderResult>;
+
+  captureVisual(
+    input: VisualClientCaptureInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualClientCaptureResult>;
 
   createVisualRevision(
     input: VisualRevisionCreateInput,

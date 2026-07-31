@@ -1,0 +1,70 @@
+plugins {
+    id 'net.fabricmc.fabric-loom' version '1.17.17'
+    id 'maven-publish'
+}
+
+group = 'io.github.rithwikbabu.packwright'
+version = '0.4.0'
+
+base {
+    archivesName = 'packwright-capture-mod'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft 'com.mojang:minecraft:26.2'
+    implementation 'net.fabricmc:fabric-loader:0.19.3'
+
+    implementation 'com.google.code.gson:gson:2.14.0'
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = 'UTF-8'
+    options.compilerArgs += ['-Xlint:all', '-Werror']
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand version: project.version
+    }
+}
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat 'full'
+    }
+}
+
+jar {
+    from('LICENSE') {
+        rename { "${it}_${base.archivesName.get()}" }
+    }
+    reproducibleFileOrder = true
+    preserveFileTimestamps = false
+}
+
+publishing {
+    publications {
+        create('mavenJava', MavenPublication) {
+            artifactId = base.archivesName.get()
+            from components.java
+        }
+    }
+}

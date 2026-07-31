@@ -31,8 +31,9 @@ describe('compiled stdio server', () => {
 
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(21);
+    expect(tools.tools).toHaveLength(22);
     expect(tools.tools.map((tool) => tool.name)).toContain('visual_render');
+    expect(tools.tools.map((tool) => tool.name)).toContain('visual_capture');
     expect(tools.tools.map((tool) => tool.name)).toContain('project_build');
 
     const progress: number[] = [];
@@ -55,7 +56,9 @@ describe('compiled stdio server', () => {
       },
     );
     expect(created.isError).not.toBe(true);
-    await expect.poll(() => progress).toEqual([0, 1]);
+    // The subprocess shares CI capacity with the rest of the parallel Vitest
+    // pool, so allow notification delivery to drain after the tool response.
+    await expect.poll(() => progress, { timeout: 5_000 }).toEqual([0, 1]);
     await expect(
       readFile(path.join(workspace, 'stdio-pack/pack.mcmeta'), 'utf8'),
     ).resolves.toContain('107');
