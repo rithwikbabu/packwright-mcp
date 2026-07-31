@@ -18,7 +18,8 @@ Packwright v0.3.0 implements the custom-item vertical slice:
 - Compilation to `assets/<namespace>/items/<path>.json`, `assets/<namespace>/models/item/<path>.json`, and PNG textures.
 - A `minecraft:item_model` binding to a caller-selected vanilla carrier item, with an optional `/give` helper and shaped recipe.
 - An asset graph spanning the logical item, carrier, component, client item definition, model, and textures.
-- A deterministic CPU preview renderer, immutable repair revisions, guarded multi-file commit, layered validation, and deterministic paired builds.
+- A generic scene-review profile layer over the deterministic CPU renderer. The first profile, `held_item@1`, renders held-item scenes with reference arms/bodies and produces an immutable advisory measurement report.
+- Immutable repair revisions, including constrained held-item metadata repairs, guarded multi-file commit, layered validation, and deterministic paired builds.
 
 The capability matrix separates what Minecraft 26.2 can represent (`status` and `support`) from what Packwright v0.3 can compile (`compilerSupport`). `compilerSupport` is `full` for `custom_item`, `limited` for `conditional_item_state`, and `unsupported` for every other target. The item-state DSL exists, but its property coverage and built-in resolution are not exhaustive. Block models, equipment, paintings and trims, mob variants, display rigs, keyframe animation, GUI/font/sprite authoring, generator subprocess adapters, multi-asset project heads, and real-client screenshot capture remain later phases. `author_display_rig` produces a truthful plan; it does not generate commit-ready rig files.
 
@@ -137,6 +138,16 @@ Agents should author this constrained representation instead of arbitrary Minecr
   "displayPreset": "handheld_3d",
   "display": {},
   "states": [],
+  "reviewProfile": "held_item",
+  "heldItem": {
+    "primaryGrip": [8, 5.5, 11],
+    "muzzle": [8, 15, 8],
+    "forwardAxis": [0, 0, -1],
+    "handedness": "either",
+    "twoHanded": false,
+    "itemKind": "weapon",
+    "usePose": "aim"
+  },
   "connection": {
     "strategy": "minecraft:item_model",
     "carrierItem": "minecraft:stick"
@@ -146,6 +157,31 @@ Agents should author this constrained representation instead of arbitrary Minecr
 
 The current schema supports cuboids and single-axis planes; named parent relationships; element rotations on `x`, `y`, or `z` at Minecraft-supported angles; automatic box UVs or explicit face UVs; colors, external textures, tint indices, transparency, and emissive intent; all standard item display contexts; and condition/select/range/composite item states. Semantic parents name review groups only: each part retains model-space coordinates and its own Minecraft element rotation rather than inheriting an animation transform. Item properties and their codec fields are validated against an explicit 26.2 allow-list; an unknown property, unexpected parameter, or invalid enumerated select value is rejected instead of being copied into client JSON. Emissive intent is recorded but the vanilla item model compiler does not claim true emissive rendering. A custom external texture or item-state model must already exist at `assets/<namespace>/textures/<path>.png` or `assets/<namespace>/models/<path>.json` in the project's sibling resource pack. Packwright does not search dependency packs, Mojang asset objects, the client-assets cache, or another filesystem location to resolve it.
 
+`reviewProfile` selects how the compiled model is staged for review; it never changes the Minecraft model JSON. The only implemented profile is `held_item`. Its optional `heldItem` metadata describes a model-space primary grip, optional secondary grip and muzzle, optional forward axis, handedness, item kind, two-handed intent, and use pose. A two-handed item must declare `secondaryGrip`; `aim` must declare a muzzle or forward axis. Omitting `heldItem` keeps older specifications readable and reports the unavailable semantic measurements as `skipped` rather than inventing a pass. Other configured profile checks still run, and a failed check blocks readiness.
+
+## Review profiles
+
+A review profile owns its required and conditional scenes, reference geometry, cameras, reusable measurement rules, and warning/failure thresholds. Minecraft display transforms remain the compiled output. The profile applies those exact transforms to the item while independently posing Packwright-authored reference arms and bodies; reference geometry is never written to the resource pack.
+
+`held_item@1` always renders these 12 required scenes:
+
+- First-person right hand with Steve and Alex arms.
+- First-person left/offhand with Steve and Alex arms.
+- First-person right hand at a representative 100-degree wide FOV.
+- Third-person rear three-quarter, right hand, with Steve and Alex bodies.
+- Third-person front three-quarter, right hand, with Steve and Alex bodies.
+- Third-person rear three-quarter, left hand, with Steve and Alex bodies.
+- A neutral item-only comparison.
+
+The profile adds up to four conditional scenes, keeping the complete contact sheet within the 16-scene limit:
+
+- `swing_midpoint` for weapon/tool items or `usePose: "swing"`.
+- `active_use` for block, bow, crossbow, spear, horn, food, drink, spyglass, brush, or aim use poses.
+- `two_handed` when a secondary grip is declared.
+- `aiming` when a forward axis or muzzle is declared.
+
+The report measures primary- and secondary-palm grip reach, approximate transformed arm and torso intersection, alpha-weighted first-person screen coverage, forward-axis alignment, mirrored left/right grip-and-orientation delta, and retained projected face area. Each result is `passed`, `warning`, `failed`, or `skipped`. A one-handed declaration still renders both hands for comparison but excludes the undeclared hand from blocking measurements; conditional action scenes use the declared primary hand. These checks have `advisory` authority: a configured failure blocks review readiness and commit, but it is not proof of how every FOV, skin, animation, or client implementation will render.
+
 ## Exact workflow
 
 1. Call `visual_capabilities` and state the requested target's truthful capability status.
@@ -154,17 +190,17 @@ The current schema supports cuboids and single-axis planes; named parent relatio
 4. Call `texture_import` for each supplied material PNG. A missing generated texture is filled deterministically from the material color, or a stable hash-derived fallback when no color is declared.
 5. Call `visual_compile`. This writes canonical draft files to the content-addressed run store, not the workspace packs.
 6. Call `visual_connect` with a safe vanilla carrier. Review the proposed resource-pack files, `minecraft:item_model` component, helper function, optional recipe, captured destination hashes, and returned `proposalSha256`.
-7. Call `visual_render`. Review the returned contact-sheet image, then read individual image resources for ambiguous views.
-8. If review finds a defect, call `visual_revision_create` with the parent revision ID, its exact `expectedSpecSha256`, a human-readable finding, and only the named part/material/display repairs. Compile and render the child revision, then review it again.
+7. Call `visual_render`. Inspect `reviewProfile`, `reviewReady`, the advisory measurements, and the returned contact sheet. Read the immutable render-report resource and individual image resources for ambiguous views.
+8. If review finds a defect, call `visual_revision_create` with the parent revision ID, its exact `expectedSpecSha256`, a human-readable finding, and only the named part, material, display-transform, or held-item metadata repairs. Compile and render the child revision, then compare the same profile scenes.
 9. Call `visual_validate`. It validates the exact current uncommitted proposal as an overlay on stable snapshots of the full sibling packs: resource-pack checks see the complete resource-pack snapshot plus proposed files, while vanilla command validation and optional GameTests see the complete datapack snapshot plus its proposal files. Keep vanilla command validation enabled for release evidence; enable GameTests when the datapack has relevant tests.
-10. After explicit acceptance, call `visual_commit` with `confirm: true` and the exact current `proposalSha256`.
+10. After explicit acceptance, call `visual_commit` with `confirm: true` and the exact current `proposalSha256`. Commit also requires a current `held_item@1` report with no failed measurements and complete semantic metadata.
 11. Call `project_build` to revalidate the exact committed datapack and resource-pack snapshots and transactionally install their independent deterministic ZIPs.
 
 Neither the generation, review, nor repair prompts mutate files. An agent must not treat a rendered image as authorization to commit.
 
 ## Immutable runs and revisions
 
-Runs live under `<cache>/visual-runs/<run-id>/`. The run ID is derived from canonical request, specification, and provenance hashes. Each repair creates a content-addressed child under `revisions/<revision-id>/`; existing run and revision directories are never edited in place. Textures, compiled proposals, renders, and reviews are stored by content hash, while `<cache>/visual-project-state/` indexes the one active head for each project.
+Runs live under `<cache>/visual-runs/<run-id>/`. The run ID is derived from canonical request, specification, and provenance hashes. Each repair creates a content-addressed child under `revisions/<revision-id>/`; existing run and revision directories are never edited in place. Textures, compiled proposals, renders, profile reports, and targeted repair records are stored by content hash, while `<cache>/visual-project-state/` indexes the one active head for each project. A profile report binds its spec hash, compiled-artifact ID, renderer/profile versions, scene-plan hash, required view IDs, individual image hashes, measurements, and readiness result. Changing the spec, compiled artifact, profile plan, or renderer makes older evidence stale instead of silently reusing it.
 
 The run store bounds canonical JSON to 4 MiB, compiled artifacts to 2,048 files or 64 MiB, and stored PNG reads to 8 MiB. The accepted workspace output remains deterministic even if an external client used nondeterministic image generation before import.
 
@@ -186,15 +222,15 @@ Imported images are normalized to deterministic RGBA8 PNG bytes; ancillary metad
 
 ## Deterministic renderer
 
-`visual_render` uses the CPU-only `packwright-cpu-v1` renderer. It consumes the compiler's canonical sorted geometry, exact UV layout, element rotations/rescale behavior, tint intent, and shared display-transform resolution; tessellates cuboids and planes; projects with fixed cameras; z-buffers opaque surfaces; alpha-blends transparency; samples textures with nearest-neighbor filtering; and applies fixed approximate GUI lighting. It does not launch Chromium, Blender, native OpenGL, or Minecraft.
+`visual_render` uses the CPU-only `packwright-cpu-v2` profile renderer. It consumes the compiler's canonical sorted geometry, exact UV layout, element rotations/rescale behavior, tint intent, and shared display-transform resolution; tessellates cuboids and planes; poses separate reference geometry; projects with fixed profile cameras; z-buffers opaque surfaces; alpha-blends transparency; samples textures with nearest-neighbor filtering; and applies fixed approximate lighting. It does not launch Chromium, Blender, native OpenGL, or Minecraft.
 
-The standard set contains eight turntable views plus inventory 64×64, inventory 32×32, ground, fixed/item-frame, first-person right, first-person left, and third-person hand contexts. Individual views are exposed as PNG resources. The contact sheet is at most 720 KiB and is returned as MCP image content; render size is 32–256 pixels, scenes are capped at 512 parts, and raster work is bounded.
+The selected profile determines the scene set. `held_item@1` uses the 12 required and up to four conditional scenes listed above instead of a universal turntable. Individual views are exposed as PNG resources, and the immutable JSON report is exposed separately. The contact sheet is at most 720 KiB and is returned as MCP image content; render size is 32–256 pixels, profiles are capped at 16 scenes, model scenes are capped at 512 authored parts plus bounded reference geometry, and raster work is bounded.
 
-The renderer is a fast deterministic review aid, not proof of exact client rendering. Special models marked unsupported by the profile require later real-client capture. The current release has no actual-client screenshot harness.
+The renderer is a fast deterministic review aid, not proof of exact client rendering. Arm/torso intersection is measured with transformed axis-aligned bounding boxes rather than exact mesh collision, cameras use representative FOVs and poses, and conditional scenes pose the base compiled geometry rather than resolving every active item-state model. Special models marked unsupported by the profile require later real-client capture. The current release has no actual-client screenshot harness and no block, placeable, armor, head-wearable, projectile, GUI-item, or entity-model review profile.
 
 ## Transactional commit and build
 
-`visual_connect` records the SHA-256 or expected absence of every destination. `visual_commit` then:
+`visual_connect` records the SHA-256 or expected absence of every destination. Before changing a pack, `visual_commit` also verifies that the same compiled proposal has a current, complete `held_item@1` report with no failed advisory measurement. It then:
 
 1. Resolves every destination beneath the correct paired pack.
 2. Acquires locks in sorted path order.
@@ -207,9 +243,9 @@ A visual transaction is limited to 512 files and 64 MiB. There is no force flag 
 
 ## Validation evidence
 
-`visual_validate` reports these layers independently: paired metadata, schema, texture, asset graph, geometry/UV, render readiness, binding, vanilla commands, and GameTests. It applies the exact uncommitted proposal to stable full-pack snapshots before resource-pack, command, and GameTest checks, so validation evidence covers the bytes proposed for commit rather than only the already committed packs. Semantic diagnostics name an asset and, where possible, its exact part, material, or display context.
+`visual_validate` reports these layers independently: paired metadata, schema, texture, asset graph, geometry/UV, profile render readiness, binding, vanilla commands, and GameTests. It verifies the immutable render report against the current spec, compiled artifact, profile plan, required view hashes, and renderer/profile versions. It applies the exact uncommitted proposal to stable full-pack snapshots before resource-pack, command, and GameTest checks, so validation evidence covers the bytes proposed for commit rather than only the already committed packs. Semantic diagnostics name an asset and, where possible, its exact part, material, display context, review profile, scene, or measurement.
 
-The current automated visual checks cover strict schema/canonical compilation, required textures, zero-area UV assignments, material/tint conflicts, part relationships, approximate display clipping, graph endpoints/cycles/orphans, and the `minecraft:item_model` chain. Agent visual review supplies aesthetic judgment; it is not an authoritative Minecraft result. Vanilla-backed command validation remains authoritative for datapack command syntax, while an optional GameTest supplies behavior evidence.
+The current automated visual checks cover strict schema/canonical compilation, required textures, zero-area UV assignments, material/tint conflicts, part relationships, approximate display clipping, graph endpoints/cycles/orphans, the `minecraft:item_model` chain, and the `held_item@1` advisory measurements. Agent visual review still supplies aesthetic judgment; neither its judgment nor the software-rendered measurements are authoritative Minecraft results. Vanilla-backed command validation remains authoritative for datapack command syntax, while an optional GameTest supplies behavior evidence.
 
 Client-asset setup is optional for the current semantic compiler, software renderer, and validator. In v0.3 it is a setup/readiness signal only, not a built-in resolver for model parents, textures, or asset-index objects; those subsystems do not load built-in asset content from the cache. An operator can explicitly prepare the manifest-verified client jar and asset index:
 

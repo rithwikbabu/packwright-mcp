@@ -13,10 +13,12 @@ flowchart TD
     D --> F["Content-addressed run store"]
     F --> G["ModelSpec compiler"]
     G --> H["Structural and reference validators"]
-    G --> I["Deterministic CPU renderer"]
-    I --> J["Agent visual review"]
-    J -->|"targeted repair"| F
-    J -->|"accepted proposal"| K["Journaled cross-pack commit"]
+    G --> I["Generic scene-review profile"]
+    I --> J["Deterministic CPU renderer"]
+    J --> M["Immutable profile report"]
+    M --> N["Agent visual review"]
+    N -->|"targeted repair"| F
+    N -->|"accepted proposal"| K["Journaled cross-pack commit"]
     K --> L["Datapack and resource-pack builders"]
 ```
 
@@ -67,17 +69,21 @@ The custom-item graph begins at a logical identity and follows the selected vani
 
 ## Semantic compilation and run store
 
-The visual service accepts a strict `ModelSpec`, not arbitrary generated model JSON. Named parts, materials, parent relationships, UV intent, item states, and display transforms compile into canonical Minecraft 26.2 JSON. Output ordering and serialization are deterministic.
+The visual service accepts a strict `ModelSpec`, not arbitrary generated model JSON. Named parts, materials, parent relationships, UV intent, item states, and display transforms compile into canonical Minecraft 26.2 JSON. Review-profile selection and semantic held-item anchors remain Packwright metadata; they select review scenes and measurements but never alter compiled Minecraft files. Output ordering and serialization are deterministic.
 
 Creative input is provider-neutral and currently agent-driven. Packwright records the supplied provider/model, prompt or request, seed, reference hashes, and derived artifact hashes; it does not require an OpenAI key or invoke a remote generator.
 
-Every draft run is content-addressed below `<cache>/visual-runs/`. Initial request, model specification, and provenance are canonical immutable inputs. Repairs create content-addressed child revisions and can change only named parts, materials, or display transforms. Textures, compiled proposals, renders, and review records are immutable artifacts. A separate bounded state index identifies exactly one active workflow head for each paired project, not one per asset or run; omitted IDs select it and `project_build` always uses it. v0.3 does not aggregate multiple active item heads. Custom external textures and state models are resolved only from their normal paths in the paired sibling resource pack, not dependency packs, Mojang asset objects, another filesystem location, or the client-assets cache.
+Every draft run is content-addressed below `<cache>/visual-runs/`. Initial request, model specification, and provenance are canonical immutable inputs. Repairs create content-addressed child revisions and can change only named parts, materials, display transforms, or constrained held-item review metadata. Textures, compiled proposals, renders, profile reports, and targeted repair records are immutable artifacts. A profile report binds the spec and compiled-artifact hashes, renderer/profile versions, resolved scene-plan hash, required view IDs and image hashes, measurements, and readiness result. A separate bounded state index identifies exactly one active workflow head for each paired project, not one per asset or run; omitted IDs select it and `project_build` always uses it. v0.3 does not aggregate multiple active item heads. Custom external textures and state models are resolved only from their normal paths in the paired sibling resource pack, not dependency packs, Mojang asset objects, another filesystem location, or the client-assets cache.
 
-## Deterministic rendering
+## Review profiles and deterministic rendering
 
-The `packwright-cpu-v1` renderer is a bounded software rasterizer for the current cuboid/plane item model subset. It resolves semantic parents and textures, tessellates faces, applies fixed transforms/cameras, z-buffers, alpha-blends, samples textures with nearest-neighbor filtering, and approximates Minecraft GUI lighting without Chromium, Blender, OpenGL, or a running game.
+Review profiles are Packwright policy layered between the canonical compiler output and the rasterizer. A profile defines required and semantic-conditional scenes, Packwright-authored reference geometry, cameras, reusable measurement rules, and fixed warning/failure thresholds. Profile versions change independently from Minecraft pack formats, while a renderer-version change invalidates old evidence. The same interface can later support block, placeable, armor, projectile, GUI-item, and entity-model scenes without putting target-specific branches into the rasterizer.
 
-It produces eight fixed turntable angles and standard inventory, ground, fixed, first-person, and third-person views. A bounded contact sheet is returned with the tool result and individual PNGs remain addressable as MCP resources. The output is a deterministic review surface, not authoritative evidence of actual client rendering; unsupported special models require a future real-client capture adapter.
+The first implementation is `held_item@1`. It resolves 12 required Steve/Alex first-person, wide-FOV, third-person, and neutral scenes, then adds swing, active-use, two-handed, or aiming scenes when the semantic metadata calls for them. The complete plan remains bounded to 16 scenes. Minecraft first/third-person display transforms apply only to the compiled item; independently posed reference arms and bodies are review evidence and are never compiled into the resource pack.
+
+The `packwright-cpu-v2` profile renderer is a bounded software rasterizer for the current cuboid/plane item model subset. It tessellates only compiled faces, applies fixed scene transforms and cameras, z-buffers, alpha-blends, samples textures with nearest-neighbor filtering, and derives asset/reference bounds without Chromium, Blender, OpenGL, or a running game. `held_item@1` reduces that evidence into advisory primary/secondary grip reach, approximate transformed arm/torso intersection, alpha-weighted screen coverage, forward-axis alignment, mirrored grip-and-orientation delta, and projected-area frame retention. A bounded contact sheet is returned with the tool result; individual PNGs and the immutable report remain addressable as MCP resources.
+
+The report and images are deterministic review surfaces, not authoritative evidence of actual client rendering. Transformed axis-aligned bounding-box overlap is not exact mesh collision, cameras and FOVs are representative, and active-use scenes currently pose the base compiled geometry rather than resolving every conditional item model. Unsupported special models and exact client behavior require a future real-client capture adapter.
 
 ## Filesystem transactions
 
@@ -100,6 +106,8 @@ This layer establishes dispatcher and codec validity, not runtime behavior. Macr
 Operators can disable the vanilla command adapter only for a `validate` request, preserving an offline structural-analysis path. Public build operations always include it and fail closed when Java 25, the verified cache, the harness result, or a command is invalid.
 
 For an uncommitted visual proposal, validation applies the exact proposal files to stable snapshots of the associated packs. Resource-pack checks receive the full sibling resource-pack snapshot plus its overlay; command validation and optional GameTests receive the full datapack snapshot plus its overlay. The proposal is therefore validated in its surrounding project rather than as isolated generated files.
+
+Visual profile measurements use `advisory` authority. Packwright nevertheless fails render readiness when a configured `held_item@1` threshold fails, and `visual_commit` verifies that the exact current spec, compiled proposal, profile plan, renderer/profile versions, report, and required view hashes still agree. Missing optional semantic metadata produces explicit skipped findings so older specifications remain usable without claiming those checks passed. This is a workflow quality gate, not a claim of authoritative Minecraft-client rendering.
 
 ## Packaging
 

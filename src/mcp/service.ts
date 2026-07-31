@@ -48,7 +48,7 @@ import type {
 export type VisualResourceInput =
   | { readonly kind: 'project_manifest' | 'project_graph'; readonly projectId: string }
   | {
-      readonly kind: 'spec' | 'contact_sheet' | 'review' | 'binding';
+      readonly kind: 'spec' | 'contact_sheet' | 'render_report' | 'review' | 'binding';
       readonly runId: string;
       readonly revisionId: string;
     }

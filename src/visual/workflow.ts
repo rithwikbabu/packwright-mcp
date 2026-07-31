@@ -25,7 +25,11 @@ import type {
   VisualSpecUpsertInput,
 } from '../mcp/visual-schemas.js';
 import { VisualConnectInputSchema } from '../mcp/visual-schemas.js';
-import { visualRunContactSheetUri, visualRunViewUri } from '../mcp/visual-uris.js';
+import {
+  visualRunContactSheetUri,
+  visualRunRenderReportUri,
+  visualRunViewUri,
+} from '../mcp/visual-uris.js';
 import type { z } from 'zod/v4';
 import { createItemAssetGraph, type VisualAssetGraph } from './asset-graph.js';
 import {
@@ -46,7 +50,15 @@ import {
   type VisualProjectInspection,
   type VisualProjectManifest,
 } from './project.js';
-import { renderModelSpec, solidTexture, type Rgba } from './renderer.js';
+import { renderCompiledItemAsset, solidTexture, type Rgba } from './renderer.js';
+import {
+  HELD_ITEM_MEASUREMENTS,
+  HELD_ITEM_PROFILE_VERSION,
+  MAX_REVIEW_SCENES,
+  REVIEW_PROFILE_RENDERER_VERSION,
+  resolveReviewProfile,
+  type ReviewMeasurementResult,
+} from './review-profile.js';
 import { canonicalJsonBytes, VisualRunStore } from './run-store.js';
 import { commitFileTransaction } from './transaction.js';
 import {
@@ -135,6 +147,7 @@ interface VisualArtifactReadiness {
   readonly textures: boolean;
   readonly compiled: boolean;
   readonly rendered: boolean;
+  readonly reviewProfile: boolean;
   readonly binding: boolean;
   readonly committed: boolean;
 }
@@ -146,6 +159,31 @@ interface VerifiedVisualArtifacts {
   readonly availableModelResourceIds: ReadonlySet<string>;
   readonly binding?: ItemBindingProposal | undefined;
   readonly proposal?: CommitProposal | undefined;
+}
+
+interface StoredRenderProfileReport {
+  readonly schemaVersion: 1;
+  readonly kind: 'packwright.render-profile-report';
+  readonly projectId: string;
+  readonly runId: string;
+  readonly revisionId: string;
+  readonly specSha256: string;
+  readonly compiledArtifactId: string;
+  readonly rendererVersion: typeof REVIEW_PROFILE_RENDERER_VERSION;
+  readonly profileId: 'held_item';
+  readonly profileVersion: typeof HELD_ITEM_PROFILE_VERSION;
+  readonly viewSize: number;
+  readonly planSha256: string;
+  readonly requiredViewIds: readonly string[];
+  readonly reviewReady: boolean;
+  readonly views: readonly {
+    readonly id: string;
+    readonly required: boolean;
+    readonly width: number;
+    readonly height: number;
+    readonly sha256: string;
+  }[];
+  readonly measurements: readonly ReviewMeasurementResult[];
 }
 
 export interface VisualProposalOverlay {
@@ -177,6 +215,9 @@ export function visualDiagnostic(entry: VisualDiagnostic): Diagnostic {
     entry.partId === undefined ? undefined : `part ${entry.partId}`,
     entry.materialId === undefined ? undefined : `material ${entry.materialId}`,
     entry.displayContext === undefined ? undefined : `display.${entry.displayContext}`,
+    entry.reviewProfile === undefined ? undefined : `profile ${entry.reviewProfile}`,
+    entry.reviewView === undefined ? undefined : `view ${entry.reviewView}`,
+    entry.reviewMetric === undefined ? undefined : `metric ${entry.reviewMetric}`,
   ].filter((value): value is string => value !== undefined);
   return {
     engine: entry.engine,
@@ -201,6 +242,186 @@ function artifactDiagnostic(code: string, message: string, target?: string): Vis
     code,
     message,
     ...(target === undefined ? {} : { target }),
+  };
+}
+
+function reviewMeasurementDiagnostic(
+  target: string,
+  measurement: ReviewMeasurementResult,
+): VisualDiagnostic | undefined {
+  if (measurement.status === 'passed') return undefined;
+  const suggestedFix =
+    measurement.metric === 'primary_grip_distance' ||
+    measurement.metric === 'secondary_grip_distance'
+      ? `Adjust heldItem.${measurement.metric === 'primary_grip_distance' ? 'primaryGrip' : 'secondaryGrip'} or the matching held display transform, then rerender.`
+      : measurement.metric === 'arm_intersection' || measurement.metric === 'torso_intersection'
+        ? 'Adjust the held display transform or the intersecting semantic part, then rerender.'
+        : measurement.metric === 'screen_obscuration'
+          ? 'Reduce first-person scale or translation so the item obstructs less of the frame.'
+          : measurement.metric === 'forward_axis'
+            ? 'Correct heldItem.forwardAxis or the held display rotation so it points away from the player.'
+            : measurement.metric === 'hand_symmetry'
+              ? 'Repair the left/right display transforms or explicitly declare one-handed intent.'
+              : 'Adjust the named part or display transform so important geometry remains in frame.';
+  return {
+    engine: 'packwright.visual',
+    authority: 'advisory',
+    severity:
+      measurement.status === 'failed'
+        ? 'error'
+        : measurement.status === 'warning' ||
+            measurement.metric === 'primary_grip_distance' ||
+            measurement.metric === 'secondary_grip_distance'
+          ? 'warning'
+          : 'information',
+    code: `visual.review.${measurement.metric}.${measurement.status}`,
+    message: measurement.message,
+    target,
+    reviewProfile: 'held_item',
+    ...(measurement.view === undefined ? {} : { reviewView: measurement.view }),
+    reviewMetric: measurement.metric,
+    ...(measurement.partId === undefined ? {} : { partId: measurement.partId }),
+    suggestedFix,
+  };
+}
+
+function reviewMeasurementDiagnostics(
+  target: string,
+  measurements: readonly ReviewMeasurementResult[],
+): readonly VisualDiagnostic[] {
+  return measurements
+    .map((measurement) => reviewMeasurementDiagnostic(target, measurement))
+    .filter((entry): entry is VisualDiagnostic => entry !== undefined);
+}
+
+function parseRenderProfileReport(value: unknown): StoredRenderProfileReport {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('Render profile report is invalid.');
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.schemaVersion !== 1 ||
+    record.kind !== 'packwright.render-profile-report' ||
+    record.rendererVersion !== REVIEW_PROFILE_RENDERER_VERSION ||
+    record.profileId !== 'held_item' ||
+    record.profileVersion !== HELD_ITEM_PROFILE_VERSION ||
+    typeof record.projectId !== 'string' ||
+    typeof record.runId !== 'string' ||
+    typeof record.revisionId !== 'string' ||
+    typeof record.specSha256 !== 'string' ||
+    typeof record.compiledArtifactId !== 'string' ||
+    typeof record.planSha256 !== 'string' ||
+    typeof record.reviewReady !== 'boolean' ||
+    !Number.isSafeInteger(record.viewSize) ||
+    (record.viewSize as number) < 32 ||
+    (record.viewSize as number) > 256 ||
+    !Array.isArray(record.requiredViewIds) ||
+    !Array.isArray(record.views) ||
+    !Array.isArray(record.measurements)
+  ) {
+    throw new Error('Render profile report identity is invalid.');
+  }
+  for (const hash of [record.specSha256, record.compiledArtifactId, record.planSha256]) {
+    if (!SHA256_PATTERN.test(hash)) throw new Error('Render profile report hash is invalid.');
+  }
+  const requiredViewIds = record.requiredViewIds.map((view) => {
+    if (typeof view !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,47}$/u.test(view)) {
+      throw new Error('Render profile report required view is invalid.');
+    }
+    return view;
+  });
+  if (
+    requiredViewIds.length > MAX_REVIEW_SCENES ||
+    new Set(requiredViewIds).size !== requiredViewIds.length
+  ) {
+    throw new Error('Render profile report required views are duplicated or unbounded.');
+  }
+  const views = record.views.map((view) => {
+    if (view === null || typeof view !== 'object' || Array.isArray(view)) {
+      throw new Error('Render profile report view is invalid.');
+    }
+    const entry = view as Record<string, unknown>;
+    if (
+      typeof entry.id !== 'string' ||
+      !/^[a-z0-9][a-z0-9_-]{0,47}$/u.test(entry.id) ||
+      typeof entry.required !== 'boolean' ||
+      !Number.isSafeInteger(entry.width) ||
+      (entry.width as number) <= 0 ||
+      !Number.isSafeInteger(entry.height) ||
+      (entry.height as number) <= 0 ||
+      typeof entry.sha256 !== 'string' ||
+      !SHA256_PATTERN.test(entry.sha256)
+    ) {
+      throw new Error('Render profile report view is invalid.');
+    }
+    return {
+      id: entry.id,
+      required: entry.required,
+      width: entry.width as number,
+      height: entry.height as number,
+      sha256: entry.sha256,
+    };
+  });
+  if (
+    views.length > MAX_REVIEW_SCENES ||
+    new Set(views.map((view) => view.id)).size !== views.length
+  ) {
+    throw new Error('Render profile report views are duplicated or unbounded.');
+  }
+  const metricIds = new Set([
+    'primary_grip_distance',
+    'secondary_grip_distance',
+    'arm_intersection',
+    'torso_intersection',
+    'screen_obscuration',
+    'forward_axis',
+    'hand_symmetry',
+    'frame_retention',
+  ]);
+  const measurements = record.measurements.map((measurement) => {
+    if (measurement === null || typeof measurement !== 'object' || Array.isArray(measurement)) {
+      throw new Error('Render profile measurement is invalid.');
+    }
+    const entry = measurement as Record<string, unknown>;
+    if (
+      typeof entry.metric !== 'string' ||
+      !metricIds.has(entry.metric) ||
+      (entry.view !== undefined && typeof entry.view !== 'string') ||
+      !['passed', 'warning', 'failed', 'skipped'].includes(String(entry.status)) ||
+      !['model_pixels', 'percent', 'dot'].includes(String(entry.unit)) ||
+      typeof entry.message !== 'string' ||
+      entry.message.length === 0 ||
+      entry.message.length > 4096 ||
+      (entry.value !== undefined &&
+        (typeof entry.value !== 'number' || !Number.isFinite(entry.value))) ||
+      (entry.threshold !== undefined &&
+        (typeof entry.threshold !== 'number' || !Number.isFinite(entry.threshold))) ||
+      (entry.partId !== undefined && typeof entry.partId !== 'string')
+    ) {
+      throw new Error('Render profile measurement is invalid.');
+    }
+    return entry as unknown as ReviewMeasurementResult;
+  });
+  if (measurements.length > MAX_REVIEW_SCENES * HELD_ITEM_MEASUREMENTS.length) {
+    throw new Error('Render profile report contains too many measurements.');
+  }
+  return {
+    schemaVersion: 1,
+    kind: 'packwright.render-profile-report',
+    projectId: record.projectId,
+    runId: record.runId,
+    revisionId: record.revisionId,
+    specSha256: record.specSha256,
+    compiledArtifactId: record.compiledArtifactId,
+    rendererVersion: REVIEW_PROFILE_RENDERER_VERSION,
+    profileId: 'held_item',
+    profileVersion: HELD_ITEM_PROFILE_VERSION,
+    viewSize: record.viewSize as number,
+    planSha256: record.planSha256,
+    requiredViewIds,
+    reviewReady: record.reviewReady,
+    views,
+    measurements,
   };
 }
 
@@ -888,6 +1109,116 @@ export class VisualWorkflow {
     };
   }
 
+  private async verifyRenderProfileEvidence(
+    loaded: LoadedRevision,
+    record: VisualRevisionState = loaded.record,
+  ): Promise<StoredRenderProfileReport> {
+    const render = record.render;
+    const compiledArtifactId = record.compiledArtifactId;
+    if (render === undefined || compiledArtifactId === undefined) {
+      throw new Error('Render-profile evidence is not available for this revision.');
+    }
+    if (render.compiledArtifactId !== compiledArtifactId) {
+      throw new Error('Render was produced from a different compiled artifact.');
+    }
+    const reference = render.review;
+    if (reference === undefined) {
+      throw new Error('Render predates scene-profile reports and must be regenerated.');
+    }
+    if (
+      reference.rendererVersion !== REVIEW_PROFILE_RENDERER_VERSION ||
+      reference.profileVersion !== HELD_ITEM_PROFILE_VERSION ||
+      reference.specSha256 !== record.specSha256
+    ) {
+      throw new Error('Render profile identity is stale.');
+    }
+    const plan = resolveReviewProfile(loaded.spec, reference.viewSize);
+    if (
+      reference.planSha256 !== plan.planSha256 ||
+      !canonicalJsonBytes(reference.requiredViewIds).equals(
+        canonicalJsonBytes(plan.requiredViewIds),
+      )
+    ) {
+      throw new Error('Render profile plan no longer matches the current implementation.');
+    }
+    const expectedViewIds = plan.scenes.map((scene) => scene.id).sort(compareVisualStrings);
+    const indexedViewIds = Object.keys(render.views).sort(compareVisualStrings);
+    if (!canonicalJsonBytes(indexedViewIds).equals(canonicalJsonBytes(expectedViewIds))) {
+      throw new Error('Render profile view index is incomplete or contains unexpected scenes.');
+    }
+
+    const stored = await this.runs.readReview(record.runId, reference.reportSha256);
+    const report = parseRenderProfileReport(stored.value);
+    if (
+      report.projectId !== loaded.project.manifest.id ||
+      report.runId !== record.runId ||
+      report.revisionId !== record.revisionId ||
+      report.specSha256 !== record.specSha256 ||
+      report.compiledArtifactId !== compiledArtifactId ||
+      report.planSha256 !== plan.planSha256 ||
+      report.viewSize !== reference.viewSize ||
+      report.reviewReady !== reference.reviewReady ||
+      !canonicalJsonBytes(report.requiredViewIds).equals(
+        canonicalJsonBytes(plan.requiredViewIds),
+      ) ||
+      report.views.length !== plan.scenes.length
+    ) {
+      throw new Error('Render profile report is not bound to this revision.');
+    }
+
+    const reportViews = new Map(report.views.map((view) => [view.id, view] as const));
+    for (const scene of plan.scenes) {
+      const indexed = render.views[scene.id];
+      const reported = reportViews.get(scene.id);
+      if (
+        indexed === undefined ||
+        reported?.required !== scene.required ||
+        reported.sha256 !== indexed.sha256 ||
+        reported.width !== indexed.width ||
+        reported.height !== indexed.height
+      ) {
+        throw new Error(`Required render-profile view is missing or stale: ${scene.id}`);
+      }
+      const png = await this.runs.readPng(record.runId, 'render', indexed.label, indexed.sha256);
+      if (
+        png.width !== indexed.width ||
+        png.height !== indexed.height ||
+        png.bytes !== indexed.bytes
+      ) {
+        throw new Error(`Render-profile view metadata is stale: ${scene.id}`);
+      }
+    }
+
+    const contact = await this.runs.readPng(
+      record.runId,
+      'render',
+      render.contactSheet.label,
+      render.contactSheet.sha256,
+    );
+    if (
+      contact.width !== render.contactSheet.width ||
+      contact.height !== render.contactSheet.height ||
+      contact.bytes !== render.contactSheet.bytes ||
+      sha256Buffer(decodePng(contact.data).data) !== render.pixelSha256
+    ) {
+      throw new Error('Contact-sheet metadata or pixel hash does not match.');
+    }
+
+    const measuredKinds = new Set(report.measurements.map((measurement) => measurement.metric));
+    for (const rule of plan.measurements) {
+      if (!measuredKinds.has(rule.id)) {
+        throw new Error(`Render-profile measurement is missing: ${rule.id}`);
+      }
+    }
+    const derivedReady = !report.measurements.some(
+      (measurement) => measurement.status === 'failed',
+    );
+    if (derivedReady !== report.reviewReady) {
+      throw new Error('Render-profile readiness does not match its measurements.');
+    }
+    return report;
+  }
+
   private async readExternalResource(
     loaded: LoadedRevision,
     relativePath: string,
@@ -1531,12 +1862,17 @@ export class VisualWorkflow {
   ): Promise<VisualRenderResult> {
     const loaded = await this.loadRevision(input.projectId, input.runId, input.revisionId);
     const prepared = await this.ensureCompiled(loaded, signal);
-    const bundle = renderModelSpec(loaded.spec, {
+    const bundle = renderCompiledItemAsset(prepared.compiled, {
       textures: prepared.textureImages,
       viewSize: input.viewSize,
       includeContexts: input.includeContexts,
       signal,
     });
+    const profile = bundle.reviewProfile;
+    const evaluation = bundle.evaluation;
+    if (profile === undefined || evaluation === undefined) {
+      throw new Error('Visual renderer omitted its scene-profile report.');
+    }
     const prefix = `r${prepared.record.revisionId.slice(0, 12)}`;
     const views: Record<string, VisualPngReference> = {};
     for (const view of bundle.views) {
@@ -1566,6 +1902,35 @@ export class VisualWorkflow {
     if (compiledArtifactId === undefined) {
       throw new Error('Rendered visual has no compiled artifact identity.');
     }
+    const report: StoredRenderProfileReport = {
+      schemaVersion: 1,
+      kind: 'packwright.render-profile-report',
+      projectId: input.projectId,
+      runId: input.runId,
+      revisionId: prepared.record.revisionId,
+      specSha256: prepared.record.specSha256,
+      compiledArtifactId,
+      rendererVersion: REVIEW_PROFILE_RENDERER_VERSION,
+      profileId: profile.profileId,
+      profileVersion: HELD_ITEM_PROFILE_VERSION,
+      viewSize: input.viewSize,
+      planSha256: profile.planSha256,
+      requiredViewIds: profile.requiredViewIds,
+      reviewReady: evaluation.reviewReady,
+      views: profile.scenes.map((scene) => {
+        const rendered = views[scene.id];
+        if (rendered === undefined) throw new Error(`Render view '${scene.id}' was not stored.`);
+        return {
+          id: scene.id,
+          required: scene.required,
+          width: rendered.width,
+          height: rendered.height,
+          sha256: rendered.sha256,
+        };
+      }),
+      measurements: [...evaluation.measurements],
+    };
+    const storedReport = await this.runs.putReview(input.runId, report, signal);
     const nextState = await this.states.update(input.projectId, (current) => {
       const active = currentRevision(current, input.runId, prepared.record.revisionId);
       return replaceRevisionRecord(current, {
@@ -1575,32 +1940,57 @@ export class VisualWorkflow {
           views,
           pixelSha256,
           compiledArtifactId,
+          review: {
+            rendererVersion: REVIEW_PROFILE_RENDERER_VERSION,
+            profileId: profile.profileId,
+            profileVersion: HELD_ITEM_PROFILE_VERSION,
+            viewSize: input.viewSize,
+            planSha256: profile.planSha256,
+            reportSha256: storedReport.sha256,
+            specSha256: prepared.record.specSha256,
+            requiredViewIds: profile.requiredViewIds,
+            reviewReady: evaluation.reviewReady,
+          },
         },
       });
     });
     const record = currentRevision(nextState, input.runId, prepared.record.revisionId);
     const contactPath = `visual-runs/${input.runId}/renders/${contactLabel}-${contact.sha256}.png`;
     return {
-      ok: prepared.validation.ok,
+      ok: prepared.validation.ok && evaluation.reviewReady,
       projectId: input.projectId,
       runId: input.runId,
       revisionId: record.revisionId,
+      reviewProfile: profile.profileId,
+      profileVersion: profile.profileVersion,
+      reviewReady: evaluation.reviewReady,
+      reportUri: visualRunRenderReportUri(input.runId, record.revisionId),
       contactSheet: asVisualFile(contactPath, bundle.contactSheet.png, 'image/png', 'render'),
       contactSheetUri: visualRunContactSheetUri(input.runId, record.revisionId),
-      views: bundle.views.map((view) => ({
-        name: view.id,
-        width: view.width,
-        height: view.height,
-        file: asVisualFile(
-          `visual-runs/${input.runId}/renders/${views[view.id]?.label ?? view.id}-${view.sha256}.png`,
-          view.png,
-          'image/png',
-          'render',
-        ),
-        uri: visualRunViewUri(input.runId, record.revisionId, view.id),
-      })),
+      views: bundle.views.map((view) => {
+        const scene = profile.scenes.find((candidate) => candidate.id === view.id);
+        if (scene === undefined) throw new Error(`Render profile omitted view '${view.id}'.`);
+        return {
+          name: view.id,
+          required: scene.required,
+          category: scene.category,
+          width: view.width,
+          height: view.height,
+          file: asVisualFile(
+            `visual-runs/${input.runId}/renders/${views[view.id]?.label ?? view.id}-${view.sha256}.png`,
+            view.png,
+            'image/png',
+            'render',
+          ),
+          uri: visualRunViewUri(input.runId, record.revisionId, view.id),
+        };
+      }),
+      measurements: [...evaluation.measurements],
       pixelSha256,
-      diagnostics: prepared.validation.diagnostics.map(visualDiagnostic),
+      diagnostics: [
+        ...prepared.validation.diagnostics,
+        ...reviewMeasurementDiagnostics(loaded.spec.id, evaluation.measurements),
+      ].map(visualDiagnostic),
     };
   }
 
@@ -1629,6 +2019,7 @@ export class VisualWorkflow {
       }[];
       materials: Record<string, unknown>;
       display: Record<string, unknown>;
+      heldItem?: Record<string, unknown> | undefined;
     };
     for (const repair of input.repairs) {
       if (repair.kind === 'part') {
@@ -1643,8 +2034,28 @@ export class VisualWorkflow {
         else if (repair.rotation !== undefined) part.rotation = repair.rotation;
       } else if (repair.kind === 'material') {
         draft.materials[repair.material] = repair.value;
-      } else {
+      } else if (repair.kind === 'display') {
         draft.display[repair.context] = repair.transform;
+      } else {
+        const heldItem = draft.heldItem ?? {
+          primaryGrip: [8, 5.5, 11],
+          handedness: 'either',
+          twoHanded: false,
+          itemKind: 'generic',
+          usePose: 'none',
+        };
+        if (repair.primaryGrip !== undefined) heldItem.primaryGrip = repair.primaryGrip;
+        if (repair.secondaryGrip === null) delete heldItem.secondaryGrip;
+        else if (repair.secondaryGrip !== undefined) heldItem.secondaryGrip = repair.secondaryGrip;
+        if (repair.muzzle === null) delete heldItem.muzzle;
+        else if (repair.muzzle !== undefined) heldItem.muzzle = repair.muzzle;
+        if (repair.forwardAxis === null) delete heldItem.forwardAxis;
+        else if (repair.forwardAxis !== undefined) heldItem.forwardAxis = repair.forwardAxis;
+        if (repair.handedness !== undefined) heldItem.handedness = repair.handedness;
+        if (repair.twoHanded !== undefined) heldItem.twoHanded = repair.twoHanded;
+        if (repair.itemKind !== undefined) heldItem.itemKind = repair.itemKind;
+        if (repair.usePose !== undefined) heldItem.usePose = repair.usePose;
+        draft.heldItem = heldItem;
       }
     }
     const spec = parseModelSpec(draft);
@@ -1861,12 +2272,24 @@ export class VisualWorkflow {
         'The accepted proposal was not rendered from the same compiled artifact.',
       );
     }
-    await this.runs.readPng(
-      runId,
-      'render',
-      prepared.record.render.contactSheet.label,
-      prepared.record.render.contactSheet.sha256,
-    );
+    let profileReport: StoredRenderProfileReport;
+    try {
+      profileReport = await this.verifyRenderProfileEvidence(
+        { ...loaded, record: prepared.record },
+        prepared.record,
+      );
+    } catch (error) {
+      throw new PackwrightError(
+        'precondition_failed',
+        `The accepted render-profile report is stale or failed verification: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (!profileReport.reviewReady) {
+      throw new PackwrightError(
+        'validation_failed',
+        'The held-item review profile must pass before committing.',
+      );
+    }
     const expectedContents = createProposedContents(
       loaded.spec,
       prepared.resourceFiles,
@@ -2063,6 +2486,7 @@ export class VisualWorkflow {
     }
 
     let rendered = false;
+    let reviewProfileReady = false;
     if (loaded.record.render !== undefined) {
       try {
         if (loaded.record.render.compiledArtifactId !== loaded.record.compiledArtifactId) {
@@ -2089,6 +2513,21 @@ export class VisualWorkflow {
             loaded.spec.id,
           ),
         );
+      }
+      if (rendered) {
+        try {
+          const report = await this.verifyRenderProfileEvidence(loaded);
+          diagnostics.push(...reviewMeasurementDiagnostics(loaded.spec.id, report.measurements));
+          reviewProfileReady = report.reviewReady;
+        } catch (error) {
+          diagnostics.push(
+            artifactDiagnostic(
+              'visual.review_profile.unreadable',
+              `Render-profile evidence failed verification: ${error instanceof Error ? error.message : String(error)}`,
+              loaded.spec.id,
+            ),
+          );
+        }
       }
     }
 
@@ -2177,6 +2616,7 @@ export class VisualWorkflow {
         textures,
         compiled: compiledReady,
         rendered,
+        reviewProfile: rendered && reviewProfileReady,
         binding: bindingReady,
         committed,
       },
@@ -2213,6 +2653,7 @@ export class VisualWorkflow {
           textures: false,
           compiled: false,
           rendered: false,
+          reviewProfile: false,
           binding: false,
           committed: false,
         },
@@ -2396,7 +2837,7 @@ export class VisualWorkflow {
     input:
       | { readonly kind: 'project_manifest' | 'project_graph'; readonly projectId: string }
       | {
-          readonly kind: 'spec' | 'contact_sheet' | 'review' | 'binding';
+          readonly kind: 'spec' | 'contact_sheet' | 'render_report' | 'review' | 'binding';
           readonly runId: string;
           readonly revisionId: string;
         }
@@ -2453,6 +2894,23 @@ export class VisualWorkflow {
         );
       }
       return { mimeType: 'image/png', data: png.data };
+    }
+    if (input.kind === 'render_report') {
+      if (states.record.render?.review === undefined) {
+        throw new PackwrightError(
+          'not_found',
+          'No render-profile report is recorded for this revision.',
+        );
+      }
+      try {
+        const report = await this.verifyRenderProfileEvidence(loaded, states.record);
+        return { mimeType: 'application/json', data: canonicalJsonBytes(report) };
+      } catch (error) {
+        throw new PackwrightError(
+          'precondition_failed',
+          `Render-profile report failed verification: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     }
     if (input.kind === 'review') {
       if (states.record.reviewSha256 === undefined) {

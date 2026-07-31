@@ -76,7 +76,7 @@ Returns the paired manifest, the active head's logical item graph, optional asse
 
 ### `visual_spec_upsert`
 
-Validates a strict custom-item `ModelSpec` and creates a new immutable content-addressed run and initial revision. The request includes creative intent and provider-neutral provenance. `parentRunId` and `expectedSpecSha256` guard updates relative to a previously inspected latest draft. This writes only private cache artifacts, never generated files into either pack.
+Validates a strict custom-item `ModelSpec` and creates a new immutable content-addressed run and initial revision. `reviewProfile` currently accepts only `held_item`. Optional `heldItem` metadata declares primary/secondary grips, muzzle or forward axis, handedness, item kind, two-handed intent, and use pose; this metadata controls profile scenes and advisory checks but is never serialized into Minecraft model JSON. The request includes creative intent and provider-neutral provenance. `parentRunId` and `expectedSpecSha256` guard updates relative to a previously inspected latest draft. This writes only private cache artifacts, never generated files into either pack.
 
 ### `texture_import`
 
@@ -92,21 +92,25 @@ Creates a guarded cross-pack proposal. The current binding strategy uses a calle
 
 ### `visual_render`
 
-Runs the deterministic CPU renderer for eight turntable angles and standardized inventory, ground, fixed, first-person, and third-person contexts. `viewSize` is bounded to 32–256 pixels. The result includes structured hashes/URIs, returns the contact sheet as MCP image content, and exposes individual views as image resources.
+Runs the selected generic scene-review profile through the deterministic CPU renderer. The only implemented profile is `held_item@1`. Its 12 required views cover Steve/Alex first-person right and left arms, a wide-FOV first-person view, Steve/Alex third-person front/rear three-quarter views in both hands, and a neutral item-only comparison. Semantic metadata activates up to four additional required-for-that-draft scenes: swing midpoint, active use, two-handed grip, and aiming. `viewSize` is bounded to 32–256 pixels and a profile is bounded to 16 scenes.
+
+The retained `includeContexts` field is a compatibility input for older callers; it cannot remove profile-required scenes. A `held_item@1` render therefore returns the same required scene plan whether that field is true or false.
+
+The result reports `reviewProfile`, `profileVersion`, `reviewReady`, individual scene category/readiness data, and advisory measurement families for primary and secondary grip reach, approximate arm and torso intersection, alpha-weighted screen obscuration, forward-axis alignment, left/right pose symmetry, and projected-area frame retention. It returns the contact sheet as MCP image content, exposes individual views as image resources, and returns the URI of an immutable JSON report bound to the spec, compiled artifact, scene plan, renderer/profile versions, and view hashes. Missing `heldItem` metadata reports the semantic measurements it prevents as `skipped`; this preserves older visual specifications without claiming those checks passed. A configured failed measurement makes `reviewReady` false, while warnings and inapplicable skipped measurements do not. One-handed declarations retain every review image but exclude the undeclared hand from blocking measurements. The image and measurements remain available for repair.
 
 ### `visual_revision_create`
 
-Creates an immutable child revision from an exact parent revision and `expectedSpecSha256`. Repairs are constrained to named part bounds/rotation/material, material values, or one display transform; free-form generated JSON replacement is not accepted. The instruction and targeted repairs become the immutable review record.
+Creates an immutable child revision from an exact parent revision and `expectedSpecSha256`. Repairs are constrained to named part bounds/rotation/material, material values, one display transform, or explicit `held_item` metadata fields such as grip points, muzzle/axis, handedness, item kind, two-handed intent, and use pose. Free-form generated JSON replacement is not accepted. The instruction and targeted repairs become the immutable review record; the child must be recompiled and rerendered because its prior report is intentionally not inherited.
 
 ### `visual_commit`
 
-Installs an explicitly accepted proposal into both packs. It requires `confirm: true` and the exact current `proposalSha256`, verifies proposal content and every captured destination precondition, then uses a sorted-lock, staged, journaled transaction. A stale or mismatched file prevents the transaction; no force option exists.
+Installs an explicitly accepted proposal into both packs. It requires `confirm: true`, the exact current `proposalSha256`, and a current `held_item@1` report for the same spec and compiled proposal with no failed advisory measurement. It verifies proposal content, report identity, required view hashes, and every captured destination precondition, then uses a sorted-lock, staged, journaled transaction. A stale or mismatched file prevents the transaction; no force option exists.
 
 ### `visual_validate`
 
-Combines paired pack metadata; strict spec, texture, asset-graph, geometry/UV, render-readiness, and binding checks; vanilla-backed command validation; and optional GameTests. For a selected uncommitted proposal, Packwright verifies and reads its exact proposal bytes without committing them, reads stable full-pack snapshots, and applies those bytes as overlays: the resource-pack validator checks the entire sibling resource pack plus its overlay, while command validation and GameTests use the entire datapack plus its overlay. `includeVanilla` defaults to true and `includeGameTests` defaults to false. The result reports each layer as `passed`, `failed`, `skipped`, or `setup_required` and identifies semantic parts/materials/display contexts in normalized diagnostics.
+Combines paired pack metadata; strict spec, texture, asset-graph, geometry/UV, profile-report readiness, and binding checks; vanilla-backed command validation; and optional GameTests. Render validation verifies the immutable report against the current spec hash, compiled artifact, profile plan, renderer/profile versions, required scenes, and view hashes. Advisory profile findings identify the review profile, scene, metric, semantic part when available, and a targeted repair. For a selected uncommitted proposal, Packwright verifies and reads its exact proposal bytes without committing them, reads stable full-pack snapshots, and applies those bytes as overlays: the resource-pack validator checks the entire sibling resource pack plus its overlay, while command validation and GameTests use the entire datapack plus its overlay. `includeVanilla` defaults to true and `includeGameTests` defaults to false. The result reports each layer as `passed`, `failed`, `skipped`, or `setup_required`.
 
-The software renderer and agent review are not authoritative client-render evidence. Actual-client resource reload/capture is not implemented in this release.
+The software renderer and agent review are not authoritative client-render evidence. Arm/torso intersection uses transformed axis-aligned bounding-box overlap rather than exact mesh collision, profile cameras/FOVs are representative, and conditional action scenes pose the base compiled geometry rather than resolving every selected conditional model. Actual-client resource reload/capture and block, armor, projectile, GUI-item, and entity-model review profiles are not implemented in this release.
 
 ### `project_build`
 
@@ -152,17 +156,18 @@ Resource URIs returned by MCP discovery provide read-only views of:
 - Locally cached Minecraft 26.2 registries and lookup readiness.
 - The fixed Minecraft 26.2 visual capability matrix.
 
-The visual compiler additionally exposes seven parameterized resource families:
+The visual compiler additionally exposes eight parameterized resource families:
 
 - Paired project manifest.
 - Project asset graph/readiness.
 - Immutable draft `ModelSpec`.
 - Generated contact sheet.
 - Individual render view.
+- Immutable profile render report with scene identities, measurements, thresholds, and artifact bindings.
 - Latest targeted repair/review record.
 - Declarative binding proposal.
 
-The capability matrix is additionally available at its fixed URI listed above. Image resources use `image/png`; other visual resources use canonical JSON. A missing render, review, or binding returns `not_found` rather than inventing an empty artifact.
+The capability matrix is additionally available at its fixed URI listed above. Image resources use `image/png`; other visual resources use canonical JSON. The profile report is distinct from the latest targeted repair record. A missing render, report, repair record, or binding returns `not_found` rather than inventing an empty artifact.
 
 Clients should use the URI returned by discovery rather than constructing URIs from this prose. Resource content may change after a write, validation, setup, or cache refresh; clients should re-read when freshness matters.
 
@@ -176,8 +181,8 @@ Five visual workflow prompts complement the three existing datapack prompts:
 | `review_datapack`       | Inspect and validate a pack, then organize findings by severity and authority.                 |
 | `author_gametest`       | Draft a vanilla-compatible GameTest workflow and surface missing structure/code prerequisites. |
 | `generate_visual_asset` | Turn creative intent into an uncommitted semantic custom-item draft and preview.               |
-| `review_visual_asset`   | Judge contact-sheet and individual views without mutating or accepting files.                  |
-| `repair_visual_asset`   | Translate one review finding into a targeted immutable revision workflow.                      |
+| `review_visual_asset`   | Judge the profile report, contact sheet, and individual scenes without mutating files.         |
+| `repair_visual_asset`   | Translate a profile finding into a targeted part/material/display/held-metadata revision.      |
 | `connect_custom_item`   | Propose and validate a vanilla carrier plus `minecraft:item_model` binding.                    |
 | `author_display_rig`    | Plan a truthful simulated display rig; automatic rig compilation is not implemented.           |
 

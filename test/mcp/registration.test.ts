@@ -8,6 +8,15 @@ import type { PackwrightService } from '../../src/mcp/service.js';
 
 const unused = (): Promise<never> => Promise.reject(new Error('Unexpected service method call'));
 
+interface JsonSchemaShape {
+  readonly type?: string | undefined;
+  readonly const?: unknown;
+  readonly additionalProperties?: boolean | undefined;
+  readonly required?: readonly string[] | undefined;
+  readonly properties?: Readonly<Record<string, JsonSchemaShape>> | undefined;
+  readonly items?: JsonSchemaShape | undefined;
+}
+
 const service: PackwrightService = {
   createDatapack: unused,
   inspectDatapack: unused,
@@ -88,6 +97,54 @@ describe('Packwright MCP registration', () => {
       openWorldHint: false,
     });
 
+    const capabilitiesSchema = tools.tools.find((tool) => tool.name === 'visual_capabilities')
+      ?.outputSchema as JsonSchemaShape | undefined;
+    expect(capabilitiesSchema?.required).toEqual(
+      expect.arrayContaining(['capabilities', 'reviewProfiles']),
+    );
+    const reviewProfiles = capabilitiesSchema?.properties?.reviewProfiles;
+    expect(reviewProfiles).toMatchObject({
+      type: 'array',
+    });
+    expect(reviewProfiles?.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+    });
+    expect(reviewProfiles?.items?.required).toEqual(
+      expect.arrayContaining(['id', 'version', 'targetKind', 'support']),
+    );
+
+    const renderSchema = tools.tools.find((tool) => tool.name === 'visual_render')?.outputSchema as
+      JsonSchemaShape | undefined;
+    expect(renderSchema?.required).toEqual(
+      expect.arrayContaining([
+        'reviewProfile',
+        'profileVersion',
+        'reviewReady',
+        'reportUri',
+        'views',
+        'measurements',
+      ]),
+    );
+    expect(renderSchema?.properties?.reviewProfile).toMatchObject({
+      type: 'string',
+      const: 'held_item',
+    });
+    expect(renderSchema?.properties?.views?.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+    });
+    expect(renderSchema?.properties?.views?.items?.required).toEqual(
+      expect.arrayContaining(['name', 'required', 'category', 'file', 'uri']),
+    );
+    expect(renderSchema?.properties?.measurements?.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+    });
+    expect(renderSchema?.properties?.measurements?.items?.required).toEqual(
+      expect.arrayContaining(['metric', 'status', 'unit', 'message']),
+    );
+
     const templates = await client.listResourceTemplates();
     expect(templates.resourceTemplates.map((template) => template.name)).toEqual([
       'pack-manifest',
@@ -99,6 +156,7 @@ describe('Packwright MCP registration', () => {
       'visual-draft-model-spec',
       'visual-contact-sheet',
       'visual-latest-review',
+      'visual-render-report',
       'visual-binding-proposal',
       'visual-render-view',
     ]);

@@ -27,11 +27,12 @@ The server is local and stdio-only. It does not install packs into a live world,
 - Disposable vanilla pack-loading and GameTest execution after explicit setup.
 - Deterministic ZIP builds that fail when structural or vanilla command validation has errors.
 - Paired datapack/resource-pack projects with truthful Minecraft `native`, `simulated`, `replacement`, and `requires_mod` profiles plus a separate `compilerSupport` implementation status.
-- A semantic custom-item model DSL, `minecraft:item_model` bindings, safe PNG import, deterministic CPU previews, immutable repair revisions, and guarded multi-file commit.
+- A semantic custom-item model DSL, `minecraft:item_model` bindings, safe PNG import, profile-specific deterministic CPU previews, immutable repair revisions, and guarded multi-file commit.
+- Generic visual review profiles with `held_item@1`: Steve/Alex first- and third-person scenes, semantic grip/axis metadata, conditional action poses, advisory measurements, and an immutable render report.
 - Validation of the exact uncommitted proposal over stable datapack/resource-pack snapshots, followed by transactional deterministic ZIPs from the exact committed pack snapshots.
 - Read-only MCP resources and workflow prompts for review, scaffolding, and GameTest authoring.
 
-The v0.3 visual compiler is intentionally narrower than the Minecraft capability matrix: `compilerSupport` is `full` for `custom_item`, `limited` for `conditional_item_state`, and `unsupported` for every other target. The automatic vertical slice covers custom items, including a constrained conditional state DSL, and keeps one active visual head per paired project. Blocks, equipment, paintings/trims, mob variants, display rigs, animations, GUIs, generator adapters, multi-asset project heads, and real-client capture remain later phases. See the [paired visual compiler guide](docs/visual-compiler.md) and [MCP tools, resources, and prompts](docs/mcp-reference.md).
+The v0.3 visual compiler is intentionally narrower than the Minecraft capability matrix: `compilerSupport` is `full` for `custom_item`, `limited` for `conditional_item_state`, and `unsupported` for every other target. The automatic vertical slice covers custom items, including a constrained conditional state DSL, and keeps one active visual head per paired project. `held_item@1` is the only implemented review profile; block, placeable, armor, head-wearable, projectile, GUI-item, and entity-model profiles remain future work. Blocks, equipment, paintings/trims, mob variants, display rigs, animations, GUIs, generator adapters, multi-asset project heads, and real-client capture remain later phases. See the [paired visual compiler guide](docs/visual-compiler.md) and [MCP tools, resources, and prompts](docs/mcp-reference.md).
 
 ## Install and connect
 

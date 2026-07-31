@@ -10,6 +10,7 @@ import {
   solidTexture,
   type CuboidRenderScene,
 } from '../../src/visual/renderer.js';
+import { REVIEW_PROFILE_RENDERER_VERSION } from '../../src/visual/review-profile.js';
 
 const STAFF: CuboidRenderScene = {
   id: 'arcana:firestaff',
@@ -63,7 +64,75 @@ describe('deterministic CPU visual renderer', () => {
     );
   });
 
-  it('renders exactly-flat planes double-sided through the semantic ModelSpec adapter', () => {
+  it('renders held-item profile views deterministically with visible reference geometry', () => {
+    const spec = parseModelSpec({
+      id: 'arcana:reference_fixture',
+      targetKind: 'item',
+      materials: {
+        invisible: { color: '#00000000', transparent: true },
+      },
+      parts: [
+        {
+          id: 'invisible_item',
+          shape: 'cuboid',
+          from: [7, 4, 7],
+          to: [9, 12, 9],
+          material: 'invisible',
+        },
+      ],
+      heldItem: {},
+    });
+    const background = [3, 5, 7, 255] as const;
+    const first = renderModelSpec(spec, { viewSize: 64, background });
+    const second = renderModelSpec(spec, { viewSize: 64, background });
+
+    expect(first.renderer).toBe(REVIEW_PROFILE_RENDERER_VERSION);
+    expect(first.reviewProfile).toMatchObject({
+      profileId: 'held_item',
+      requiredViewIds: [
+        'fp_right_steve',
+        'fp_right_alex',
+        'fp_left_steve',
+        'fp_left_alex',
+        'fp_right_wide',
+        'tp_rear_right_steve',
+        'tp_rear_right_alex',
+        'tp_front_right_steve',
+        'tp_front_right_alex',
+        'tp_rear_left_steve',
+        'tp_rear_left_alex',
+        'item_neutral',
+      ],
+    });
+    expect(first.views.map((view) => view.id)).toEqual(first.reviewProfile?.requiredViewIds);
+    expect(first.views.map((view) => view.sha256)).toEqual(second.views.map((view) => view.sha256));
+    expect(first.contactSheet.sha256).toBe(second.contactSheet.sha256);
+
+    const pixelCountOutsideBackground = (image: PixelImage | undefined): number => {
+      if (image === undefined) return 0;
+      let count = 0;
+      for (let offset = 0; offset < image.data.length; offset += 4) {
+        if (
+          image.data[offset] !== background[0] ||
+          image.data[offset + 1] !== background[1] ||
+          image.data[offset + 2] !== background[2] ||
+          image.data[offset + 3] !== background[3]
+        ) {
+          count += 1;
+        }
+      }
+      return count;
+    };
+    const steve = first.views.find((view) => view.id === 'fp_right_steve');
+    const alex = first.views.find((view) => view.id === 'fp_right_alex');
+    const neutral = first.views.find((view) => view.id === 'item_neutral');
+    expect(pixelCountOutsideBackground(steve?.image)).toBeGreaterThan(0);
+    expect(pixelCountOutsideBackground(alex?.image)).toBeGreaterThan(0);
+    expect(pixelCountOutsideBackground(neutral?.image)).toBe(0);
+    expect(steve?.sha256).not.toBe(alex?.sha256);
+  });
+
+  it('renders exactly-flat planes through the semantic held-item adapter', () => {
     const spec = parseModelSpec({
       id: 'arcana:flame_card',
       targetKind: 'item',
@@ -82,8 +151,7 @@ describe('deterministic CPU visual renderer', () => {
       ],
     });
     const result = renderModelSpec(spec);
-    const front = result.views.find((view) => view.id === 'turntable_front');
-    const rear = result.views.find((view) => view.id === 'turntable_rear');
+    const neutral = result.views.find((view) => view.id === 'item_neutral');
 
     const hasOrangePixel = (data: Uint8Array): boolean => {
       for (let offset = 0; offset < data.length; offset += 4) {
@@ -98,8 +166,119 @@ describe('deterministic CPU visual renderer', () => {
       return false;
     };
 
-    expect(hasOrangePixel(front?.image.data ?? Buffer.alloc(0))).toBe(true);
-    expect(hasOrangePixel(rear?.image.data ?? Buffer.alloc(0))).toBe(true);
+    expect(result.reviewProfile?.profileId).toBe('held_item');
+    expect(hasOrangePixel(neutral?.image.data ?? Buffer.alloc(0))).toBe(true);
+  });
+
+  it('does not block a one-handed item on measurements from the undeclared hand', () => {
+    const spec = parseModelSpec({
+      id: 'arcana:right_only',
+      targetKind: 'item',
+      materials: { metal: { color: '#8899aa' } },
+      parts: [
+        { id: 'body', shape: 'cuboid', from: [6, 2, 6], to: [10, 14, 10], material: 'metal' },
+      ],
+      heldItem: { handedness: 'right' },
+      display: {
+        firstperson_lefthand: {
+          rotation: [0, 90, -25],
+          translation: [70, 3.2, 1.13],
+          scale: [0.68, 0.68, 0.68],
+        },
+      },
+    });
+    const result = renderModelSpec(spec, { viewSize: 64 });
+    const leftMeasurements = result.evaluation?.measurements.filter((measurement) =>
+      measurement.view?.includes('left'),
+    );
+
+    expect(result.evaluation?.reviewReady).toBe(true);
+    expect(leftMeasurements?.length).toBeGreaterThan(0);
+    expect(leftMeasurements?.every((measurement) => measurement.status === 'skipped')).toBe(true);
+  });
+
+  it('measures a declared secondary grip against the independently calibrated offhand', () => {
+    const spec = parseModelSpec({
+      id: 'arcana:two_handed',
+      targetKind: 'item',
+      materials: { metal: { color: '#8899aa' } },
+      parts: [
+        { id: 'body', shape: 'cuboid', from: [6, 2, 6], to: [10, 14, 10], material: 'metal' },
+      ],
+      heldItem: { twoHanded: true, secondaryGrip: [8, 10.5, 11] },
+    });
+    const result = renderModelSpec(spec, { viewSize: 64 });
+
+    expect(
+      result.evaluation?.measurements.find(
+        (measurement) => measurement.metric === 'secondary_grip_distance',
+      ),
+    ).toMatchObject({ view: 'two_handed', status: 'passed', value: 0 });
+  });
+
+  it('weights screen obstruction by texture alpha', () => {
+    const base = {
+      id: 'arcana:alpha_coverage',
+      targetKind: 'item' as const,
+      parts: [
+        {
+          id: 'screen',
+          shape: 'plane' as const,
+          from: [0, 0, 8] as const,
+          to: [16, 16, 8] as const,
+          material: 'screen',
+        },
+      ],
+      heldItem: { handedness: 'right' as const },
+    };
+    const transparent = renderModelSpec(
+      parseModelSpec({ ...base, materials: { screen: { color: '#ffffff01', transparent: true } } }),
+      { viewSize: 64 },
+    );
+    const opaque = renderModelSpec(
+      parseModelSpec({ ...base, materials: { screen: { color: '#ffffffff' } } }),
+      { viewSize: 64 },
+    );
+    const coverage = (result: ReturnType<typeof renderModelSpec>): number =>
+      result.evaluation?.measurements.find(
+        (measurement) =>
+          measurement.metric === 'screen_obscuration' && measurement.view === 'fp_right_steve',
+      )?.value ?? 0;
+
+    expect(coverage(transparent)).toBeLessThan(coverage(opaque) / 100);
+  });
+
+  it('does not synthesize omitted faces for compiled manual geometry', () => {
+    const base = {
+      id: 'arcana:partial_faces',
+      targetKind: 'item' as const,
+      materials: { metal: { color: '#8899aa' } },
+      heldItem: { handedness: 'right' as const },
+    };
+    const complete = parseModelSpec({
+      ...base,
+      parts: [
+        { id: 'body', shape: 'cuboid', from: [4, 4, 4], to: [12, 12, 12], material: 'metal' },
+      ],
+    });
+    const northOnly = parseModelSpec({
+      ...base,
+      parts: [
+        {
+          id: 'body',
+          shape: 'cuboid',
+          from: [4, 4, 4],
+          to: [12, 12, 12],
+          material: 'metal',
+          uvMode: 'manual',
+          faces: { north: { uv: [0, 0, 16, 16] } },
+        },
+      ],
+    });
+
+    expect(renderModelSpec(northOnly, { viewSize: 64 }).contactSheet.sha256).not.toBe(
+      renderModelSpec(complete, { viewSize: 64 }).contactSheet.sha256,
+    );
   });
 
   it('renders a default display preset identically to its explicit compiled transforms', () => {

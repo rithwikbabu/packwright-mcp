@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- Added a generic, versioned visual review-profile layer and the first `held_item@1` profile, with 12 required Steve/Alex first- and third-person scenes, a neutral comparison, and conditional swing, active-use, two-handed, and aiming scenes.
+- Added held-item semantic anchors, handedness, use-pose intent, immutable render reports, MCP image/report resources, targeted metadata repairs, and guarded readiness checks for grip reach, intersection, screen coverage, direction, symmetry, and frame retention.
+
+### Changed
+
+- The visual renderer now compiles profile-selected perspective scenes instead of applying one universal contact sheet to every semantic item, while leaving Minecraft display transforms and compiled pack JSON unchanged.
+- Visual commit, validation, and paired build now verify the exact renderer/profile versions, scene plan, report, required image hashes, and advisory readiness result for the selected revision.
+
+### Fixed
+
+- Held-item evidence now honors one-handed declarations, uses the declared primary hand for action scenes, independently measures secondary-grip reach, alpha-weights screen obstruction, preserves omitted Minecraft model faces, and measures retained projected face area instead of sampling only face vertices.
+
 ## [0.3.0] - 2026-07-30
 
 ### Added

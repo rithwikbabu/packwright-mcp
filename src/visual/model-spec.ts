@@ -22,6 +22,19 @@ const textureDimension = z.number().int().min(8).max(4096);
 export const Vector3Schema = z.tuple([coordinate, coordinate, coordinate]);
 export const TextureSizeSchema = z.tuple([textureDimension, textureDimension]);
 
+const directionCoordinate = z.number().min(-1).max(1);
+export const DirectionVectorSchema = z
+  .tuple([directionCoordinate, directionCoordinate, directionCoordinate])
+  .superRefine((value, context) => {
+    const length = Math.hypot(...value);
+    if (length < 1e-6) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A direction vector must not be zero.',
+      });
+    }
+  });
+
 export const ElementRotationSchema = z
   .object({
     axis: z.enum(['x', 'y', 'z']),
@@ -343,6 +356,75 @@ export const ItemConnectionIntentSchema = z
   })
   .strict();
 
+export const HELD_ITEM_USE_POSES = [
+  'none',
+  'swing',
+  'block',
+  'bow',
+  'crossbow',
+  'spear',
+  'horn',
+  'food',
+  'drink',
+  'spyglass',
+  'brush',
+  'aim',
+] as const;
+
+export const HeldItemReviewSchema = z
+  .object({
+    /** Model-space point that should sit in the player's palm. */
+    primaryGrip: Vector3Schema.default([8, 5.5, 11]),
+    /** Optional model-space point for the offhand in a two-handed pose. */
+    secondaryGrip: Vector3Schema.optional(),
+    /** Optional model-space origin used by directional/aiming items. */
+    muzzle: Vector3Schema.optional(),
+    /** Model-space direction that should point away from the player. */
+    forwardAxis: DirectionVectorSchema.optional(),
+    handedness: z.enum(['right', 'left', 'either']).default('either'),
+    twoHanded: z.boolean().default(false),
+    itemKind: z
+      .enum(['generic', 'weapon', 'tool', 'bow', 'shield', 'horn', 'food', 'spyglass'])
+      .default('generic'),
+    usePose: z.enum(HELD_ITEM_USE_POSES).default('none'),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.twoHanded && value.secondaryGrip === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A two-handed item must declare secondaryGrip.',
+        path: ['secondaryGrip'],
+      });
+    }
+    if (
+      value.secondaryGrip?.every((coordinate, index) => coordinate === value.primaryGrip[index]) ===
+      true
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'secondaryGrip must differ from primaryGrip.',
+        path: ['secondaryGrip'],
+      });
+    }
+    if (
+      value.muzzle?.every((coordinate, index) => coordinate === value.primaryGrip[index]) === true
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'muzzle must differ from primaryGrip so it defines a usable forward direction.',
+        path: ['muzzle'],
+      });
+    }
+    if (value.usePose === 'aim' && value.forwardAxis === undefined && value.muzzle === undefined) {
+      context.addIssue({
+        code: 'custom',
+        message: "The 'aim' use pose requires forwardAxis or muzzle.",
+        path: ['usePose'],
+      });
+    }
+  });
+
 export const ModelSpecSchema = z
   .object({
     schemaVersion: z.literal(MODEL_SPEC_SCHEMA_VERSION).default(MODEL_SPEC_SCHEMA_VERSION),
@@ -356,6 +438,8 @@ export const ModelSpecSchema = z
     display: DisplayOverridesSchema.default({}),
     states: z.array(ItemStateSchema).max(128).default([]),
     connection: ItemConnectionIntentSchema.optional(),
+    reviewProfile: z.literal('held_item').default('held_item'),
+    heldItem: HeldItemReviewSchema.optional(),
   })
   .strict()
   .superRefine((spec, context) => {
@@ -449,6 +533,8 @@ export type DisplayTransform = z.infer<typeof DisplayTransformSchema>;
 export type DisplayContext = (typeof DISPLAY_CONTEXTS)[number];
 export type ItemState = z.infer<typeof ItemStateSchema>;
 export type ItemConnectionIntent = z.infer<typeof ItemConnectionIntentSchema>;
+export type HeldItemReview = z.infer<typeof HeldItemReviewSchema>;
+export type HeldItemUsePose = (typeof HELD_ITEM_USE_POSES)[number];
 export type ModelSpec = z.infer<typeof ModelSpecSchema>;
 
 export function parseModelSpec(input: unknown): ModelSpec {

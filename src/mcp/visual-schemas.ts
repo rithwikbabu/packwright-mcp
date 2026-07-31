@@ -4,8 +4,10 @@ import { MAX_MCP_PAYLOAD_BYTES } from '../core/limits.js';
 import { VISUAL_TARGETS } from '../visual/capabilities.js';
 import {
   DISPLAY_CONTEXTS,
+  DirectionVectorSchema,
   DisplayTransformSchema,
   ElementRotationSchema,
+  HELD_ITEM_USE_POSES,
   MaterialSpecSchema,
   ModelSpecSchema,
   Vector3Schema,
@@ -104,6 +106,14 @@ export const VisualCapabilitiesResultSchema = z.strictObject({
   minecraftVersion: MinecraftVersionSchema,
   resourcePackFormat: z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()]),
   capabilities: z.array(VisualCapabilitySchema),
+  reviewProfiles: z.array(
+    z.strictObject({
+      id: z.literal('held_item'),
+      version: z.number().int().positive(),
+      targetKind: z.literal('item'),
+      support: z.literal('full'),
+    }),
+  ),
 });
 
 export const VisualProjectAttachInputSchema = z
@@ -177,6 +187,7 @@ export const VisualAssetInspectResultSchema = z.strictObject({
     textures: z.boolean(),
     compiled: z.boolean(),
     rendered: z.boolean(),
+    reviewProfile: z.boolean(),
     binding: z.boolean(),
     committed: z.boolean(),
   }),
@@ -350,7 +361,12 @@ export const VisualRenderInputSchema = z
     projectId: VisualProjectIdSchema,
     runId: VisualDraftIdSchema,
     revisionId: VisualDraftIdSchema.optional(),
-    includeContexts: z.boolean().default(true),
+    includeContexts: z
+      .boolean()
+      .default(true)
+      .describe(
+        'Compatibility flag for legacy renderer callers; scene-profile required views are never removed.',
+      ),
     viewSize: z.number().int().min(32).max(256).default(128),
   })
   .refine(fitsMcpPayload, MCP_PAYLOAD_LIMIT_MESSAGE);
@@ -360,15 +376,42 @@ export const VisualRenderResultSchema = z.strictObject({
   projectId: VisualProjectIdSchema,
   runId: VisualDraftIdSchema,
   revisionId: VisualDraftIdSchema,
+  reviewProfile: z.literal('held_item'),
+  profileVersion: z.number().int().positive(),
+  reviewReady: z.boolean(),
+  reportUri: z.url(),
   contactSheet: VisualFileSchema,
   contactSheetUri: z.url(),
   views: z.array(
     z.strictObject({
       name: z.string().min(1).max(128),
+      required: z.boolean(),
+      category: z.enum(['first_person', 'third_person', 'neutral', 'conditional']),
       width: z.number().int().positive(),
       height: z.number().int().positive(),
       file: VisualFileSchema,
       uri: z.url(),
+    }),
+  ),
+  measurements: z.array(
+    z.strictObject({
+      metric: z.enum([
+        'primary_grip_distance',
+        'secondary_grip_distance',
+        'arm_intersection',
+        'torso_intersection',
+        'screen_obscuration',
+        'forward_axis',
+        'hand_symmetry',
+        'frame_retention',
+      ]),
+      view: z.string().min(1).max(64).optional(),
+      status: z.enum(['passed', 'warning', 'failed', 'skipped']),
+      value: z.number().optional(),
+      threshold: z.number().optional(),
+      unit: z.enum(['model_pixels', 'percent', 'dot']),
+      message: z.string().min(1).max(4096),
+      partId: z.string().min(1).max(64).optional(),
     }),
   ),
   pixelSha256: Sha256Schema,
@@ -396,6 +439,25 @@ const DisplayRepairSchema = z.strictObject({
   transform: DisplayTransformSchema,
 });
 
+const HeldItemRepairSchema = z
+  .strictObject({
+    kind: z.literal('held_item'),
+    primaryGrip: Vector3Schema.optional(),
+    secondaryGrip: Vector3Schema.nullable().optional(),
+    muzzle: Vector3Schema.nullable().optional(),
+    forwardAxis: DirectionVectorSchema.nullable().optional(),
+    handedness: z.enum(['right', 'left', 'either']).optional(),
+    twoHanded: z.boolean().optional(),
+    itemKind: z
+      .enum(['generic', 'weapon', 'tool', 'bow', 'shield', 'horn', 'food', 'spyglass'])
+      .optional(),
+    usePose: z.enum(HELD_ITEM_USE_POSES).optional(),
+  })
+  .refine(
+    (value) => Object.keys(value).some((key) => key !== 'kind'),
+    'A held-item repair must change at least one semantic field',
+  );
+
 export const VisualRevisionCreateInputSchema = z
   .strictObject({
     projectId: VisualProjectIdSchema,
@@ -408,7 +470,12 @@ export const VisualRevisionCreateInputSchema = z
       .max(16 * 1024),
     repairs: z
       .array(
-        z.discriminatedUnion('kind', [PartRepairSchema, MaterialRepairSchema, DisplayRepairSchema]),
+        z.discriminatedUnion('kind', [
+          PartRepairSchema,
+          MaterialRepairSchema,
+          DisplayRepairSchema,
+          HeldItemRepairSchema,
+        ]),
       )
       .min(1)
       .max(128),
@@ -469,6 +536,7 @@ export const VisualValidateResultSchema = z.strictObject({
         'asset_graph',
         'geometry',
         'render',
+        'review_profile',
         'binding',
         'vanilla_commands',
         'gametest',

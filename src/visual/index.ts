@@ -12,6 +12,7 @@ export * from './model-spec.js';
 export * from './png.js';
 export * from './project.js';
 export * from './renderer.js';
+export * from './review-profile.js';
 export * from './resourcepack-validation.js';
 export * from './run-store.js';
 export * from './transaction.js';

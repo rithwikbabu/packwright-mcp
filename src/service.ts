@@ -802,6 +802,7 @@ export class PackwrightApplication implements PackwrightService {
         ...entry,
         strategies: [...entry.strategies],
       })),
+      reviewProfiles: [{ id: 'held_item', version: 1, targetKind: 'item', support: 'full' }],
     });
   }
 
@@ -931,7 +932,8 @@ export class PackwrightApplication implements PackwrightService {
       );
     }
     const visualFailed =
-      draft.result === undefined || diagnostics.some((entry) => entry.severity === 'error');
+      draft.result === undefined ||
+      diagnostics.some((entry) => entry.authority === 'structural' && entry.severity === 'error');
     const layers: VisualValidateResult['layers'] = [
       { name: 'metadata', status: draft.project.ready ? 'passed' : 'failed' },
       { name: 'schema', status: visualFailed ? 'failed' : 'passed' },
@@ -942,6 +944,10 @@ export class PackwrightApplication implements PackwrightService {
       { name: 'asset_graph', status: visualFailed ? 'failed' : 'passed' },
       { name: 'geometry', status: visualFailed ? 'failed' : 'passed' },
       { name: 'render', status: readiness?.rendered === true ? 'passed' : 'failed' },
+      {
+        name: 'review_profile',
+        status: readiness?.reviewProfile === true ? 'passed' : 'failed',
+      },
       { name: 'binding', status: readiness?.binding === true ? 'passed' : 'failed' },
     ];
 
@@ -1085,6 +1091,7 @@ export class PackwrightApplication implements PackwrightService {
       !readiness?.textures ||
       !readiness.compiled ||
       !readiness.rendered ||
+      !readiness.reviewProfile ||
       !readiness.binding ||
       !readiness.committed
     ) {

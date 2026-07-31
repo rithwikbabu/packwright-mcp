@@ -75,6 +75,7 @@ import {
   VISUAL_PROJECT_MANIFEST_URI_TEMPLATE,
   VISUAL_RUN_BINDING_URI_TEMPLATE,
   VISUAL_RUN_CONTACT_SHEET_URI_TEMPLATE,
+  VISUAL_RUN_RENDER_REPORT_URI_TEMPLATE,
   VISUAL_RUN_REVIEW_URI_TEMPLATE,
   VISUAL_RUN_SPEC_URI_TEMPLATE,
   VISUAL_RUN_VIEW_URI_TEMPLATE,
@@ -90,7 +91,7 @@ const SERVER_INSTRUCTIONS = [
   'Packwright edits paired Minecraft Java Edition 26.2 datapacks and resource packs inside one configured workspace.',
   'Inspect or read a resource before overwriting it, then provide its current SHA-256 as expectedSha256.',
   'Use dryRun for proposed creates and updates. Validate before testing, and test before building a ZIP.',
-  'For visual assets use describe, immutable draft, connect, render, review, targeted repair, validate, explicit commit, then paired build.',
+  'For visual assets use describe, immutable draft, connect, profile render, report review, targeted repair, validate, explicit commit, then paired build.',
   'Treat simulated and replacement capabilities literally; display carriers are not new native blocks or entities.',
   'Minecraft lookups are cache-only and never access the network implicitly.',
 ].join(' ');
@@ -588,7 +589,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Create Visual Draft',
       description:
-        'Validate a semantic custom-item ModelSpec and create an immutable, content-addressed draft run. This never writes generated assets into either pack.',
+        'Validate a semantic custom-item ModelSpec, including its held-item review profile metadata, and create an immutable, content-addressed draft run. This never writes generated assets into either pack.',
       inputSchema: VisualSpecUpsertInputSchema,
       outputSchema: VisualDraftResultSchema,
       annotations: {
@@ -668,7 +669,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Render Visual Draft',
       description:
-        'Use Packwright’s deterministic CPU renderer to create eight turntable angles and standardized inventory, ground, fixed, and hand previews. Returns the contact sheet as image content.',
+        'Render the selected generic scene-review profile with Packwright’s deterministic CPU renderer. held_item@1 produces Steve/Alex held-item scenes, advisory measurements, an immutable report, individual image resources, and a contact sheet returned as image content.',
       inputSchema: VisualRenderInputSchema,
       outputSchema: VisualRenderResultSchema,
       annotations: {
@@ -690,7 +691,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Repair Visual Draft',
       description:
-        'Create an immutable child revision by changing only named parts, materials, or display transforms against the reviewed spec hash.',
+        'Create an immutable child revision by changing only named parts, materials, display transforms, or held-item review metadata against the reviewed spec hash.',
       inputSchema: VisualRevisionCreateInputSchema,
       outputSchema: VisualDraftResultSchema,
       annotations: {
@@ -710,7 +711,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Commit Accepted Visual',
       description:
-        'After explicit visual acceptance, atomically install every proposed datapack and resource-pack file using the proposal hash and captured per-file SHA preconditions.',
+        'After explicit visual acceptance and a passing current profile report, atomically install every proposed datapack and resource-pack file using the proposal hash and captured per-file SHA preconditions.',
       inputSchema: VisualCommitInputSchema,
       outputSchema: VisualCommitResultSchema,
       annotations: {
@@ -730,7 +731,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Validate Paired Visual Project',
       description:
-        'Combine paired-pack metadata, strict ModelSpec, PNG, geometry, graph, render, binding, vanilla-command, and optional GameTest validation with normalized diagnostics.',
+        'Combine paired-pack metadata, strict ModelSpec, PNG, geometry, graph, immutable profile-report readiness and advisory measurements, binding, vanilla-command, and optional GameTest validation with normalized diagnostics.',
       inputSchema: VisualValidateInputSchema,
       outputSchema: VisualValidateResultSchema,
       annotations: {
@@ -1018,7 +1019,7 @@ function registerResources(server: McpServer, service: PackwrightService): void 
 
   const runResourceInput = (
     variables: Record<string, string | string[]>,
-    kind: 'spec' | 'contact_sheet' | 'review' | 'binding',
+    kind: 'spec' | 'contact_sheet' | 'render_report' | 'review' | 'binding',
   ) =>
     ({
       kind,
@@ -1049,6 +1050,15 @@ function registerResources(server: McpServer, service: PackwrightService): void 
       title: 'Latest Visual Review',
       description: 'The immutable targeted repair record associated with a revision.',
       kind: 'review' as const,
+      mimeType: 'application/json',
+    },
+    {
+      name: 'visual-render-report',
+      template: VISUAL_RUN_RENDER_REPORT_URI_TEMPLATE,
+      title: 'Visual Render Profile Report',
+      description:
+        'The immutable profile plan, required-scene identity, and deterministic held-item measurements for a visual revision.',
+      kind: 'render_report' as const,
       mimeType: 'application/json',
     },
     {
@@ -1233,8 +1243,8 @@ function registerPrompts(server: McpServer): void {
             text: [
               `Create a visual draft for project "${projectId}": ${request}`,
               `Requested target: ${target}. Begin with visual_capabilities and disclose whether the result is native, simulated, replacement, or requires_mod.`,
-              'For the supported custom-item slice, author a semantic ModelSpec with named parts and materials, call visual_spec_upsert, import textures only when needed, then call visual_compile and visual_render.',
-              'Do not call visual_commit. Return the contact sheet for review and retain all creative provenance.',
+              'For the supported custom-item slice, author a semantic ModelSpec with named parts and materials, reviewProfile="held_item", and heldItem grip/handedness/action metadata. Call visual_spec_upsert, import textures only when needed, then call visual_compile and visual_render.',
+              'Inspect reviewReady, the immutable held_item@1 report, and its profile-specific contact sheet. Do not call visual_commit. Retain all creative provenance.',
             ].join('\n'),
           },
         },
@@ -1246,7 +1256,8 @@ function registerPrompts(server: McpServer): void {
     'review_visual_asset',
     {
       title: 'Review a Visual Asset',
-      description: 'Judge a deterministic contact sheet against a semantic visual-review rubric.',
+      description:
+        'Judge a deterministic profile report, contact sheet, and individual scenes against a semantic visual-review rubric.',
       argsSchema: z.strictObject({
         projectId: VisualProjectIdSchema,
         runId: VisualDraftIdSchema,
@@ -1262,9 +1273,9 @@ function registerPrompts(server: McpServer): void {
             type: 'text' as const,
             text: [
               `Visually review project ${projectId}, run ${runId}, revision ${revisionId}. Intended result: ${intent}`,
-              `Read ${visualRunContactSheetUri(runId, revisionId)} and inspect individual views when a defect is ambiguous.`,
-              'Check silhouette, semantic part proportions, palette/material separation, UV artifacts, transparency, inventory readability, hand transforms, clipping, and consistency across angles.',
-              'Return accept or repair. For repair, name the exact part, material, or display context and propose the smallest measurable change. Do not mutate or commit files.',
+              `Read packwright://visual/runs/${runId}/revisions/${revisionId}/render-report and ${visualRunContactSheetUri(runId, revisionId)}; inspect individual profile views when a finding is ambiguous.`,
+              'For held_item@1, review every required Steve/Alex first-person, wide-FOV, third-person, neutral, and activated conditional scene. Treat grip, approximate arm/torso intersection, screen coverage, forward-axis, hand-symmetry, and frame-retention measurements as advisory rather than authoritative client evidence.',
+              'Return accept or repair. A failed measurement or reviewReady=false requires repair. Name the exact part, material, display context, held-item metadata field, scene, and metric when available. Do not mutate or commit files.',
             ].join('\n'),
           },
         },
@@ -1292,8 +1303,8 @@ function registerPrompts(server: McpServer): void {
             type: 'text' as const,
             text: [
               `Repair visual project ${projectId}, run ${runId}, revision ${revisionId}: ${finding}`,
-              'Read the draft spec and contact sheet resources. Use visual_revision_create with the current spec SHA and only targeted part, material, or display-transform repairs.',
-              'Compile and render the child revision, then compare the same views. Do not commit until a subsequent visual review explicitly accepts it.',
+              'Read the draft spec, immutable profile report, contact sheet, and implicated scene resources. Use visual_revision_create with the current spec SHA and only targeted part, material, display-transform, or held_item metadata repairs.',
+              'Compile and profile-render the child revision, then compare the same held_item@1 scenes and advisory measurements. Do not commit until reviewReady is true and a subsequent visual review explicitly accepts it.',
             ].join('\n'),
           },
         },

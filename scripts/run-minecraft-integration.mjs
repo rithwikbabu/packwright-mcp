@@ -433,6 +433,16 @@ try {
           },
         ],
         displayPreset: 'handheld_3d',
+        reviewProfile: 'held_item',
+        heldItem: {
+          primaryGrip: [8, 5.5, 11],
+          muzzle: [8, 15, 8],
+          forwardAxis: [0, 0, -1],
+          handedness: 'either',
+          twoHanded: false,
+          itemKind: 'generic',
+          usePose: 'aim',
+        },
         display: {
           firstperson_righthand: {
             rotation: [0, -90, 25],
@@ -455,7 +465,14 @@ try {
     }),
     serviceContext,
   );
-  requireSuccess(clippedRender, 'paired visual clipped render');
+  requireCondition(
+    clippedRender.ok === false && clippedRender.reviewReady === false,
+    `The intentionally clipped held-item render unexpectedly passed review:\n${JSON.stringify(clippedRender, null, 2)}`,
+  );
+  requireCondition(
+    clippedRender.measurements.some((measurement) => measurement.status === 'failed'),
+    'The intentionally clipped held-item render did not produce a failed profile measurement.',
+  );
   const repairedDraft = await application.createVisualRevision(
     VisualRevisionCreateInputSchema.parse({
       projectId: 'firestaff',

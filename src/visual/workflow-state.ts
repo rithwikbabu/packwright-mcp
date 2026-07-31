@@ -29,6 +29,19 @@ export interface VisualRenderReferences {
   readonly views: Readonly<Record<string, VisualPngReference>>;
   readonly pixelSha256: string;
   readonly compiledArtifactId: string;
+  readonly review?: VisualRenderReviewReference | undefined;
+}
+
+export interface VisualRenderReviewReference {
+  readonly rendererVersion: string;
+  readonly profileId: 'held_item';
+  readonly profileVersion: number;
+  readonly viewSize: number;
+  readonly planSha256: string;
+  readonly reportSha256: string;
+  readonly specSha256: string;
+  readonly requiredViewIds: readonly string[];
+  readonly reviewReady: boolean;
 }
 
 export interface VisualRevisionState {
@@ -138,11 +151,52 @@ function revisionState(value: unknown, revisionId: string): VisualRevisionState 
       if (!VIEW_PATTERN.test(view)) throw new Error('Visual workflow view ID is invalid.');
       views[view] = pngReference(reference);
     }
+    let review: VisualRenderReviewReference | undefined;
+    const reviewValue = renderRecord.review;
+    if (reviewValue !== undefined) {
+      if (reviewValue === null || typeof reviewValue !== 'object' || Array.isArray(reviewValue)) {
+        throw new Error('Visual workflow render review identity is invalid.');
+      }
+      const reviewRecord = reviewValue as Record<string, unknown>;
+      if (
+        reviewRecord.rendererVersion !== 'packwright-cpu-v2' ||
+        reviewRecord.profileId !== 'held_item' ||
+        typeof reviewRecord.reviewReady !== 'boolean' ||
+        !Array.isArray(reviewRecord.requiredViewIds)
+      ) {
+        throw new Error('Visual workflow render review identity is invalid.');
+      }
+      const requiredViewIds = reviewRecord.requiredViewIds.map((view) => {
+        if (typeof view !== 'string' || !VIEW_PATTERN.test(view) || views[view] === undefined) {
+          throw new Error('Visual workflow required review view is invalid or missing.');
+        }
+        return view;
+      });
+      if (new Set(requiredViewIds).size !== requiredViewIds.length) {
+        throw new Error('Visual workflow required review views are duplicated.');
+      }
+      const viewSize = positiveInteger(reviewRecord.viewSize, 'review view size');
+      if (viewSize < 32 || viewSize > 256) {
+        throw new Error('Visual workflow review view size is invalid.');
+      }
+      review = {
+        rendererVersion: reviewRecord.rendererVersion,
+        profileId: reviewRecord.profileId,
+        profileVersion: positiveInteger(reviewRecord.profileVersion, 'review profile version'),
+        viewSize,
+        planSha256: contentId(reviewRecord.planSha256, 'review plan hash'),
+        reportSha256: contentId(reviewRecord.reportSha256, 'review report hash'),
+        specSha256: contentId(reviewRecord.specSha256, 'review spec hash'),
+        requiredViewIds,
+        reviewReady: reviewRecord.reviewReady,
+      };
+    }
     render = {
       contactSheet: pngReference(renderRecord.contactSheet),
       views,
       pixelSha256: contentId(renderRecord.pixelSha256, 'pixel hash'),
       compiledArtifactId: contentId(renderRecord.compiledArtifactId, 'render compiled artifact ID'),
+      ...(review === undefined ? {} : { review }),
     };
   }
 
