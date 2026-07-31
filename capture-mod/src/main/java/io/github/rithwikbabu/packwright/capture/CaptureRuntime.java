@@ -13,6 +13,7 @@ import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.Map;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.Camera;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.player.PlayerModelType;
@@ -65,6 +66,14 @@ public final class CaptureRuntime {
         }
     }
 
+    public static boolean shouldFreezeClientTick() {
+        CaptureCoordinator active;
+        synchronized (CaptureRuntime.class) {
+            active = coordinator;
+        }
+        return active != null && active.shouldFreezeClientTick();
+    }
+
     public static void onRenderedFrame(Minecraft client, boolean renderLevel) {
         CaptureCoordinator active;
         synchronized (CaptureRuntime.class) {
@@ -79,6 +88,14 @@ public final class CaptureRuntime {
             active = coordinator;
         }
         if (active != null) active.onRenderFrameStarted();
+    }
+
+    public static void applyPlannedCameraPose(Camera camera) {
+        CaptureCoordinator active;
+        synchronized (CaptureRuntime.class) {
+            active = coordinator;
+        }
+        if (active != null) active.applyPlannedCameraPose(camera);
     }
 
     public static void onVanillaHandSubmission(
@@ -150,6 +167,34 @@ public final class CaptureRuntime {
         if (realOutput.equals(realGame) || !realOutput.startsWith(realGame)) {
             throw new ProtocolException("Capture output escaped the disposable game directory.");
         }
+        validateCaptureOnlySaves(gameDirectory);
+    }
+
+    static void validateCaptureOnlySaves(Path gameDirectory)
+            throws IOException, ProtocolException {
+        Path saves = gameDirectory.resolve("saves");
+        if (Files.isSymbolicLink(saves)
+                || !Files.isDirectory(saves, LinkOption.NOFOLLOW_LINKS)) {
+            throw new ProtocolException(
+                    "Disposable game directory has no safe capture-only saves directory.");
+        }
+        try (var entries = Files.list(saves)) {
+            if (entries.anyMatch(path -> !path.getFileName().toString().equals("packwright-capture"))) {
+                throw new ProtocolException(
+                        "Capture client refuses a game directory containing any user save.");
+            }
+        }
+        Path captureSave = saves.resolve("packwright-capture");
+        if (Files.isSymbolicLink(captureSave)
+                || !Files.isDirectory(captureSave, LinkOption.NOFOLLOW_LINKS)) {
+            throw new ProtocolException("Disposable capture save staging is unavailable or unsafe.");
+        }
+        try (var entries = Files.list(captureSave)) {
+            if (entries.findAny().isPresent()) {
+                throw new ProtocolException(
+                        "Disposable capture save staging must be empty before Minecraft creates the world.");
+            }
+        }
     }
 
     private static synchronized void writeBootstrapFailureAndStop(
@@ -159,7 +204,7 @@ public final class CaptureRuntime {
         if (failure.paths() != null) {
             try {
                 byte[] report = CanonicalJson.encode(Map.of(
-                        "schemaVersion", 2,
+                        "schemaVersion", 3,
                         "status", "failed",
                         "error", failure.message()));
                 AtomicFiles.writeNew(

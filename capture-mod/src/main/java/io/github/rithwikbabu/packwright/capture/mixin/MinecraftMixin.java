@@ -9,6 +9,11 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(Minecraft.class)
 abstract class MinecraftMixin {
+    @Inject(method = "tick", at = @At("HEAD"), cancellable = true)
+    private void packwrightCapture$freezeExactAnimationFrame(CallbackInfo callback) {
+        if (CaptureRuntime.shouldFreezeClientTick()) callback.cancel();
+    }
+
     @Inject(method = "tick", at = @At("TAIL"))
     private void packwrightCapture$afterTick(CallbackInfo callback) {
         CaptureRuntime.onClientTick((Minecraft) (Object) this);

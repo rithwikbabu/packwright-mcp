@@ -6,10 +6,13 @@ import { decodePng, type PixelImage } from '../../src/visual/png.js';
 import {
   CPU_RENDER_LIMITS,
   createBoundedClientPreview,
+  createClientCaptureContactSheet,
+  createContactSheet,
   renderCuboidDraft,
   renderModelSpec,
   solidTexture,
   type CuboidRenderScene,
+  type RenderedView,
 } from '../../src/visual/renderer.js';
 import { REVIEW_PROFILE_RENDERER_VERSION } from '../../src/visual/review-profile.js';
 
@@ -62,6 +65,31 @@ describe('deterministic CPU visual renderer', () => {
     });
     expect(first.views.find((view) => view.id === 'turntable_front')?.sha256).not.toBe(
       first.views.find((view) => view.id === 'turntable_rear')?.sha256,
+    );
+  });
+
+  it('keeps CPU sheets at 16 views while client-capture sheets support protocol-v3 plans', () => {
+    const image = solidTexture(8, 8, [40, 80, 120, 255]);
+    const viewAt = (index: number): RenderedView => ({
+      id: `client_${String(index).padStart(2, '0')}`,
+      width: image.width,
+      height: image.height,
+      image,
+      png: Buffer.alloc(0),
+      sha256: '0'.repeat(64),
+    });
+    const views = Array.from({ length: 64 }, (_, index) => viewAt(index));
+
+    expect(() => createContactSheet(views.slice(0, 17))).toThrow(/between one and 16 views/u);
+    const first = createClientCaptureContactSheet(views);
+    const second = createClientCaptureContactSheet(views);
+    expect(first).toMatchObject({ width: 400, height: 400 });
+    expect(first.placements).toHaveLength(64);
+    expect(first.sha256).toBe(second.sha256);
+    expect(first.png).toEqual(second.png);
+    expect(first.png.length).toBeLessThanOrEqual(CPU_RENDER_LIMITS.maxContactSheetBytes);
+    expect(() => createClientCaptureContactSheet([...views, viewAt(64)])).toThrow(
+      /between one and 64 views/u,
     );
   });
 

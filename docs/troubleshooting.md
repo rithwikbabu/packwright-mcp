@@ -114,7 +114,7 @@ Use individual view resources to identify the failing semantic display context, 
 
 The CPU preview is deterministic and approximate. It does not run the actual Minecraft client and does not provide full special-model rendering. A clean CPU contact sheet therefore needs agent review and is not authoritative client-render evidence.
 
-For a current `held_item` or `gui_item` proposal, prepare client capture and call `visual_capture` (or the CLI `capture` mirror) after CPU review. The authoritative client contact sheet contains stock Minecraft views; `first_person_vanilla` has no Packwright-injected arm. Compare its bounded normalized preview resources against the source-frame hashes in the report; Packwright never silently replaces these with CPU images.
+For a current proposal with full or limited client-capture support, prepare client capture and call `visual_capture` (or the CLI `capture` mirror) after CPU review. The authoritative client contact sheet contains stock Minecraft views; `first_person_vanilla` has no Packwright-injected arm. Compare its bounded normalized preview resources against the source-frame hashes in the report; Packwright never silently replaces these with CPU images.
 
 No scale-reference sheet is expected by default. Set MCP `includeScaleReferenceViews: true` or CLI `--include-scale-reference-views` only when a separate scale/occlusion QA comparison is useful. Its `first_person_scale_reference` frames are augmented, non-WYSIWYG references and cannot establish how the item actually appears in stock gameplay or replace a missing required view.
 
@@ -124,14 +124,14 @@ Run `doctor` and inspect `minecraft_client_capture`. All of these must be true:
 
 - `setup-version 26.2 --accept-minecraft-eula --client-capture` completed in the same cache.
 - `PACKWRIGHT_JAVA` resolves to Java 25.
-- The installed npm package contains `capture-mod/runtime/packwright-capture-mod-0.4.1.jar`.
+- The installed npm package contains `capture-mod/runtime/packwright-capture-mod-0.5.0-dev.jar`.
 - The process is running in an interactive macOS graphical session that can create a real OpenGL window.
 
 Remote shells, headless launch agents, Linux CI, and macOS sessions without an active WindowServer are intentionally not treated as capture-ready. Packwright does not emulate a display or fall back to its software renderer. If `PACKWRIGHT_OFFLINE=true`, rerun setup without offline mode; capture itself remains offline once the cache is complete.
 
 ## Official-client capture says the profile is unsupported
 
-Client capture is `limited` for `held_item` and `full` for `gui_item` in v0.4. A held-item spec with `twoHanded: true` intentionally fails until the adapter can pose and verify the secondary gameplay hand at `secondaryGrip`. `block`, `placeable`, `armor`, `head_wearable`, `projectile`, and `entity_model` intentionally fail because their compiler/binding strategies are not present. Changing the profile name to bypass this result would misrepresent the generated item as another Minecraft target; use the profile's CPU evidence or wait for its truthful client implementation.
+Client capture is `full` for `gui_item`; `limited` for one-handed `held_item`, `block`, `head_wearable`, `entity_model`, and `placeable`; and `unsupported` for `armor` and `projectile`. A held-item spec with `twoHanded: true` intentionally fails until the adapter can pose and verify the secondary gameplay hand at `secondaryGrip`. Non-item profiles require an exact strict representation; arbitrary native block/entity identities are never inferred. Protocol v3 also rejects display interpolation, block atlas-phase requests, unsupported entity types/states, and simulated entity rigs without separate exact `idle`, `walk`, and `attack` states. Native entity core motion scenes require a zombie because the current capture fixture can observeably drive its idle/walk/attack states; other allow-listed entities belong in the exact bounded variant/component/equipment matrix. Native placeable blocks/entities are floor-only, and a native block's `facing` state must match the declared orientation; wall/ceiling attachment currently requires an explicit simulated display rig. Inspect `visual_capabilities` for the accepted strategies and limitation reason instead of renaming the profile.
 
 ## Official-client capture fails or times out
 
@@ -147,7 +147,7 @@ This is expected across some GPU, driver, operating-system, OpenGL, resolution, 
 
 Do not retry with guessed hashes. Inspect the project/revision again and recreate `visual_connect` so the proposal captures the current destinations. Review the new files and `proposalSha256`, revalidate, and commit only after explicit acceptance. Any changed destination intentionally invalidates the old proposal.
 
-For `held_item` or `gui_item`, production commit also requires `expectedClientCaptureReportSha256` equal to the current verified report returned by `visual_capture`. A new proposal, spec/revision, pack snapshot, client/mod, or recapture intentionally makes old evidence stale. `visual_validate` with `requireClientCapture: false` is advisory only and does not waive this commit precondition. Capture-unsupported profiles do not invent a report hash.
+For every profile with full or limited client-capture support, production commit also requires `expectedClientCaptureReportSha256` equal to the current verified report returned by `visual_capture`. A new proposal, spec/revision, pack snapshot, representation, client/mod, or recapture intentionally makes old evidence stale. `visual_validate` with `requireClientCapture: false` is advisory only and does not waive this commit precondition. Capture-unsupported profiles do not invent a report hash.
 
 If Packwright returns `transaction_recovery_required`, stop automated writes and preserve `.packwright/transactions/<transaction-id>.json`. It means a commit failed and safe rollback could not be proven. Review that journal and the named destinations in source control before any manual recovery.
 

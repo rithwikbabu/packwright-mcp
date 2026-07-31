@@ -4,7 +4,7 @@ plugins {
 }
 
 group = 'io.github.rithwikbabu.packwright'
-version = '0.4.1'
+version = '0.5.0-dev'
 
 base {
     archivesName = 'packwright-capture-mod'

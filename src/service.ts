@@ -82,7 +82,7 @@ import { createDeterministicZipArchive } from './visual/builder.js';
 import { REVIEW_PROFILE_IDS } from './visual/model-spec.js';
 import { validateResourcePackSnapshot } from './visual/resourcepack-validation.js';
 import { REVIEW_PROFILES } from './visual/review-profile.js';
-import { clientCaptureReviewSupport } from './visual/client-capture-support.js';
+import { clientCaptureSupportDescriptor } from './visual/client-capture-support.js';
 import { commitFileTransaction, VISUAL_TRANSACTION_LIMITS } from './visual/transaction.js';
 import { VisualWorkflow, visualDiagnostic } from './visual/workflow.js';
 import {
@@ -807,13 +807,24 @@ export class PackwrightApplication implements PackwrightService {
         ...entry,
         strategies: [...entry.strategies],
       })),
-      reviewProfiles: REVIEW_PROFILE_IDS.map((id) => ({
-        id,
-        version: REVIEW_PROFILES[id].version,
-        targetKind: 'item' as const,
-        support: 'full' as const,
-        clientCaptureSupport: clientCaptureReviewSupport(id),
-      })),
+      reviewProfiles: REVIEW_PROFILE_IDS.map((id) => {
+        const capture = clientCaptureSupportDescriptor(id);
+        return {
+          id,
+          version: REVIEW_PROFILES[id].version,
+          targetKind: 'item' as const,
+          support: 'full' as const,
+          clientCaptureSupport: capture.support,
+          ...(capture.targetKind === undefined
+            ? {}
+            : { clientCaptureTargetKind: capture.targetKind }),
+          clientCaptureStrategies: [...capture.strategies],
+          clientCaptureDisclosure: capture.disclosure,
+          ...(capture.limitation === undefined && capture.rejectionReason === undefined
+            ? {}
+            : { clientCaptureLimitation: capture.limitation ?? capture.rejectionReason }),
+        };
+      }),
     });
   }
 

@@ -14,12 +14,26 @@ import {
   type PreparedMinecraftClientCapture,
 } from '../../src/minecraft/client-capture.js';
 import {
+  CLIENT_CAPTURE_DATAPACK_PROVENANCE_PATH,
+  CLIENT_CAPTURE_MIN_SETTLE_FRAMES,
+  CLIENT_CAPTURE_PACK_ACTIVATION,
+  CLIENT_CAPTURE_RESOURCEPACK_ID,
+  CLIENT_CAPTURE_RESOURCEPACK_PATH,
   clientCaptureIdentityForPlan,
+  computeClientCaptureAppliedFixtureSha256,
+  computeClientCaptureObservedFixtureSha256,
+  computeClientCaptureRepresentationSha256,
   computeClientCaptureSceneSha256,
+  computeClientCaptureStudioScaleReferenceSha256,
+  computeClientCaptureStudioSha256,
   createClientCapturePlan,
+  expectedClientCaptureObservedFixture,
   parseClientCapturePlanBytes,
   type ClientCaptureCompleteReport,
   type ClientCapturePlan,
+  type ClientCaptureRepresentation,
+  type ClientCaptureScene,
+  type ClientCaptureStudio,
 } from '../../src/minecraft/client-capture-protocol.js';
 import type { HashedClientRuntimeManifest } from '../../src/minecraft/client-runtime.js';
 import { createDeterministicZipArchive } from '../../src/visual/builder.js';
@@ -139,6 +153,10 @@ async function writeCompleteOutput(plan: ClientCapturePlan): Promise<void> {
     const png = solidPng(scene.resolution.width, scene.resolution.height);
     const artifactPath = `views/${scene.id}.png`;
     await writeFile(path.join(output, ...artifactPath.split('/')), png);
+    const observedFixture = expectedClientCaptureObservedFixture(
+      plan.provenance.representation,
+      scene,
+    );
     views.push({
       sceneId: scene.id,
       sceneSha256: computeClientCaptureSceneSha256(scene),
@@ -148,6 +166,38 @@ async function writeCompleteOutput(plan: ClientCapturePlan): Promise<void> {
       bytes: png.length,
       width: scene.resolution.width,
       height: scene.resolution.height,
+      representationSha256: plan.provenance.representationSha256,
+      studioSha256: computeClientCaptureStudioSha256(plan.studio),
+      actualScaleReference: plan.studio.scaleReference,
+      actualScaleReferenceSha256: computeClientCaptureStudioScaleReferenceSha256(
+        plan.studio.scaleReference,
+      ),
+      fixtureSha256: sha256Buffer(canonicalJsonBytes(scene.fixture)),
+      appliedFixtureSha256: computeClientCaptureAppliedFixtureSha256(
+        plan.provenance.representation,
+        scene,
+      ),
+      observedFixture,
+      observedFixtureSha256: computeClientCaptureObservedFixtureSha256(observedFixture),
+      actualSettledTicks: scene.settlingTicks,
+      renderedSettleFrames: CLIENT_CAPTURE_MIN_SETTLE_FRAMES,
+      actualAnimationTick: scene.frame,
+      actualCameraPose: scene.expectedRenderCameraPose,
+      actualCameraMode: 'first_person' as const,
+      actualContext: scene.context,
+      actualFov: scene.fov,
+      actualGuiScale: scene.guiScale,
+      actualHand: scene.hand,
+      actualPlayerModel: scene.playerModel,
+      actualEnvironment: scene.environment,
+      resourceReloadReady: true as const,
+      modelBakeReady: true as const,
+      fixtureEvidence: {
+        strategy: scene.fixture.kind,
+        stateId: scene.fixture.stateId,
+        equippedItemId: 'minecraft:stick',
+        equipReady: true as const,
+      },
     });
   }
   const log = Buffer.from(
@@ -155,26 +205,62 @@ async function writeCompleteOutput(plan: ClientCapturePlan): Promise<void> {
   );
   await writeFile(path.join(output, 'logs/client.log'), log);
   const report: ClientCaptureCompleteReport = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: 'packwright.client-capture-report',
     status: 'complete',
     executionId: plan.execution.executionId,
     planSha256: plan.planSha256,
     identity: clientCaptureIdentityForPlan(plan),
-    runtime: {
-      rendererBackend: 'opengl',
-      operatingSystem: 'capture test',
-      javaVersion: '25.0.1',
-      gpuVendor: 'Packwright Test Vendor',
-      gpuRenderer: 'Packwright Test Renderer',
-      driverVersion: 'Packwright Test Driver 1.0',
+    packActivation: {
+      datapack: {
+        mode: CLIENT_CAPTURE_PACK_ACTIVATION.datapack,
+        archivePath: CLIENT_CAPTURE_DATAPACK_PROVENANCE_PATH,
+        archiveSha256: plan.provenance.datapackContentSha256,
+        selected: false,
+        selectedPackIds: ['vanilla'],
+      },
+      resourcepack: {
+        mode: CLIENT_CAPTURE_PACK_ACTIVATION.resourcepack,
+        archivePath: CLIENT_CAPTURE_RESOURCEPACK_PATH,
+        archiveSha256: plan.provenance.resourcepackContentSha256,
+        selected: true,
+        selectedPackIds: [CLIENT_CAPTURE_RESOURCEPACK_ID],
+      },
     },
+    runtime: (() => {
+      const settings = {
+        preferredGraphicsBackend: 'opengl' as const,
+        graphicsMode: plan.studio.graphicsMode,
+        clouds: plan.studio.clouds,
+        particles: plan.studio.particles,
+        entityShadows: plan.studio.entityShadows,
+        viewBobbing: plan.studio.viewBobbing,
+        renderDistance: plan.studio.renderDistance,
+        simulationDistance: plan.studio.simulationDistance,
+        debugUi: plan.studio.debugUi,
+      };
+      return {
+        rendererBackend: 'opengl',
+        operatingSystem: 'capture test',
+        javaVersion: '25.0.1',
+        gpuVendor: 'Packwright Test Vendor',
+        gpuRenderer: 'Packwright Test Renderer',
+        driverVersion: 'Packwright Test Driver 1.0',
+        studioSha256: computeClientCaptureStudioSha256(plan.studio),
+        settings,
+        settingsSha256: sha256Buffer(canonicalJsonBytes(settings)),
+        resourceReloadReadyTick: 2,
+        modelBakeReadyTick: 2,
+      };
+    })(),
     views,
+    measurements: [],
     log: {
       path: 'logs/client.log',
       sha256: sha256Buffer(log),
       bytes: log.length,
       resourceReloadSucceeded: true,
+      modelBakeSucceeded: true,
       excerpts: ['Resource reload succeeded', 'Capture complete'],
     },
   };
@@ -183,7 +269,7 @@ async function writeCompleteOutput(plan: ClientCapturePlan): Promise<void> {
   await writeFile(
     path.join(output, 'capture-complete.json'),
     canonicalJsonBytes({
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'packwright.client-capture-complete',
       executionId: plan.execution.executionId,
       planSha256: plan.planSha256,
@@ -239,6 +325,80 @@ async function captureFixture(includeScaleReference = false) {
       data: captureModData,
     },
   };
+  const representation: ClientCaptureRepresentation = {
+    targetKind: 'held_item',
+    strategy: 'item_stack',
+    capability: 'native',
+    states: {
+      default: {
+        itemStack: {
+          itemId: 'minecraft:stick',
+          count: 1,
+          components: { 'minecraft:item_model': '"arcana:firestaff"' },
+        },
+      },
+    },
+  };
+  const representationSha256 = computeClientCaptureRepresentationSha256(representation);
+  const studio: ClientCaptureStudio = {
+    preset: 'void_matte',
+    rendererBackend: 'opengl',
+    renderDistance: 8,
+    simulationDistance: 5,
+    graphicsMode: 'custom',
+    clouds: 'off',
+    particles: 'minimal',
+    entityShadows: true,
+    viewBobbing: false,
+    debugUi: false,
+    floorBlock: { id: 'minecraft:smooth_stone', properties: {} },
+    backdropBlock: { id: 'minecraft:light_gray_concrete', properties: {} },
+    scaleReference: {
+      kind: 'ordinary_block_floor_ruler',
+      origin: { x: -2, y: 79, z: 7 },
+      lengthBlocks: 2,
+      firstBlock: { id: 'minecraft:black_concrete', properties: {} },
+      secondBlock: { id: 'minecraft:white_concrete', properties: {} },
+    },
+  };
+  const scene = (
+    viewKind: 'first_person_vanilla' | 'first_person_scale_reference',
+  ): ClientCaptureScene => ({
+    id: `${viewKind}--fp_right_steve`,
+    baseSceneId: 'fp_right_steve',
+    targetKind: 'held_item',
+    representationSha256,
+    viewKind,
+    requiredForAuthority: viewKind === 'first_person_vanilla',
+    camera: 'first_person',
+    context: 'world',
+    hand: 'right',
+    playerModel: 'steve',
+    fov: 70,
+    resolution: { width: 64, height: 64 },
+    guiScale: 2,
+    animationState: 'idle',
+    frame: 0,
+    cameraPoseSemantics: 'player_feet_anchor',
+    cameraPose: { x: 0.5, y: 82.25, z: 0.5, yaw: 0, pitch: 14 },
+    expectedRenderCameraPose: { x: 0.5, y: 83.87, z: 0.5, yaw: 0, pitch: 14 },
+    environment: {
+      biome: 'minecraft:plains',
+      time: 6000,
+      weather: 'clear',
+      lightProfile: 'day',
+      skyLight: 15,
+      blockLight: 0,
+      lightSource: { level: 0, offset: { x: 0, y: 5, z: -2 } },
+    },
+    settlingTicks: 0,
+    fixture: { kind: 'item_stack', stateId: 'default' },
+    measurementIntents: [],
+    comparisonSceneIds: [],
+    ...(viewKind === 'first_person_scale_reference'
+      ? { presentation: { referenceArm: true, referenceArmPurpose: 'scale_only' as const } }
+      : {}),
+  });
   const createPlan = ({
     executionId,
     gameDirectory,
@@ -249,7 +409,7 @@ async function captureFixture(includeScaleReference = false) {
     readonly outputDirectory: string;
   }) =>
     createClientCapturePlan({
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'packwright.client-capture-plan',
       minecraftVersion: '26.2',
       provenance: {
@@ -262,13 +422,10 @@ async function captureFixture(includeScaleReference = false) {
         projectManifestSha256: 'f'.repeat(64),
         datapackContentSha256: datapackArchive.sha256,
         resourcepackContentSha256: resourcepackArchive.sha256,
+        packActivation: CLIENT_CAPTURE_PACK_ACTIVATION,
         runtimeManifestSha256: prepared.runtime.sha256,
-        itemStack: {
-          itemId: 'minecraft:stick',
-          count: 1,
-          command: 'give @s minecraft:stick[minecraft:item_model="arcana:firestaff"] 1',
-          components: { 'minecraft:item_model': '"arcana:firestaff"' },
-        },
+        representation,
+        representationSha256,
         client: prepared.client,
         captureMod: {
           id: prepared.captureMod.id,
@@ -276,45 +433,10 @@ async function captureFixture(includeScaleReference = false) {
           sha256: prepared.captureMod.sha256,
         },
       },
+      studio,
       scenes: [
-        ...(includeScaleReference
-          ? [
-              {
-                id: 'first_person_scale_reference--fp_right_steve',
-                baseSceneId: 'fp_right_steve',
-                viewKind: 'first_person_scale_reference' as const,
-                requiredForAuthority: false,
-                camera: 'first_person' as const,
-                context: 'world' as const,
-                hand: 'right' as const,
-                playerModel: 'steve' as const,
-                fov: 70,
-                resolution: { width: 64, height: 64 },
-                guiScale: 2,
-                animationState: 'idle' as const,
-                frame: 0,
-                presentation: {
-                  referenceArm: true,
-                  referenceArmPurpose: 'scale_only' as const,
-                },
-              },
-            ]
-          : []),
-        {
-          id: 'first_person_vanilla--fp_right_steve',
-          baseSceneId: 'fp_right_steve',
-          viewKind: 'first_person_vanilla' as const,
-          requiredForAuthority: true,
-          camera: 'first_person' as const,
-          context: 'world' as const,
-          hand: 'right' as const,
-          playerModel: 'steve' as const,
-          fov: 70,
-          resolution: { width: 64, height: 64 },
-          guiScale: 2,
-          animationState: 'idle' as const,
-          frame: 0,
-        },
+        ...(includeScaleReference ? [scene('first_person_scale_reference')] : []),
+        scene('first_person_vanilla'),
       ],
       execution: { executionId, gameDirectory, outputDirectory },
     });
@@ -331,28 +453,31 @@ describe('official Minecraft client capture orchestration', () => {
     const bundled = await readBundledCaptureMod();
     expect(bundled).toMatchObject({
       id: 'packwright_capture',
-      version: '0.4.1',
-      sha256: '7c4b5674969cc2a08d29cd9843906655470d284a13120caa65c85c6ebed7b042',
+      version: '0.5.0-dev',
+      sha256: '7b84fae8a9a080742fb982cdad6d144a07f621303e0f995006e3c0a6af3562d4',
     });
-    expect(bundled.data).toHaveLength(99_897);
+    expect(bundled.data).toHaveLength(263_539);
 
     const packageRoot = await mkdtemp(path.join(tmpdir(), 'packwright-capture-package-test-'));
     cleanups.push(packageRoot);
     const buildDirectory = path.join(packageRoot, 'capture-mod/build/libs');
     await mkdir(buildDirectory, { recursive: true });
-    await writeFile(path.join(buildDirectory, 'packwright-capture-mod-0.4.1.jar'), bundled.data);
+    await writeFile(
+      path.join(buildDirectory, 'packwright-capture-mod-0.5.0-dev.jar'),
+      bundled.data,
+    );
     await expect(readBundledCaptureMod(packageRoot)).rejects.toMatchObject({ code: 'not_found' });
 
     const runtimeDirectory = path.join(packageRoot, 'capture-mod/runtime');
     await mkdir(runtimeDirectory, { recursive: true });
     await writeFile(
-      path.join(runtimeDirectory, 'packwright-capture-mod-0.4.1.jar'),
+      path.join(runtimeDirectory, 'packwright-capture-mod-0.5.0-dev.jar'),
       Buffer.from('substituted capture mod'),
     );
     await expect(readBundledCaptureMod(packageRoot)).rejects.toMatchObject({
       code: 'precondition_failed',
       details: {
-        expectedSha256: '7c4b5674969cc2a08d29cd9843906655470d284a13120caa65c85c6ebed7b042',
+        expectedSha256: '7b84fae8a9a080742fb982cdad6d144a07f621303e0f995006e3c0a6af3562d4',
       },
     });
   });
@@ -403,6 +528,17 @@ describe('official Minecraft client capture orchestration', () => {
       const plan = parseClientCapturePlanBytes(
         await readFile(path.join(input.cwd, 'packwright/input/capture-plan.json')),
       );
+      const options = await readFile(path.join(input.cwd, 'options.txt'), 'utf8');
+      expect(options).toContain('preferredGraphicsBackend:opengl\n');
+      expect(options).toContain('graphicsPreset:custom\n');
+      expect(options).toContain('renderClouds:false\n');
+      expect(options).toContain('renderDistance:8\n');
+      expect(options).toContain('simulationDistance:5\n');
+      expect(options).toContain('fov:0\n');
+      expect(options).toContain('particles:2\n');
+      expect(options).toContain('entityShadows:true\n');
+      expect(options).toContain('bobView:false\n');
+      expect(options).not.toContain('graphicsApi:');
       expect(plan.scenes).toEqual([
         expect.objectContaining({
           id: 'first_person_vanilla--fp_right_steve',
@@ -416,19 +552,28 @@ describe('official Minecraft client capture orchestration', () => {
         input.args.find((argument) => argument.startsWith('-Dpackwright.capture.output=')),
       ).toBe(`-Dpackwright.capture.output=${plan.execution.outputDirectory}`);
       expect(await readdir(path.join(input.cwd, 'mods'))).toEqual(['packwright-capture.jar']);
+      expect(await readdir(path.join(input.cwd, 'saves'))).toEqual(['packwright-capture']);
+      expect(await readdir(path.join(input.cwd, 'saves/packwright-capture'))).toEqual([]);
       expect(await readFile(path.join(input.cwd, 'mods/packwright-capture.jar'))).toEqual(
         fixture.prepared.captureMod.data,
       );
       expect(
-        (await readFile(path.join(input.cwd, 'resourcepacks/packwright-proposal.zip'))).length,
+        (await readFile(path.join(input.cwd, ...CLIENT_CAPTURE_RESOURCEPACK_PATH.split('/'))))
+          .length,
       ).toBeGreaterThan(0);
       expect(
         (
           await readFile(
-            path.join(input.cwd, 'saves/packwright-capture/datapacks/packwright-proposal.zip'),
+            path.join(input.cwd, ...CLIENT_CAPTURE_DATAPACK_PROVENANCE_PATH.split('/')),
           )
         ).length,
       ).toBeGreaterThan(0);
+      await expect(
+        readFile(
+          path.join(input.cwd, 'saves/packwright-capture/datapacks/packwright-proposal.zip'),
+        ),
+      ).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(plan.provenance.packActivation).toEqual(CLIENT_CAPTURE_PACK_ACTIVATION);
       await writeCompleteOutput(plan);
       return processResult({ exitCode: 0 });
     };

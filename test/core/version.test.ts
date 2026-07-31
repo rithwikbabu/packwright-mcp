@@ -13,11 +13,11 @@ describe('Minecraft 26.2 profile', () => {
     expect(MINECRAFT_26_2.javaMajor).toBe(25);
     expect(MINECRAFT_26_2.clientCapture.captureMod).toMatchObject({
       id: 'packwright_capture',
-      version: '0.4.1',
-      protocolVersion: 2,
-      runtimePath: 'capture-mod/runtime/packwright-capture-mod-0.4.1.jar',
-      sha256: '7c4b5674969cc2a08d29cd9843906655470d284a13120caa65c85c6ebed7b042',
-      size: 99_897,
+      version: '0.5.0-dev',
+      protocolVersion: 3,
+      runtimePath: 'capture-mod/runtime/packwright-capture-mod-0.5.0-dev.jar',
+      sha256: '7b84fae8a9a080742fb982cdad6d144a07f621303e0f995006e3c0a6af3562d4',
+      size: 263_539,
     });
     expect(MINECRAFT_26_2.clientCapture.authorityScope).toBe('required_views_only');
     expect(resourcePath('function', 'demo:nested/load')).toBe(

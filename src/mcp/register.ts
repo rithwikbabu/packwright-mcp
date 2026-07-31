@@ -79,6 +79,7 @@ import {
   VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE,
   VISUAL_RUN_CLIENT_CAPTURE_REPORT_URI_TEMPLATE,
   VISUAL_RUN_CLIENT_CAPTURE_SCALE_REFERENCE_SHEET_URI_TEMPLATE,
+  VISUAL_RUN_CLIENT_CAPTURE_SUPPLEMENTAL_SHEET_URI_TEMPLATE,
   VISUAL_RUN_CLIENT_CAPTURE_VIEW_URI_TEMPLATE,
   VISUAL_RUN_CONTACT_SHEET_URI_TEMPLATE,
   VISUAL_RUN_RENDER_REPORT_URI_TEMPLATE,
@@ -740,7 +741,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Capture With Minecraft Client',
       description:
-        'Launch the pinned official Minecraft 26.2 client in a disposable game directory with only Packwright’s capture mod, load the exact proposal, and return hash-bound framebuffer evidence from Minecraft’s actual renderer. Required first-person views are exact stock gameplay captures with no injected arm. Top-level authorityScope is required_views_only. includeScaleReferenceViews defaults to false; enabling it adds separately labeled, augmented QA-only scale-reference views that are never WYSIWYG or a substitute for required authority. Requires explicit client-capture setup and a graphical macOS session; never falls back to CPU images.',
+        'Launch the pinned official Minecraft 26.2 client in a disposable deterministic studio and return protocol-v3, representation-bound framebuffer evidence for supported item, block, headwear, entity, or placeable fixtures. Required world/gameplay views are authoritative only for the recorded OpenGL environment. Scale-reference and debug-hitbox views are separately requested augmented QA aids, never WYSIWYG evidence and never substitutes for required authority. The strict representation union accepts no commands, functions, saves, executable content, or mod paths. Requires explicit client-capture setup and a graphical macOS session; never falls back to CPU images.',
       inputSchema: VisualClientCaptureInputSchema,
       outputSchema: VisualClientCaptureResultSchema,
       annotations: {
@@ -779,7 +780,7 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     {
       title: 'Commit Accepted Visual',
       description:
-        'After explicit acceptance, atomically install every proposed datapack and resource-pack file. Profiles supported by the official client require the exact verified client-capture report SHA-256, which is bound into the durable commit receipt.',
+        'After explicit acceptance, atomically install every proposed datapack and resource-pack file. Official-client evidence can authorize commit only when its proposalBindingStatus is implemented; capture_only block, headwear, entity, and placeable evidence is QA-only until the compiler implements that exact representation. Accepted evidence requires the exact verified report SHA-256, which is bound into the durable commit receipt.',
       inputSchema: VisualCommitInputSchema,
       outputSchema: VisualCommitResultSchema,
       annotations: {
@@ -1095,6 +1096,7 @@ function registerResources(server: McpServer, service: PackwrightService): void 
       | 'binding'
       | 'client_capture_report'
       | 'client_contact_sheet'
+      | 'client_supplemental_sheet'
       | 'client_scale_reference_sheet',
   ) =>
     ({
@@ -1159,16 +1161,26 @@ function registerResources(server: McpServer, service: PackwrightService): void 
       template: VISUAL_RUN_CLIENT_CAPTURE_CONTACT_SHEET_URI_TEMPLATE,
       title: 'Authoritative Minecraft Gameplay Contact Sheet',
       description:
-        'A bounded composition of verified vanilla Minecraft framebuffer captures. It excludes every augmented scale-reference view.',
+        'A bounded composition of verified stock gameplay/world Minecraft framebuffers. It excludes every augmented scale-reference, debug-hitbox, grid, and inspection-only view.',
       kind: 'client_contact_sheet' as const,
       mimeType: 'image/png',
     },
     {
-      name: 'visual-client-scale-reference-sheet',
-      template: VISUAL_RUN_CLIENT_CAPTURE_SCALE_REFERENCE_SHEET_URI_TEMPLATE,
-      title: 'Optional Minecraft Scale-Reference QA Sheet',
+      name: 'visual-client-supplemental-sheet',
+      template: VISUAL_RUN_CLIENT_CAPTURE_SUPPLEMENTAL_SHEET_URI_TEMPLATE,
+      title: 'Minecraft Supplemental QA Contact Sheet',
       description:
-        'A separately labeled QA-only composition containing injected-arm scale-reference captures. It is not a WYSIWYG gameplay preview.',
+        'A separately labeled composition of augmented QA-only frames such as scale references and debug hitboxes. It is never authoritative or a WYSIWYG gameplay preview.',
+      kind: 'client_supplemental_sheet' as const,
+      mimeType: 'image/png',
+    },
+    {
+      name: 'visual-client-scale-reference-sheet',
+      // eslint-disable-next-line @typescript-eslint/no-deprecated -- protocol-v2 read compatibility
+      template: VISUAL_RUN_CLIENT_CAPTURE_SCALE_REFERENCE_SHEET_URI_TEMPLATE,
+      title: 'Deprecated Protocol-v2 Scale-Reference QA Sheet',
+      description:
+        'A read-only compatibility alias for stored protocol-v2 scale-reference evidence. Protocol v3 uses the generic supplemental QA sheet.',
       kind: 'client_scale_reference_sheet' as const,
       mimeType: 'image/png',
     },
@@ -1221,7 +1233,7 @@ function registerResources(server: McpServer, service: PackwrightService): void 
     {
       title: 'Minecraft Client Framebuffer Preview',
       description:
-        'A bounded deterministic preview of one actual Minecraft framebuffer. Consult the capture report for its view kind and authority: stock views are authoritative environment captures; injected-arm scale references are augmented QA only and never WYSIWYG. The report retains the full-resolution source and normalized PNG hashes.',
+        'A bounded preview of one actual Minecraft framebuffer. Consult the capture report for its exact representation hash, target, view kind, and authority: stock gameplay/world views are authoritative for their recorded environment, while injected scale references and debug hitboxes are augmented QA only. The report retains the full-resolution source and normalized PNG hashes.',
       mimeType: 'image/png',
     },
     async (uri, variables, context) =>

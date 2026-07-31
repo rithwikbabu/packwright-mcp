@@ -1,14 +1,15 @@
 package io.github.rithwikbabu.packwright.capture;
 
 import com.mojang.blaze3d.platform.Window;
+import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.DeviceInfo;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.mojang.brigadier.StringReader;
 import io.github.rithwikbabu.packwright.capture.io.AtomicFiles;
 import io.github.rithwikbabu.packwright.capture.io.CanonicalJson;
 import io.github.rithwikbabu.packwright.capture.io.Hashing;
 import io.github.rithwikbabu.packwright.capture.io.PngEvidence;
 import io.github.rithwikbabu.packwright.capture.mixin.AbstractContainerScreenAccessor;
+import io.github.rithwikbabu.packwright.capture.mixin.CameraAccessor;
 import io.github.rithwikbabu.packwright.capture.mixin.ItemInHandRendererAccessor;
 import io.github.rithwikbabu.packwright.capture.mixin.MouseHandlerAccessor;
 import io.github.rithwikbabu.packwright.capture.protocol.CapturePaths;
@@ -19,9 +20,11 @@ import io.github.rithwikbabu.packwright.capture.protocol.CapturePlan.Context;
 import io.github.rithwikbabu.packwright.capture.protocol.CapturePlan.Hand;
 import io.github.rithwikbabu.packwright.capture.protocol.CapturePlan.PlayerModel;
 import io.github.rithwikbabu.packwright.capture.protocol.CapturePlan.Scene;
+import io.github.rithwikbabu.packwright.capture.SceneFixtureExecutor.FixtureEvidence;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -32,18 +35,22 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.CameraType;
+import net.minecraft.client.CloudStatus;
+import net.minecraft.client.GraphicsPreset;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.PreferredGraphicsApi;
+import net.minecraft.client.gui.components.debug.DebugScreenEntries;
+import net.minecraft.client.gui.components.debug.DebugScreenEntryStatus;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.player.LocalPlayer;
-import net.minecraft.commands.arguments.item.ItemInput;
-import net.minecraft.commands.arguments.item.ItemParser;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ParticleStatus;
 import net.minecraft.server.packs.repository.PackRepository;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.InteractionHand;
@@ -51,9 +58,12 @@ import net.minecraft.world.entity.HumanoidArm;
 import net.minecraft.world.entity.player.PlayerModelType;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.LevelSettings;
 import net.minecraft.world.level.WorldDataConfiguration;
 import net.minecraft.world.level.gamerules.GameRules;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.LightBlock;
 import net.minecraft.world.level.levelgen.WorldOptions;
 import net.minecraft.world.level.levelgen.presets.WorldPresets;
 import net.minecraft.world.level.saveddata.WeatherData;
@@ -65,6 +75,17 @@ import org.slf4j.LoggerFactory;
 final class CaptureCoordinator {
     private static final Logger LOGGER = LoggerFactory.getLogger(PackwrightCaptureClient.MOD_ID);
     private static final String REQUIRED_RESOURCE_PACK = "file/packwright-proposal.zip";
+    private static final String DATAPACK_PROVENANCE_PATH =
+            "packwright/provenance/datapack-proposal.zip";
+    private static final String RESOURCEPACK_PATH = "resourcepacks/packwright-proposal.zip";
+    private static final String LOADABLE_DATAPACK_DIRECTORY =
+            "saves/packwright-capture/datapacks";
+    private static final Set<String> CLEAN_SELECTED_DATAPACK_IDS = Set.of("vanilla");
+    private static final Set<String> CLEAN_AVAILABLE_DATAPACK_IDS = Set.of(
+            "vanilla",
+            "minecart_improvements",
+            "redstone_experiments",
+            "trade_rebalance");
     private static final String RESOURCE_RELOAD_STARTED_EXCERPT =
             "Packwright capture resource reload started";
     private static final String RESOURCE_RELOAD_EXCERPT =
@@ -74,12 +95,17 @@ final class CaptureCoordinator {
     private static final String WORLD_READY_EXCERPT =
             "Packwright capture disposable world ready";
     private static final String WORLD_SETTINGS_EXCERPT =
-            "Packwright capture world settings: seed=0; position=0.5,80,0.5; clock=6000; weather=clear; advance_time=false; advance_weather=false; spawn_mobs=false; random_tick_speed=0";
+            "Packwright capture world settings: seed=0; position=0.5,80,0.5; difficulty=normal; clock=6000; weather=clear; advance_time=false; advance_weather=false; spawn_mobs=false; random_tick_speed=0";
+    private static final String PACK_ACTIVATION_EXCERPT =
+            "Packwright capture project datapack hash-bound and not loaded; resource pack active";
     private static final int SETTLE_FRAMES = 3;
+    private static final int MAX_CAMERA_READY_FRAMES = 120;
     private static final int WORLD_EQUIP_TICKS = 12;
     private static final int GUI_SETTLE_TICKS = 2;
     private static final int MAX_RUNTIME_TICKS = 36_000;
     private static final int MAX_WORLD_LOAD_TICKS = 6_000;
+    private static final int MAX_ENVIRONMENT_SYNC_TICKS = 200;
+    private static final int MAX_FIXTURE_SYNC_TICKS = 200;
     private static final long MAX_SCREENSHOT_BYTES = 8L * 1024 * 1024;
     private static final long MAX_LOG_BYTES = 16L * 1024 * 1024;
     private static final long MAX_PACK_BYTES = 512L * 1024 * 1024;
@@ -94,22 +120,36 @@ final class CaptureCoordinator {
     private int elapsedTicks;
     private int sceneIndex;
     private int equipTicksRemaining;
+    private int settlingTicksRemaining;
+    private int fixtureAnimationTicksRemaining;
     private int animationTicksRemaining;
     private int animationTargetTick = -1;
     private int renderedSettleFrames;
     private int targetResizeAttempts;
-    private ItemStack itemStack;
+    private int cameraReadyFrames;
+    private final Map<String, ItemStack> itemStacks = new LinkedHashMap<>();
+    private ItemStack headwearChestArmor = ItemStack.EMPTY;
     private CompletableFuture<Void> reloadFuture;
     private CompletableFuture<Void> worldSetupFuture;
-    private CompletableFuture<Void> sceneServerSetupFuture;
+    private CompletableFuture<FixtureEvidence> sceneServerSetupFuture;
     private CompletableFuture<Void> animationServerSetupFuture;
-    private List<String> selectedPackIds = List.of();
+    private List<String> selectedDatapackIds = List.of();
+    private List<String> selectedResourcePackIds = List.of();
     private AsyncCapture asyncCapture;
     private PlayerModelType playerModelOverride;
     private boolean stopRequested;
     private boolean environmentVerified;
     private int worldCreationStartedTick;
     private int resourceReloadCompletedTick;
+    private int resourceReloadReadyTick;
+    private int fixtureSetupCompletedTick;
+    private int sceneSettledTicks;
+    private int sceneAnimationTicksElapsed;
+    private int environmentSyncTicks;
+    private FixtureEvidence currentFixtureEvidence;
+    private Map<String, Object> currentObservedFixture;
+    private Map<String, Object> currentScaleReferenceAttestation;
+    private SceneRuntimeAttestation currentRuntimeAttestation;
     private final RenderFrameEvidence renderFrameEvidence = new RenderFrameEvidence();
     private boolean renderPredicatesLogged;
 
@@ -157,6 +197,33 @@ final class CaptureCoordinator {
         }
     }
 
+    boolean shouldFreezeClientTick() {
+        return state == State.WAITING_FOR_FRAMES
+                && sceneIndex < plan.scenes().size()
+                && currentScene().animationState() != AnimationState.IDLE
+                && animationTargetTick >= 0;
+    }
+
+    void applyPlannedCameraPose(net.minecraft.client.Camera camera) {
+        if (state != State.WAITING_FOR_FRAMES || sceneIndex >= plan.scenes().size()) return;
+        Scene scene = currentScene();
+        boolean guiCamera = scene.context() != Context.WORLD;
+        boolean studioCamera = scene.camera() == Camera.NEUTRAL;
+        boolean headwearReviewCamera = scene.targetKind() == CapturePlan.TargetKind.HEADWEAR
+                && scene.camera() != Camera.FIRST_PERSON;
+        CapturePlan.CameraPose pose = scene.expectedRenderCameraPose();
+        CameraAccessor accessor = (CameraAccessor) camera;
+        // Neutral studio and GUI scenes declare an exact projection rather
+        // than Minecraft's transient player FOV interpolation. Held gameplay
+        // retains Minecraft's dynamic FOV; only its hash-bound camera pose is
+        // stabilized against physical input and client interpolation.
+        if (guiCamera || studioCamera || headwearReviewCamera) {
+            accessor.packwrightCapture$setFov(scene.fov());
+        }
+        accessor.packwrightCapture$setPosition(pose.x(), pose.y(), pose.z());
+        accessor.packwrightCapture$setRotation((float) pose.yaw(), (float) pose.pitch());
+    }
+
     void onRenderedFrame(Minecraft client, boolean renderLevel) {
         if (state != State.WAITING_FOR_FRAMES) {
             renderFrameEvidence.abandonFrame();
@@ -184,7 +251,9 @@ final class CaptureCoordinator {
             InteractionHand expectedHand = scene.hand() == Hand.RIGHT
                     ? InteractionHand.MAIN_HAND
                     : InteractionHand.OFF_HAND;
-            if ((scene.animationState() == AnimationState.USE
+            boolean heldItemScene = scene.targetKind() == CapturePlan.TargetKind.HELD_ITEM;
+            if (heldItemScene
+                    && (scene.animationState() == AnimationState.USE
                             || scene.animationState() == AnimationState.FIRE
                             || scene.animationState() == AnimationState.AIM)
                     && (!player.isUsingItem()
@@ -193,7 +262,8 @@ final class CaptureCoordinator {
                 fail(client, "scene_capture_failed", "Minecraft did not render the requested active-use tick state.");
                 return;
             }
-            if ((scene.animationState() == AnimationState.SWING
+            if (heldItemScene
+                    && (scene.animationState() == AnimationState.SWING
                             || scene.animationState() == AnimationState.IMPACT)
                     && (!player.swinging
                             || player.swingingArm != expectedHand
@@ -232,7 +302,8 @@ final class CaptureCoordinator {
                 fail(client, "scene_capture_failed", "Minecraft did not render the world for a world capture scene.");
                 return;
             }
-            if (scene.camera() == Camera.FIRST_PERSON
+            if (heldItemScene
+                    && scene.camera() == Camera.FIRST_PERSON
                     && (renderState.optionsRenderState.cameraType != CameraType.FIRST_PERSON
                             || cameraState.isPanoramicMode
                             || cameraState.entityRenderState.isSleeping
@@ -242,7 +313,8 @@ final class CaptureCoordinator {
                 fail(client, "scene_capture_failed", "Minecraft rejected the required first-person hand-render predicates.");
                 return;
             }
-            if (scene.camera() == Camera.FIRST_PERSON
+            if (heldItemScene
+                    && scene.camera() == Camera.FIRST_PERSON
                     && (!frame.vanillaHandSubmissionSeen()
                             || !frame.submittedItemMatched()
                             || !frame.oppositeHandEmpty()
@@ -251,12 +323,22 @@ final class CaptureCoordinator {
                 return;
             }
             String referenceArmFailure = referenceArmEvidenceFailure(
-                    scene.referenceArm(),
+                    heldItemScene && scene.referenceArm(),
                     frame.referenceArmSubmissionCount(),
                     frame.referenceArmSubmissionSeen(),
                     frame.unexpectedReferenceArmSubmissionSeen());
             if (referenceArmFailure != null) {
                 fail(client, "scene_capture_failed", referenceArmFailure);
+                return;
+            }
+            boolean debugHitboxes = client.debugEntries.isCurrentlyEnabled(DebugScreenEntries.ENTITY_HITBOXES);
+            boolean expectedDebugHitboxes = scene.viewKind() == CapturePlan.ViewKind.DEBUG_HITBOX_REFERENCE;
+            if (debugHitboxes != expectedDebugHitboxes) {
+                fail(client, "scene_capture_failed", "Minecraft debug-hitbox state does not match view authority.");
+                return;
+            }
+            if (currentFixtureEvidence == null) {
+                fail(client, "scene_capture_failed", "Minecraft has no attested fixture for the candidate frame.");
                 return;
             }
         } else if (scene.context() == Context.TOOLTIP) {
@@ -317,6 +399,55 @@ final class CaptureCoordinator {
                         itemSlot);
             }
         }
+        CapturePlan.CameraPose observedCamera = sampleRenderCamera(client);
+        CapturePlan.CameraPose frameCamera = sampleFrameCamera(client);
+        if (!cameraPoseMatches(observedCamera, scene.expectedRenderCameraPose())
+                || !cameraPoseMatches(frameCamera, scene.expectedRenderCameraPose())) {
+            cameraReadyFrames++;
+            renderedSettleFrames = 0;
+            if (cameraReadyFrames > MAX_CAMERA_READY_FRAMES) {
+                fail(
+                        client,
+                        "scene_capture_failed",
+                        "Scene '" + scene.id() + "': " + cameraPoseMismatch(
+                                observedCamera,
+                                frameCamera,
+                                scene.expectedRenderCameraPose()));
+            }
+            return;
+        }
+        try {
+            currentScaleReferenceAttestation = ClientFixtureObserver.observeStudioScaleReference(
+                    client, plan.studio());
+            currentObservedFixture = ClientFixtureObserver.observe(
+                    client,
+                    scene,
+                    environmentAnchorScene(scene),
+                    plan.provenance().representation(),
+                    plan.studio(),
+                    currentFixtureEvidence);
+        } catch (ClientFixtureObserver.ObservationPendingException pending) {
+            renderedSettleFrames = 0;
+            if (fixtureSetupCompletedTick >= 0
+                    && elapsedTicks - fixtureSetupCompletedTick > MAX_FIXTURE_SYNC_TICKS) {
+                fail(
+                        client,
+                        "scene_capture_failed",
+                        "Scene '" + scene.id()
+                                + "' did not reach client fixture/model readiness within "
+                                + MAX_FIXTURE_SYNC_TICKS + " ticks: " + pending.getMessage());
+            }
+            return;
+        } catch (IllegalStateException error) {
+            fail(client, "scene_capture_failed", error.getMessage());
+            return;
+        }
+        try {
+            currentRuntimeAttestation = verifyAndSampleRuntime(client, scene);
+        } catch (IllegalStateException error) {
+            fail(client, "scene_capture_failed", error.getMessage());
+            return;
+        }
         var target = client.gameRenderer.mainRenderTarget();
         if (target.width != scene.width() || target.height != scene.height()) {
             targetResizeAttempts++;
@@ -351,6 +482,7 @@ final class CaptureCoordinator {
             LocalPlayer player, ItemStack submittedMain, ItemStack submittedOff) {
         if (!isCandidateWorldFrameOpen()) return;
         Scene scene = currentScene();
+        if (scene.targetKind() != CapturePlan.TargetKind.HELD_ITEM) return;
         ItemStack submitted = scene.hand() == Hand.RIGHT ? submittedMain : submittedOff;
         ItemStack opposite = scene.hand() == Hand.RIGHT ? submittedOff : submittedMain;
         ItemStack expected = itemForScene(scene);
@@ -363,7 +495,9 @@ final class CaptureCoordinator {
     HumanoidArm referenceArm() {
         if (!isCandidateWorldFrameOpen()) return null;
         Scene scene = currentScene();
-        if (scene.camera() != Camera.FIRST_PERSON || !scene.referenceArm()) return null;
+        if (scene.targetKind() != CapturePlan.TargetKind.HELD_ITEM
+                || scene.camera() != Camera.FIRST_PERSON
+                || !scene.referenceArm()) return null;
         return scene.hand() == Hand.RIGHT ? HumanoidArm.RIGHT : HumanoidArm.LEFT;
     }
 
@@ -395,6 +529,7 @@ final class CaptureCoordinator {
     void onVanillaItemRender(ItemStack rendered, net.minecraft.world.item.ItemDisplayContext context) {
         if (!isCandidateWorldFrameOpen()) return;
         Scene scene = currentScene();
+        if (scene.targetKind() != CapturePlan.TargetKind.HELD_ITEM) return;
         net.minecraft.world.item.ItemDisplayContext expectedContext = scene.hand() == Hand.RIGHT
                 ? net.minecraft.world.item.ItemDisplayContext.FIRST_PERSON_RIGHT_HAND
                 : net.minecraft.world.item.ItemDisplayContext.FIRST_PERSON_LEFT_HAND;
@@ -446,23 +581,31 @@ final class CaptureCoordinator {
         if (!loaderVersion.equals("0.19.3")) {
             throw new IllegalStateException("Fabric Loader must be exactly 0.19.3.");
         }
+        String backend = RenderSystem.getDevice().getDeviceInfo().backendName()
+                .toLowerCase(Locale.ROOT);
+        if (!backend.contains("opengl")) {
+            throw new IllegalStateException(
+                    "Authoritative Packwright captures require Minecraft's OpenGL backend.");
+        }
         verifyStagedPacks();
         environmentVerified = true;
     }
 
-    private void verifyStagedPacks() throws IOException {
+    private VerifiedPackHashes verifyStagedPacks() throws IOException {
         Path game = Path.of(plan.execution().gameDirectory());
-        verifyStagedPack(
-                game.resolve("resourcepacks/packwright-proposal.zip"),
+        requireNoLoadableDatapackContent(game.resolve(LOADABLE_DATAPACK_DIRECTORY));
+        String resourcepack = verifyStagedPack(
+                game.resolve(RESOURCEPACK_PATH),
                 plan.provenance().resourcepackContentSha256(),
                 "resource pack");
-        verifyStagedPack(
-                game.resolve("saves/packwright-capture/datapacks/packwright-proposal.zip"),
+        String datapack = verifyStagedPack(
+                game.resolve(DATAPACK_PROVENANCE_PATH),
                 plan.provenance().datapackContentSha256(),
-                "datapack");
+                "provenance-only datapack");
+        return new VerifiedPackHashes(datapack, resourcepack);
     }
 
-    private static void verifyStagedPack(Path path, String expectedSha256, String label)
+    private static String verifyStagedPack(Path path, String expectedSha256, String label)
             throws IOException {
         if (Files.isSymbolicLink(path) || !Files.isRegularFile(path)) {
             throw new IOException("Staged " + label + " is unavailable or unsafe.");
@@ -471,6 +614,52 @@ final class CaptureCoordinator {
         if (!actual.equals(expectedSha256)) {
             throw new IOException("Staged " + label + " does not match capture provenance.");
         }
+        return actual;
+    }
+
+    static void requireNoLoadableDatapackContent(Path datapackDirectory) throws IOException {
+        if (!Files.exists(datapackDirectory, LinkOption.NOFOLLOW_LINKS)) return;
+        if (Files.isSymbolicLink(datapackDirectory)
+                || !Files.isDirectory(datapackDirectory, LinkOption.NOFOLLOW_LINKS)) {
+            throw new IOException(
+                    "Disposable capture world's loadable datapack path is unsafe or not a directory.");
+        }
+        try (var entries = Files.list(datapackDirectory)) {
+            if (entries.findAny().isPresent()) {
+                throw new IOException(
+                        "Disposable capture world contains loadable datapack content; visual capture never loads project or external datapacks.");
+            }
+        }
+    }
+
+    static String projectDatapackIsolationFailure(
+            List<String> selectedDatapacks, List<String> availableDatapacks) {
+        List<String> selectedExternal = selectedDatapacks.stream()
+                .filter(id -> id.startsWith("file/"))
+                .sorted()
+                .toList();
+        if (!selectedExternal.isEmpty()) {
+            return "Disposable capture world selected external datapacks: " + selectedExternal + ".";
+        }
+        Set<String> selected = Set.copyOf(selectedDatapacks);
+        if (!selected.equals(CLEAN_SELECTED_DATAPACK_IDS)) {
+            return "Disposable capture world's selected datapacks differ from the clean 26.2 allowlist: "
+                    + selectedDatapacks.stream().sorted().toList() + ".";
+        }
+        Set<String> available = Set.copyOf(availableDatapacks);
+        if (!available.equals(CLEAN_AVAILABLE_DATAPACK_IDS)) {
+            List<String> unexpected = available.stream()
+                    .filter(id -> !CLEAN_AVAILABLE_DATAPACK_IDS.contains(id))
+                    .sorted()
+                    .toList();
+            List<String> missing = CLEAN_AVAILABLE_DATAPACK_IDS.stream()
+                    .filter(id -> !available.contains(id))
+                    .sorted()
+                    .toList();
+            return "Disposable capture world's available datapacks differ from the clean 26.2 allowlist; unexpected="
+                    + unexpected + ", missing=" + missing + ".";
+        }
+        return null;
     }
 
     private void beginWorldCreation(Minecraft client) throws IOException {
@@ -485,7 +674,7 @@ final class CaptureCoordinator {
         LevelSettings settings = new LevelSettings(
                 "Packwright Capture",
                 GameType.CREATIVE,
-                new LevelSettings.DifficultySettings(Difficulty.PEACEFUL, false, true),
+                new LevelSettings.DifficultySettings(Difficulty.NORMAL, false, true),
                 true,
                 WorldDataConfiguration.DEFAULT);
         LOGGER.info("Creating deterministic disposable Packwright capture world");
@@ -512,17 +701,34 @@ final class CaptureCoordinator {
         if (server == null || client.player == null) {
             throw new IllegalStateException("Loaded capture world has no integrated server or player.");
         }
-        List<String> datapacks = server.getPackRepository().getSelectedIds().stream().sorted().toList();
-        if (!datapacks.contains(REQUIRED_RESOURCE_PACK)) {
-            throw new IllegalStateException("Staged Packwright datapack was not selected at world creation.");
+        try {
+            requireNoLoadableDatapackContent(Path.of(plan.execution().gameDirectory())
+                    .resolve(LOADABLE_DATAPACK_DIRECTORY));
+        } catch (IOException error) {
+            throw new IllegalStateException(error.getMessage(), error);
         }
+        PackRepository datapackRepository = server.getPackRepository();
+        List<String> datapacks = datapackRepository.getSelectedIds().stream().sorted().toList();
+        List<String> availableDatapacks =
+                datapackRepository.getAvailableIds().stream().sorted().toList();
+        String isolationFailure = projectDatapackIsolationFailure(
+                datapacks, availableDatapacks);
+        if (isolationFailure != null) {
+            throw new IllegalStateException(isolationFailure);
+        }
+        selectedDatapackIds = datapacks;
         var playerId = client.player.getUUID();
-        worldSetupFuture = server.submit(() -> configureWorld(server, playerId));
+        worldSetupFuture = server.submit(() -> configureWorld(server, playerId, plan.studio()));
         state = State.CONFIGURING_WORLD;
-        LOGGER.info("Configuring disposable Packwright capture world; selected datapacks={}", datapacks);
+        LOGGER.info(
+                "{}; selected datapacks={}; available datapacks={}",
+                PACK_ACTIVATION_EXCERPT,
+                datapacks,
+                availableDatapacks);
     }
 
-    private static void configureWorld(MinecraftServer server, java.util.UUID playerId) {
+    private static void configureWorld(
+            MinecraftServer server, java.util.UUID playerId, CapturePlan.Studio studio) {
         ServerLevel level = server.overworld();
         ServerLevelData levelData = (ServerLevelData) level.getLevelData();
         levelData.setGameTime(0L);
@@ -556,7 +762,19 @@ final class CaptureCoordinator {
         player.setYHeadRot(0);
         player.setYBodyRot(0);
         player.setOldRot();
-        if (level.getDefaultClockTime() != 6_000L
+        var floor = SceneFixtureExecutor.parseBlockState(level, studio.floorBlock());
+        var backdrop = SceneFixtureExecutor.parseBlockState(level, studio.backdropBlock());
+        for (int x = -16; x <= 16; x++) {
+            for (int z = -16; z <= 16; z++) {
+                level.setBlock(new net.minecraft.core.BlockPos(x, 79, z), floor, 3);
+            }
+            for (int y = 80; y <= 96; y++) {
+                level.setBlock(new net.minecraft.core.BlockPos(x, y, 12), backdrop, 3);
+            }
+        }
+        placeStudioScaleReference(level, studio.scaleReference());
+        if (level.getDifficulty() != Difficulty.NORMAL
+                || level.getDefaultClockTime() != 6_000L
                 || rules.get(GameRules.ADVANCE_TIME)
                 || rules.get(GameRules.ADVANCE_WEATHER)
                 || rules.get(GameRules.SPAWN_MOBS)
@@ -564,6 +782,32 @@ final class CaptureCoordinator {
                 || rules.get(GameRules.RANDOM_TICK_SPEED) != 0) {
             throw new IllegalStateException("Disposable world settings did not become deterministic.");
         }
+    }
+
+    private static void placeStudioScaleReference(
+            ServerLevel level, CapturePlan.StudioScaleReference reference) {
+        List<net.minecraft.core.BlockPos> positions = scaleReferencePositions(reference);
+        List<CapturePlan.BlockStateSpec> states = List.of(
+                reference.firstBlock(), reference.secondBlock());
+        for (int index = 0; index < positions.size(); index++) {
+            var expected = SceneFixtureExecutor.parseBlockState(level, states.get(index));
+            var position = positions.get(index);
+            level.setBlock(position, expected, 3);
+            if (!level.getBlockState(position).equals(expected)) {
+                throw new IllegalStateException(
+                        "Minecraft did not retain the hash-bound ordinary-block studio scale reference.");
+            }
+        }
+    }
+
+    static List<net.minecraft.core.BlockPos> scaleReferencePositions(
+            CapturePlan.StudioScaleReference reference) {
+        if (reference.lengthBlocks() != 2) {
+            throw new IllegalArgumentException("Studio floor ruler must contain exactly two blocks.");
+        }
+        var origin = reference.origin();
+        var first = new net.minecraft.core.BlockPos(origin.x(), origin.y(), origin.z());
+        return List.of(first, first.east());
     }
 
     private void pollWorldSetup(Minecraft client) throws Exception {
@@ -594,12 +838,15 @@ final class CaptureCoordinator {
             throw new IllegalStateException("Minecraft rejected the staged resource-pack selection.");
         }
         client.options.updateResourcePacks(repository);
-        selectedPackIds = repository.getSelectedIds().stream().sorted().toList();
+        selectedResourcePackIds = repository.getSelectedIds().stream().sorted().toList();
         // The diagnostic boundary must precede the asynchronous reload call.
         // Resource workers can log model/texture failures immediately; logging
         // this marker afterward would let those failures race ahead of the
         // segment that currentResourceReloadFailure() classifies.
-        LOGGER.info("{}; selected packs={}", RESOURCE_RELOAD_STARTED_EXCERPT, selectedPackIds);
+        LOGGER.info(
+                "{}; selected packs={}",
+                RESOURCE_RELOAD_STARTED_EXCERPT,
+                selectedResourcePackIds);
         reloadFuture = client.reloadResourcePacks();
         state = State.RELOADING_RESOURCES;
     }
@@ -624,10 +871,11 @@ final class CaptureCoordinator {
             throw new IllegalStateException(
                     "Minecraft logged a resource/model/texture load failure: " + resourceFailure);
         }
-        itemStack = parseItem(client);
+        parseRepresentationItems(client);
         state = State.PREPARING_SCENE;
+        resourceReloadReadyTick = elapsedTicks;
         LOGGER.info(RESOURCE_DIAGNOSTICS_EXCERPT);
-        LOGGER.info("{}; selected packs={}", RESOURCE_RELOAD_EXCERPT, selectedPackIds);
+        LOGGER.info("{}; selected packs={}", RESOURCE_RELOAD_EXCERPT, selectedResourcePackIds);
     }
 
     private String currentResourceReloadFailure() throws IOException {
@@ -678,47 +926,82 @@ final class CaptureCoordinator {
         return null;
     }
 
-    private ItemStack parseItem(Minecraft client) throws Exception {
+    private void parseRepresentationItems(Minecraft client) {
         if (client.level == null) throw new IllegalStateException("Client level disappeared during item parsing.");
-        CapturePlan.ItemStackSpec planned = plan.provenance().itemStack();
-        String prefix = "give @s ";
-        String suffix = " " + planned.count();
-        String command = planned.command();
-        if (!command.startsWith(prefix)
-                || !command.endsWith(suffix)
-                || command.length() <= prefix.length() + suffix.length()) {
-            throw new IllegalStateException("Item command must be the exact bounded 'give @s <item> <count>' form.");
+        itemStacks.clear();
+        headwearChestArmor = ItemStack.EMPTY;
+        for (Map.Entry<String, CapturePlan.RepresentationState> entry :
+                plan.provenance().representation().states().entrySet()) {
+            if (entry.getValue().itemStack() != null) {
+                ItemStack parsed = SceneFixtureExecutor.parseItem(
+                        entry.getValue().itemStack(), client.level.registryAccess());
+                itemStacks.put(entry.getKey(), parsed);
+                if (plan.provenance().representation().targetKind()
+                        == CapturePlan.TargetKind.HEADWEAR) {
+                    validateHeadwearItem(parsed);
+                }
+            }
         }
-        String itemSyntax = command.substring(prefix.length(), command.length() - suffix.length());
-        StringReader reader = new StringReader(itemSyntax);
-        ItemInput input = new ItemParser(client.level.registryAccess()).parse(reader);
-        if (reader.canRead()) {
-            throw new IllegalStateException("Item syntax contains trailing input at cursor " + reader.getCursor() + '.');
+        CapturePlan.Review review = plan.provenance().representation().review();
+        if (review != null && review.chestArmorItemStack() != null) {
+            headwearChestArmor = SceneFixtureExecutor.parseItem(
+                    review.chestArmorItemStack(), client.level.registryAccess());
+            var chestEquippable = headwearChestArmor.get(DataComponents.EQUIPPABLE);
+            if (chestEquippable == null
+                    || chestEquippable.slot() != net.minecraft.world.entity.EquipmentSlot.CHEST
+                    || !chestEquippable.canBeEquippedBy(
+                            BuiltInRegistries.ENTITY_TYPE.wrapAsHolder(
+                                    net.minecraft.world.entity.EntityTypes.PLAYER))) {
+                throw new IllegalStateException(
+                        "Headwear compatibility chest armor must parse to a player-compatible minecraft:equippable chest item.");
+            }
         }
-        ItemStack parsed = input.createItemStack(planned.count());
-        String actualItemId = BuiltInRegistries.ITEM.getKey(parsed.getItem()).toString();
-        if (!actualItemId.equals(planned.itemId())) {
-            throw new IllegalStateException("Parsed item id does not match capture provenance.");
+        if (review != null && review.inventoryItemStack() != null) {
+            ItemStack inventory = SceneFixtureExecutor.parseItem(
+                    review.inventoryItemStack(), client.level.registryAccess());
+            for (String stateId : plan.provenance().representation().states().keySet()) {
+                itemStacks.putIfAbsent(stateId, inventory);
+            }
         }
-        String componentSyntax = planned.components().entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .map(entry -> entry.getKey() + '=' + entry.getValue())
-                .collect(java.util.stream.Collectors.joining(","));
-        String declaredSyntax = planned.itemId()
-                + (componentSyntax.isEmpty() ? "" : '[' + componentSyntax + ']');
-        StringReader declaredReader = new StringReader(declaredSyntax);
-        ItemInput declaredInput = new ItemParser(client.level.registryAccess()).parse(declaredReader);
-        if (declaredReader.canRead()) {
+    }
+
+    private void validateHeadwearItem(ItemStack stack) {
+        var equippable = stack.get(DataComponents.EQUIPPABLE);
+        if (equippable == null
+                || equippable.slot() != net.minecraft.world.entity.EquipmentSlot.HEAD) {
             throw new IllegalStateException(
-                    "Declared item components contain trailing input at cursor "
-                            + declaredReader.getCursor() + '.');
+                    "Headwear item must parse to minecraft:equippable with slot=head.");
         }
-        ItemStack declared = declaredInput.createItemStack(planned.count());
-        if (!ItemStack.isSameItemSameComponents(parsed, declared)) {
+        CapturePlan.HeadwearSpec declared = plan.provenance().representation().headwear();
+        boolean hasEquipmentModel = equippable.assetId().isPresent();
+        if (hasEquipmentModel != declared.renderMode().equals("equipment_model")) {
             throw new IllegalStateException(
-                    "Parsed item components do not match the separately hash-bound component map.");
+                    "Headwear renderMode does not match the parsed equippable equipment asset.");
         }
-        return parsed;
+        String actualOverlay = equippable.cameraOverlay().map(Object::toString).orElse(null);
+        if (!java.util.Objects.equals(actualOverlay, declared.cameraOverlay())) {
+            throw new IllegalStateException(
+                    "Headwear cameraOverlay does not match the parsed equippable component.");
+        }
+        boolean needsArmorStand = plan.scenes().stream()
+                .anyMatch(scene -> scene.targetKind() == CapturePlan.TargetKind.HEADWEAR
+                        && "armor_stand".equals(scene.fixture().subject()));
+        if (needsArmorStand
+                && !equippable.canBeEquippedBy(
+                        BuiltInRegistries.ENTITY_TYPE.wrapAsHolder(
+                                net.minecraft.world.entity.EntityTypes.ARMOR_STAND))) {
+            throw new IllegalStateException(
+                    "Headwear equippable allowed_entities excludes armor stands.");
+        }
+        boolean needsPlayer = plan.scenes().stream()
+                .anyMatch(scene -> scene.targetKind() == CapturePlan.TargetKind.HEADWEAR
+                        && "player".equals(scene.fixture().subject()));
+        if (needsPlayer
+                && !equippable.canBeEquippedBy(
+                        BuiltInRegistries.ENTITY_TYPE.wrapAsHolder(
+                                net.minecraft.world.entity.EntityTypes.PLAYER))) {
+            throw new IllegalStateException("Headwear equippable allowed_entities excludes players.");
+        }
     }
 
     private void prepareScene(Minecraft client) {
@@ -726,18 +1009,29 @@ final class CaptureCoordinator {
         Scene scene = currentScene();
         renderedSettleFrames = 0;
         targetResizeAttempts = 0;
+        cameraReadyFrames = 0;
         renderFrameEvidence.abandonFrame();
         renderPredicatesLogged = false;
         animationTargetTick = -1;
         sceneServerSetupFuture = null;
         animationServerSetupFuture = null;
+        currentFixtureEvidence = null;
+        currentObservedFixture = null;
+        currentScaleReferenceAttestation = null;
+        currentRuntimeAttestation = null;
+        sceneSettledTicks = 0;
+        sceneAnimationTicksElapsed = 0;
+        environmentSyncTicks = 0;
+        fixtureSetupCompletedTick = -1;
         resize(client, scene.width(), scene.height());
+        applyStudioOptions(client, scene);
         player.stopUsingItem();
         player.swinging = false;
         player.swingingArm = null;
         player.swingTime = 0;
         player.oAttackAnim = 0.0F;
         player.attackAnim = 0.0F;
+        player.setInvisible(false);
         client.gui.toastManager().clear();
         // Drive held-use through Minecraft's own key/action loop. Without a
         // held use mapping, the client releases an item on the next tick even
@@ -745,23 +1039,49 @@ final class CaptureCoordinator {
         client.options.keyUse.setDown(false);
         player.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
         player.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
+        player.setItemSlot(net.minecraft.world.entity.EquipmentSlot.CHEST, ItemStack.EMPTY);
         player.getInventory().setItem(0, ItemStack.EMPTY);
         player.getInventory().setItem(1, ItemStack.EMPTY);
+        playerModelOverride = scene.playerModel() == PlayerModel.STEVE
+                ? PlayerModelType.WIDE
+                : PlayerModelType.SLIM;
+        player.setPos(scene.cameraPose().x(), scene.cameraPose().y(), scene.cameraPose().z());
+        player.setYRot((float) scene.cameraPose().yaw());
+        player.setXRot((float) scene.cameraPose().pitch());
+        player.setYHeadRot((float) scene.cameraPose().yaw());
+        player.setYBodyRot((float) scene.cameraPose().yaw());
+        player.setOldPosAndRot();
 
-        ItemStack sceneStack = itemForScene(scene);
+        ItemStack sceneStack = itemStacks.containsKey(scene.fixture().stateId())
+                ? itemForScene(scene)
+                : ItemStack.EMPTY;
         if (scene.context() == Context.WORLD) {
             prepareWorldScene(client, player, scene, sceneStack);
         } else {
             prepareGuiScene(client, player, scene, sceneStack);
+            if (scene.targetKind() == CapturePlan.TargetKind.BLOCK) {
+                synchronizeServerFixture(client, player, scene);
+            } else {
+                synchronizeServerGuiItem(client, player, scene, sceneStack);
+            }
         }
         equipTicksRemaining = scene.context() == Context.WORLD
-                ? WORLD_EQUIP_TICKS
+                ? scene.targetKind() == CapturePlan.TargetKind.HELD_ITEM
+                                || scene.targetKind() == CapturePlan.TargetKind.HEADWEAR
+                        ? WORLD_EQUIP_TICKS
+                        : 0
                 : GUI_SETTLE_TICKS;
+        settlingTicksRemaining = scene.settlingTicks();
+        fixtureAnimationTicksRemaining = SceneFixtureExecutor.requiredAnimationTicks(scene);
         state = State.WAITING_FOR_EQUIP;
     }
 
     private ItemStack itemForScene(Scene scene) {
-        ItemStack result = itemStack.copyWithCount(scene.stackCount(plan.provenance().itemStack().count()));
+        ItemStack planned = itemStacks.get(scene.fixture().stateId());
+        if (planned == null) {
+            throw new IllegalStateException("Scene has no hash-bound item-stack representation state.");
+        }
+        ItemStack result = planned.copyWithCount(scene.stackCount(planned.getCount()));
         if (scene.presentation() != null && scene.presentation().containsKey("showGlint")) {
             result.set(DataComponents.ENCHANTMENT_GLINT_OVERRIDE, scene.presentationFlag("showGlint", false));
         }
@@ -778,7 +1098,8 @@ final class CaptureCoordinator {
     private void prepareWorldScene(
             Minecraft client, LocalPlayer player, Scene scene, ItemStack sceneStack) {
         client.setScreenAndShow(null);
-        if (client.gui.hud.isHidden()) client.gui.hud.toggle();
+        boolean heldItemScene = scene.targetKind() == CapturePlan.TargetKind.HELD_ITEM;
+        if (client.gui.hud.isHidden() == heldItemScene) client.gui.hud.toggle();
         client.gameRenderer.mainCamera().disablePanoramicMode();
         client.options.fov().set(scene.fov());
         client.options.guiScale().set(scene.guiScale());
@@ -788,26 +1109,341 @@ final class CaptureCoordinator {
             case THIRD_PERSON_BACK -> CameraType.THIRD_PERSON_BACK;
             case THIRD_PERSON_FRONT -> CameraType.THIRD_PERSON_FRONT;
         });
-        playerModelOverride = scene.playerModel() == PlayerModel.STEVE
-                ? PlayerModelType.WIDE
-                : PlayerModelType.SLIM;
-        player.setYRot(0);
-        player.setXRot(0);
-        player.setYHeadRot(0);
-        float bodyYaw = scene.camera() == Camera.FIRST_PERSON ? 0 : 35;
-        if (scene.id().contains("left")) bodyYaw = -bodyYaw;
+        player.setPos(scene.cameraPose().x(), scene.cameraPose().y(), scene.cameraPose().z());
+        player.setYRot((float) scene.cameraPose().yaw());
+        player.setXRot((float) scene.cameraPose().pitch());
+        player.setYHeadRot((float) scene.cameraPose().yaw());
+        float bodyYaw = heldItemScene && scene.camera() != Camera.FIRST_PERSON
+                ? (scene.id().contains("left") ? -35 : 35)
+                : (float) scene.cameraPose().yaw();
         player.setYBodyRot(bodyYaw);
-        player.setOldRot();
-        InteractionHand hand = scene.hand() == Hand.RIGHT
-                ? InteractionHand.MAIN_HAND
-                : InteractionHand.OFF_HAND;
-        synchronizeServerHeldItem(client, player, hand, sceneStack);
-        player.setItemInHand(hand, sceneStack);
-        synchronizeVanillaHandRenderer(client, player);
+        player.setOldPosAndRot();
+        client.debugEntries.setStatus(
+                DebugScreenEntries.ENTITY_HITBOXES,
+                scene.viewKind() == CapturePlan.ViewKind.DEBUG_HITBOX_REFERENCE
+                        ? DebugScreenEntryStatus.ALWAYS_ON
+                        : DebugScreenEntryStatus.NEVER);
+        client.debugEntries.setOverlayVisible(false);
+        if (heldItemScene) {
+            InteractionHand hand = scene.hand() == Hand.RIGHT
+                    ? InteractionHand.MAIN_HAND
+                    : InteractionHand.OFF_HAND;
+            synchronizeServerHeldItem(client, player, scene, hand, sceneStack);
+            player.setItemInHand(hand, sceneStack);
+            synchronizeVanillaHandRenderer(client, player);
+        } else {
+            synchronizeServerFixture(client, player, scene);
+            if (scene.fixture().kind().equals("measurement_control")) {
+                Scene base = authoritativeBaseScene(scene);
+                if (scene.targetKind() == CapturePlan.TargetKind.HEADWEAR) {
+                    player.setInvisible(false);
+                    applyLocalHeadwearPose(player, base.fixture().pose());
+                    player.setItemSlot(
+                            net.minecraft.world.entity.EquipmentSlot.HEAD, ItemStack.EMPTY);
+                    player.setItemSlot(
+                            net.minecraft.world.entity.EquipmentSlot.CHEST, ItemStack.EMPTY);
+                }
+            } else if (scene.targetKind() == CapturePlan.TargetKind.HEADWEAR) {
+                boolean equippedPlayer = scene.fixture().subject().equals("player");
+                player.setInvisible(scene.fixture().subject().equals("armor_stand"));
+                player.setYHeadRot(scene.fixture().subjectYaw());
+                player.setYBodyRot(scene.fixture().subjectYaw());
+                applyLocalHeadwearPose(player, scene.fixture().pose());
+                player.setItemSlot(
+                        net.minecraft.world.entity.EquipmentSlot.HEAD,
+                        equippedPlayer ? sceneStack : ItemStack.EMPTY);
+                player.setItemSlot(
+                        net.minecraft.world.entity.EquipmentSlot.CHEST,
+                        scene.fixture().chestArmor() ? headwearChestArmor : ItemStack.EMPTY);
+            }
+        }
+    }
+
+    private void applyStudioOptions(Minecraft client, Scene scene) {
+        CapturePlan.Studio studio = plan.studio();
+        client.options.preferredGraphicsBackend().set(PreferredGraphicsApi.OPENGL);
+        client.options.cloudStatus().set(CloudStatus.OFF);
+        client.options.particles().set(ParticleStatus.MINIMAL);
+        client.options.entityShadows().set(true);
+        client.options.bobView().set(false);
+        client.options.renderDistance().set(studio.renderDistance());
+        client.options.simulationDistance().set(studio.simulationDistance());
+        client.options.fov().set(scene.fov());
+        client.options.guiScale().set(scene.guiScale());
+        // The exact individual overrides intentionally form Minecraft's CUSTOM
+        // preset. Claiming FANCY here is false after clouds/particles are bound.
+        client.options.graphicsPreset().set(GraphicsPreset.CUSTOM);
+        if (client.options.preferredGraphicsBackend().get() != PreferredGraphicsApi.OPENGL
+                || client.options.graphicsPreset().get() != GraphicsPreset.CUSTOM
+                || client.options.cloudStatus().get() != CloudStatus.OFF
+                || client.options.particles().get() != ParticleStatus.MINIMAL
+                || !client.options.entityShadows().get()
+                || client.options.bobView().get()
+                || client.options.renderDistance().get() != studio.renderDistance()
+                || client.options.simulationDistance().get() != studio.simulationDistance()) {
+            throw new IllegalStateException("Minecraft rejected deterministic studio render settings.");
+        }
+    }
+
+    private SceneRuntimeAttestation verifyAndSampleRuntime(Minecraft client, Scene scene) {
+        LocalPlayer player = requirePlayer(client);
+        CapturePlan.CameraPose actual = sampleRenderCamera(client);
+        CapturePlan.CameraPose frameActual = sampleFrameCamera(client);
+        CapturePlan.CameraPose expected = scene.expectedRenderCameraPose();
+        net.minecraft.client.Camera camera = client.gameRenderer.mainCamera();
+        if (!camera.isInitialized()
+                || camera.entity() != player
+                || !cameraPoseMatches(actual, expected)
+                || !cameraPoseMatches(frameActual, expected)) {
+            throw new IllegalStateException(
+                    "Scene '" + scene.id() + "': "
+                            + cameraPoseMismatch(actual, frameActual, expected));
+        }
+        CameraType expectedType = switch (scene.camera()) {
+            case FIRST_PERSON, NEUTRAL -> CameraType.FIRST_PERSON;
+            case THIRD_PERSON_BACK -> CameraType.THIRD_PERSON_BACK;
+            case THIRD_PERSON_FRONT -> CameraType.THIRD_PERSON_FRONT;
+        };
+        CameraType actualType = client.options.getCameraType();
+        if (actualType != expectedType
+                || client.options.fov().get() != scene.fov()
+                || Math.abs(camera.getFov() - scene.fov()) > 0.01F
+                || client.options.guiScale().get() != scene.guiScale()
+                || client.debugEntries.isOverlayVisible()) {
+            throw new IllegalStateException(
+                    "Minecraft camera settings diverged for scene '" + scene.id()
+                            + "': cameraType=" + actualType + " expected=" + expectedType
+                            + ", optionFov=" + client.options.fov().get()
+                            + " expected=" + scene.fov()
+                            + ", renderedFov=" + camera.getFov()
+                            + ", guiScale=" + client.options.guiScale().get()
+                            + " expectedGuiScale=" + scene.guiScale()
+                            + ", debugUi=" + client.debugEntries.isOverlayVisible()
+                            + " expected=false.");
+        }
+        if (!near(player.getX(), scene.cameraPose().x(), 0.002)
+                || !near(player.getY(), scene.cameraPose().y(), 0.002)
+                || !near(player.getZ(), scene.cameraPose().z(), 0.002)) {
+            throw new IllegalStateException(
+                    "Minecraft player feet anchor diverged from the hash-bound scene pose.");
+        }
+        if (playerModelOverride == null || player.getSkin().model() != playerModelOverride) {
+            throw new IllegalStateException(
+                    "Minecraft player model did not match the planned Steve/Alex variant.");
+        }
+        if (client.level == null) {
+            throw new IllegalStateException("Minecraft client level disappeared during runtime attestation.");
+        }
+        Scene environmentScene = environmentAnchorScene(scene);
+        net.minecraft.core.BlockPos subject = SceneFixtureExecutor.subjectPosition(environmentScene);
+        net.minecraft.core.BlockPos lightingSample =
+                SceneFixtureExecutor.lightingSamplePosition(environmentScene);
+        net.minecraft.core.BlockPos skyLightProbe =
+                SceneFixtureExecutor.skyLightProbePosition(environmentScene);
+        String actualBiome = client.level.getBiome(subject)
+                .unwrapKey()
+                .map(key -> key.identifier().toString())
+                .orElseThrow(() -> new IllegalStateException(
+                        "Minecraft client biome has no registry identity."));
+        long actualTime = client.level.getDefaultClockTime();
+        boolean actualRaining = client.level.isRaining();
+        int actualSkyLight = client.level.getBrightness(LightLayer.SKY, skyLightProbe);
+        if (!actualBiome.equals(scene.environment().biome())
+                || actualTime != scene.environment().time()
+                || actualRaining
+                || actualSkyLight != scene.environment().skyLight()) {
+            throw new IllegalStateException(
+                    "Minecraft environment diverged from the scene: biome="
+                            + actualBiome + " expected=" + scene.environment().biome()
+                            + ", time=" + actualTime + " expected=" + scene.environment().time()
+                            + ", raining=" + actualRaining + " expected=false"
+                            + ", skyLight=" + actualSkyLight + " expected="
+                            + scene.environment().skyLight() + '.');
+        }
+        CapturePlan.LightSource plannedLight = scene.environment().lightSource();
+        net.minecraft.core.BlockPos lightPosition = lightingSample.offset(
+                plannedLight.offset().x(), plannedLight.offset().y(), plannedLight.offset().z());
+        var lightState = client.level.getBlockState(lightPosition);
+        int actualLightSourceLevel = lightState.is(Blocks.LIGHT)
+                ? lightState.getValue(LightBlock.LEVEL)
+                : 0;
+        int actualBlockLight = client.level.getBrightness(LightLayer.BLOCK, lightingSample);
+        int expectedLightSourceLevel = plannedLight.level();
+        if (actualBlockLight != scene.environment().blockLight()
+                || actualLightSourceLevel != expectedLightSourceLevel) {
+            throw new IllegalStateException(
+                    "Minecraft studio block light diverged from the scene: subject="
+                            + actualBlockLight + " expected=" + scene.environment().blockLight()
+                            + ", source=" + actualLightSourceLevel + " expectedSource="
+                            + expectedLightSourceLevel + '.');
+        }
+        CapturePlan.Environment actualEnvironment = new CapturePlan.Environment(
+                actualBiome,
+                Math.toIntExact(actualTime),
+                "clear",
+                scene.environment().lightProfile(),
+                actualSkyLight,
+                actualBlockLight,
+                new CapturePlan.LightSource(
+                        actualLightSourceLevel, plannedLight.offset()));
+        if (currentScaleReferenceAttestation == null) {
+            throw new IllegalStateException(
+                    "Minecraft has no live ordinary-block scale-reference attestation for this frame.");
+        }
+        String actualCameraMode = switch (actualType) {
+            case FIRST_PERSON -> "first_person";
+            case THIRD_PERSON_BACK -> "third_person_back";
+            case THIRD_PERSON_FRONT -> "third_person_front";
+        };
+        return new SceneRuntimeAttestation(
+                actual,
+                actualCameraMode,
+                scene.context().id(),
+                Math.round(camera.getFov()),
+                client.options.guiScale().get(),
+                scene.hand().id(),
+                playerModelOverride == PlayerModelType.WIDE ? "steve" : "alex",
+                actualEnvironment,
+                currentScaleReferenceAttestation);
+    }
+
+    private static void applyLocalHeadwearPose(LocalPlayer player, String pose) {
+        player.setDeltaMovement(0, 0, 0);
+        player.walkAnimation.stop();
+        player.setPose(switch (pose) {
+            case "idle", "walk" -> net.minecraft.world.entity.Pose.STANDING;
+            case "crouch" -> net.minecraft.world.entity.Pose.CROUCHING;
+            case "swim" -> net.minecraft.world.entity.Pose.SWIMMING;
+            case "glide" -> net.minecraft.world.entity.Pose.FALL_FLYING;
+            default -> throw new IllegalStateException("Unsupported headwear pose escaped validation.");
+        });
+        if (pose.equals("walk")) player.walkAnimation.update(1.0F, 1.0F, 1.0F);
+    }
+
+    private static boolean near(double left, double right, double tolerance) {
+        return Math.abs(left - right) <= tolerance;
+    }
+
+    private static double angleDifference(double left, double right) {
+        double raw = Math.abs(left - right) % 360.0;
+        return Math.min(raw, 360.0 - raw);
+    }
+
+    private static CapturePlan.CameraPose sampleRenderCamera(Minecraft client) {
+        net.minecraft.client.Camera camera = client.gameRenderer.mainCamera();
+        var position = camera.position();
+        return new CapturePlan.CameraPose(
+                position.x, position.y, position.z, camera.yaw(), camera.xRot());
+    }
+
+    private static CapturePlan.CameraPose sampleFrameCamera(Minecraft client) {
+        var state = client.gameRenderer.gameRenderState().levelRenderState.cameraRenderState;
+        if (!state.initialized || state.pos == null) {
+            return new CapturePlan.CameraPose(
+                    Double.NaN, Double.NaN, Double.NaN, Double.NaN, Double.NaN);
+        }
+        return new CapturePlan.CameraPose(
+                state.pos.x, state.pos.y, state.pos.z, state.yRot, state.xRot);
+    }
+
+    static boolean cameraPoseMatches(
+            CapturePlan.CameraPose actual, CapturePlan.CameraPose expected) {
+        return near(actual.x(), expected.x(), 0.002)
+                && near(actual.y(), expected.y(), 0.002)
+                && near(actual.z(), expected.z(), 0.002)
+                && angleDifference(actual.yaw(), expected.yaw()) <= 0.05
+                && Math.abs(actual.pitch() - expected.pitch()) <= 0.05;
+    }
+
+    static String cameraPoseMismatch(
+            CapturePlan.CameraPose actual, CapturePlan.CameraPose expected) {
+        return cameraPoseMismatch(actual, actual, expected);
+    }
+
+    static String cameraPoseMismatch(
+            CapturePlan.CameraPose actual,
+            CapturePlan.CameraPose frameActual,
+            CapturePlan.CameraPose expected) {
+        return "Minecraft render camera did not reach the hash-bound pose within the bounded readiness window: actual=("
+                + actual.x() + ',' + actual.y() + ',' + actual.z() + ';'
+                + actual.yaw() + ',' + actual.pitch() + ") frame=("
+                + frameActual.x() + ',' + frameActual.y() + ',' + frameActual.z() + ';'
+                + frameActual.yaw() + ',' + frameActual.pitch() + ") expected=("
+                + expected.x() + ',' + expected.y() + ',' + expected.z() + ';'
+                + expected.yaw() + ',' + expected.pitch() + ").";
+    }
+
+    private boolean clientEnvironmentReady(Minecraft client, Scene scene) {
+        if (client.level == null) return false;
+        Scene environmentScene = environmentAnchorScene(scene);
+        net.minecraft.core.BlockPos subject = SceneFixtureExecutor.subjectPosition(environmentScene);
+        net.minecraft.core.BlockPos lightingSample =
+                SceneFixtureExecutor.lightingSamplePosition(environmentScene);
+        net.minecraft.core.BlockPos skyLightProbe =
+                SceneFixtureExecutor.skyLightProbePosition(environmentScene);
+        String biome = client.level.getBiome(subject)
+                .unwrapKey()
+                .map(key -> key.identifier().toString())
+                .orElse(null);
+        CapturePlan.LightSource plannedLight = scene.environment().lightSource();
+        net.minecraft.core.BlockPos lightPosition = lightingSample.offset(
+                plannedLight.offset().x(), plannedLight.offset().y(), plannedLight.offset().z());
+        var lightState = client.level.getBlockState(lightPosition);
+        int lightSourceLevel = lightState.is(Blocks.LIGHT)
+                ? lightState.getValue(LightBlock.LEVEL)
+                : 0;
+        int expectedSourceLevel = plannedLight.level();
+        return scene.environment().biome().equals(biome)
+                && client.level.getDefaultClockTime() == scene.environment().time()
+                && !client.level.isRaining()
+                && client.level.getBrightness(LightLayer.SKY, skyLightProbe)
+                        == scene.environment().skyLight()
+                && client.level.getBrightness(LightLayer.BLOCK, lightingSample)
+                        == scene.environment().blockLight()
+                && lightSourceLevel == expectedSourceLevel;
+    }
+
+    private String clientEnvironmentMismatch(Minecraft client, Scene scene) {
+        if (client.level == null) return "client level is unavailable";
+        Scene environmentScene = environmentAnchorScene(scene);
+        net.minecraft.core.BlockPos subject = SceneFixtureExecutor.subjectPosition(environmentScene);
+        net.minecraft.core.BlockPos lightingSample =
+                SceneFixtureExecutor.lightingSamplePosition(environmentScene);
+        net.minecraft.core.BlockPos skyLightProbe =
+                SceneFixtureExecutor.skyLightProbePosition(environmentScene);
+        CapturePlan.LightSource plannedLight = scene.environment().lightSource();
+        net.minecraft.core.BlockPos lightPosition = lightingSample.offset(
+                plannedLight.offset().x(), plannedLight.offset().y(), plannedLight.offset().z());
+        var lightState = client.level.getBlockState(lightPosition);
+        int lightSourceLevel = lightState.is(Blocks.LIGHT)
+                ? lightState.getValue(LightBlock.LEVEL)
+                : 0;
+        String biome = client.level.getBiome(subject)
+                .unwrapKey()
+                .map(key -> key.identifier().toString())
+                .orElse("unregistered");
+        return "biome=" + biome + " expected=" + scene.environment().biome()
+                + ", time=" + client.level.getDefaultClockTime()
+                + " expected=" + scene.environment().time()
+                + ", raining=" + client.level.isRaining() + " expected=false"
+                + ", skyLight=" + client.level.getBrightness(LightLayer.SKY, skyLightProbe)
+                + " expected=" + scene.environment().skyLight()
+                + ", blockLight=" + client.level.getBrightness(LightLayer.BLOCK, lightingSample)
+                + " expected=" + scene.environment().blockLight()
+                + ", lightSource=" + lightSourceLevel
+                + " expected=" + plannedLight.level()
+                + ", subject=" + subject.toShortString()
+                + ", skyLightProbe=" + skyLightProbe.toShortString()
+                + ", lightingSample=" + lightingSample.toShortString()
+                + ", lightPosition=" + lightPosition.toShortString();
     }
 
     private void synchronizeServerHeldItem(
-            Minecraft client, LocalPlayer player, InteractionHand hand, ItemStack sceneStack) {
+            Minecraft client,
+            LocalPlayer player,
+            Scene scene,
+            InteractionHand hand,
+            ItemStack sceneStack) {
         MinecraftServer server = client.getSingleplayerServer();
         if (server == null) {
             throw new IllegalStateException("Integrated server disappeared during scene setup.");
@@ -819,11 +1455,102 @@ final class CaptureCoordinator {
             if (serverPlayer == null) {
                 throw new IllegalStateException("Integrated-server capture player is unavailable.");
             }
+            SceneFixtureExecutor.configureEnvironment(server.overworld(), serverPlayer, scene);
             serverPlayer.getInventory().setSelectedSlot(0);
             serverPlayer.setItemInHand(InteractionHand.MAIN_HAND, ItemStack.EMPTY);
             serverPlayer.setItemInHand(InteractionHand.OFF_HAND, ItemStack.EMPTY);
             serverPlayer.setItemInHand(hand, serverStack);
             serverPlayer.containerMenu.broadcastChanges();
+            serverPlayer.teleportTo(
+                    server.overworld(),
+                    scene.cameraPose().x(),
+                    scene.cameraPose().y(),
+                    scene.cameraPose().z(),
+                    Set.of(),
+                    (float) scene.cameraPose().yaw(),
+                    (float) scene.cameraPose().pitch(),
+                    true);
+            return FixtureEvidence.item(
+                    plan.provenance().representation().strategy().id(),
+                    scene.fixture().stateId(),
+                    BuiltInRegistries.ITEM.getKey(serverStack.getItem()).toString(),
+                    true);
+        });
+    }
+
+    private void synchronizeServerFixture(Minecraft client, LocalPlayer player, Scene scene) {
+        MinecraftServer server = client.getSingleplayerServer();
+        if (server == null) {
+            throw new IllegalStateException("Integrated server disappeared during fixture setup.");
+        }
+        java.util.UUID playerId = player.getUUID();
+        ItemStack inventoryStack = scene.context() == Context.INVENTORY
+                ? itemForScene(scene).copy()
+                : ItemStack.EMPTY;
+        sceneServerSetupFuture = server.submit(() -> {
+            ServerPlayer serverPlayer = server.getPlayerList().getPlayer(playerId);
+            if (serverPlayer == null) {
+                throw new IllegalStateException("Integrated-server capture player is unavailable.");
+            }
+            serverPlayer.teleportTo(
+                    server.overworld(),
+                    scene.cameraPose().x(),
+                    scene.cameraPose().y(),
+                    scene.cameraPose().z(),
+                    Set.of(),
+                    (float) scene.cameraPose().yaw(),
+                    (float) scene.cameraPose().pitch(),
+                    true);
+            FixtureEvidence evidence;
+            if (scene.fixture().kind().equals("measurement_control")) {
+                evidence = SceneFixtureExecutor.applyMeasurementControl(
+                        server.overworld(),
+                        serverPlayer,
+                        scene,
+                        authoritativeBaseScene(scene),
+                        plan.provenance().representation());
+            } else {
+                evidence = SceneFixtureExecutor.apply(
+                        server.overworld(), serverPlayer, scene, plan.provenance().representation());
+            }
+            if (!inventoryStack.isEmpty()) {
+                serverPlayer.getInventory().setSelectedSlot(0);
+                serverPlayer.getInventory().setItem(0, inventoryStack);
+                serverPlayer.containerMenu.broadcastChanges();
+            }
+            return evidence;
+        });
+    }
+
+    private void synchronizeServerGuiItem(
+            Minecraft client, LocalPlayer player, Scene scene, ItemStack sceneStack) {
+        MinecraftServer server = client.getSingleplayerServer();
+        if (server == null) {
+            throw new IllegalStateException("Integrated server disappeared during GUI setup.");
+        }
+        java.util.UUID playerId = player.getUUID();
+        String itemId = BuiltInRegistries.ITEM.getKey(sceneStack.getItem()).toString();
+        sceneServerSetupFuture = server.submit(() -> {
+            ServerPlayer serverPlayer = server.getPlayerList().getPlayer(playerId);
+            if (serverPlayer == null) {
+                throw new IllegalStateException("Integrated-server capture player is unavailable.");
+            }
+            SceneFixtureExecutor.configureEnvironment(server.overworld(), serverPlayer, scene);
+            serverPlayer.setDeltaMovement(0, 0, 0);
+            serverPlayer.teleportTo(
+                    server.overworld(),
+                    scene.cameraPose().x(),
+                    scene.cameraPose().y(),
+                    scene.cameraPose().z(),
+                    Set.of(),
+                    (float) scene.cameraPose().yaw(),
+                    (float) scene.cameraPose().pitch(),
+                    true);
+            return FixtureEvidence.item(
+                    plan.provenance().representation().strategy().id(),
+                    scene.fixture().stateId(),
+                    itemId,
+                    false);
         });
     }
 
@@ -841,28 +1568,87 @@ final class CaptureCoordinator {
     private void waitForEquip(Minecraft client) {
         if (sceneServerSetupFuture != null) {
             if (!sceneServerSetupFuture.isDone()) return;
-            sceneServerSetupFuture.join();
+            currentFixtureEvidence = sceneServerSetupFuture.join();
             sceneServerSetupFuture = null;
+            fixtureSetupCompletedTick = elapsedTicks;
         }
-        equipTicksRemaining--;
+        if (!clientEnvironmentReady(client, currentScene())) {
+            environmentSyncTicks++;
+            if (environmentSyncTicks > MAX_ENVIRONMENT_SYNC_TICKS) {
+                throw new IllegalStateException(
+                        "Minecraft client did not acknowledge the exact server-applied studio environment for scene '"
+                                + currentScene().id() + "' within "
+                                + MAX_ENVIRONMENT_SYNC_TICKS + " ticks: "
+                                + clientEnvironmentMismatch(client, currentScene()));
+            }
+            return;
+        }
+        if (equipTicksRemaining > 0) {
+            equipTicksRemaining--;
+        }
         if (equipTicksRemaining > 0) return;
+        if (settlingTicksRemaining > 0) {
+            settlingTicksRemaining--;
+            sceneSettledTicks++;
+            return;
+        }
+        if (fixtureAnimationTicksRemaining > 0) {
+            fixtureAnimationTicksRemaining--;
+            sceneAnimationTicksElapsed++;
+            return;
+        }
         Scene scene = currentScene();
+        LocalPlayer player = requirePlayer(client);
         if (scene.context() == Context.WORLD) {
-            LocalPlayer player = requirePlayer(client);
             if (client.gameMode == null || client.gameMode.getPlayerMode() != GameType.CREATIVE) {
                 throw new IllegalStateException("Capture client is not in creative mode.");
             }
-            InteractionHand hand = scene.hand() == Hand.RIGHT
-                    ? InteractionHand.MAIN_HAND
-                    : InteractionHand.OFF_HAND;
-            ItemStack expected = itemForScene(scene);
-            ItemStack actual = player.getItemInHand(hand);
-            if (actual.getCount() != expected.getCount()
-                    || !ItemStack.isSameItemSameComponents(actual, expected)) {
-                throw new IllegalStateException(
-                        "Exact planned item stack did not survive integrated-server synchronization.");
+            if (scene.targetKind() == CapturePlan.TargetKind.HELD_ITEM) {
+                InteractionHand hand = scene.hand() == Hand.RIGHT
+                        ? InteractionHand.MAIN_HAND
+                        : InteractionHand.OFF_HAND;
+                ItemStack expected = itemForScene(scene);
+                ItemStack actual = player.getItemInHand(hand);
+                if (actual.getCount() != expected.getCount()
+                        || !ItemStack.isSameItemSameComponents(actual, expected)) {
+                    throw new IllegalStateException(
+                            "Exact planned item stack did not survive integrated-server synchronization.");
+                }
+                synchronizeVanillaHandRenderer(client, player);
+            } else if (scene.targetKind() == CapturePlan.TargetKind.HEADWEAR
+                    && !scene.fixture().kind().equals("measurement_control")) {
+                applyLocalHeadwearPose(player, scene.fixture().pose());
+                ItemStack actual = player.getItemBySlot(net.minecraft.world.entity.EquipmentSlot.HEAD);
+                boolean bare = scene.fixture().subject().equals("bare_control")
+                        || scene.fixture().subject().equals("armor_stand");
+                if ((bare && !actual.isEmpty())
+                        || (!bare && !exactStack(actual, itemForScene(scene)))) {
+                    throw new IllegalStateException(
+                            "Exact planned headwear did not survive integrated-server synchronization.");
+                }
+                ItemStack actualChest = player.getItemBySlot(
+                        net.minecraft.world.entity.EquipmentSlot.CHEST);
+                if ((scene.fixture().chestArmor()
+                                && !exactStack(actualChest, headwearChestArmor))
+                        || (!scene.fixture().chestArmor() && !actualChest.isEmpty())) {
+                    throw new IllegalStateException(
+                            "Exact planned headwear compatibility chest armor did not survive integrated-server synchronization.");
+                }
+                net.minecraft.world.entity.Pose expectedPose = switch (scene.fixture().pose()) {
+                    case "idle", "walk" -> net.minecraft.world.entity.Pose.STANDING;
+                    case "crouch" -> net.minecraft.world.entity.Pose.CROUCHING;
+                    case "swim" -> net.minecraft.world.entity.Pose.SWIMMING;
+                    case "glide" -> net.minecraft.world.entity.Pose.FALL_FLYING;
+                    default -> throw new IllegalStateException(
+                            "Unsupported headwear pose escaped validation.");
+                };
+                if (player.getPose() != expectedPose
+                        || (scene.fixture().pose().equals("walk")
+                                && !player.walkAnimation.isMoving())) {
+                    throw new IllegalStateException(
+                            "Minecraft did not retain the exact planned headwear body pose.");
+                }
             }
-            synchronizeVanillaHandRenderer(client, player);
             client.gui.toastManager().clear();
             LOGGER.info(
                     "Packwright capture world scene ready; id={}; mode={}; handsBusy={}; mainHand={}; offHand={}",
@@ -871,12 +1657,17 @@ final class CaptureCoordinator {
                     player.isHandsBusy(),
                     BuiltInRegistries.ITEM.getKey(player.getMainHandItem().getItem()),
                     BuiltInRegistries.ITEM.getKey(player.getOffhandItem().getItem()));
-            beginAnimation(client, player, scene);
+            if (scene.targetKind() == CapturePlan.TargetKind.HELD_ITEM) {
+                beginAnimation(client, player, scene);
+            }
         }
-        animationTicksRemaining = scene.frame();
+        animationTicksRemaining = scene.targetKind() == CapturePlan.TargetKind.HELD_ITEM
+                ? scene.frame()
+                : 0;
         if (animationServerSetupFuture != null || animationTicksRemaining > 0) {
             state = State.WAITING_FOR_ANIMATION;
         } else {
+            stabilizeLocalCameraAnchor(player, scene);
             prepareAnimationTarget(scene);
             state = State.WAITING_FOR_FRAMES;
         }
@@ -927,7 +1718,6 @@ final class CaptureCoordinator {
 
     private void prepareGuiScene(
             Minecraft client, LocalPlayer player, Scene scene, ItemStack sceneStack) {
-        playerModelOverride = null;
         client.options.setCameraType(CameraType.FIRST_PERSON);
         client.options.guiScale().set(scene.guiScale());
         client.resizeGui();
@@ -987,6 +1777,7 @@ final class CaptureCoordinator {
                         "Client rejected the server-synchronized active-use animation.");
             }
             if (animationTicksRemaining == 0) {
+                stabilizeLocalCameraAnchor(player, scene);
                 prepareAnimationTarget(scene);
                 state = State.WAITING_FOR_FRAMES;
             }
@@ -1023,8 +1814,25 @@ final class CaptureCoordinator {
             }
             case IDLE -> { }
         }
+        stabilizeLocalCameraAnchor(player, scene);
         prepareAnimationTarget(scene);
         state = State.WAITING_FOR_FRAMES;
+    }
+
+    /**
+     * Minecraft interpolates both entity position and view rotation from the
+     * previous client tick. A scene can otherwise exhaust the bounded render
+     * readiness window before the next 20 Hz tick when the client is rendering
+     * at very high frame rates. Snap both endpoints only after the integrated
+     * server has acknowledged the scene so the hash-bound pose remains the
+     * ordinary vanilla camera composition, not an injected camera transform.
+     */
+    private static void stabilizeLocalCameraAnchor(LocalPlayer player, Scene scene) {
+        player.setPos(scene.cameraPose().x(), scene.cameraPose().y(), scene.cameraPose().z());
+        player.setYRot((float) scene.cameraPose().yaw());
+        player.setXRot((float) scene.cameraPose().pitch());
+        player.setYHeadRot((float) scene.cameraPose().yaw());
+        player.setOldPosAndRot();
     }
 
     private void prepareAnimationTarget(Scene scene) {
@@ -1093,6 +1901,12 @@ final class CaptureCoordinator {
             if (evidence.width() != scene.width() || evidence.height() != scene.height()) {
                 throw new IOException("Minecraft framebuffer dimensions changed during capture.");
             }
+            if (currentRuntimeAttestation == null
+                    || currentFixtureEvidence == null
+                    || currentObservedFixture == null) {
+                throw new IOException(
+                        "Minecraft screenshot has no verified runtime or fixture attestation.");
+            }
             AtomicFiles.moveNew(staging, destination);
             if (!Hashing.sha256(destination, MAX_SCREENSHOT_BYTES).equals(evidence.sha256())) {
                 throw new IOException("Screenshot changed during atomic commit.");
@@ -1103,7 +1917,17 @@ final class CaptureCoordinator {
                     evidence.width(),
                     evidence.height(),
                     evidence.size(),
-                    evidence.sha256()));
+                    evidence.sha256(),
+                    plan.studio().sha256(),
+                    scene.appliedFixtureSha256(plan.provenance().representation()),
+                    sceneSettledTicks,
+                    renderedSettleFrames,
+                    scene.targetKind() == CapturePlan.TargetKind.HELD_ITEM
+                            ? scene.frame()
+                            : sceneAnimationTicksElapsed,
+                    currentRuntimeAttestation,
+                    currentFixtureEvidence,
+                    currentObservedFixture));
         } catch (Exception error) {
             result = AsyncCapture.failed(CaptureRuntime.boundedMessage(error));
         }
@@ -1185,6 +2009,9 @@ final class CaptureCoordinator {
         if (!text.contains(WORLD_SETTINGS_EXCERPT)) {
             throw new IOException("Minecraft client log has no deterministic-world settings evidence.");
         }
+        if (!text.contains(PACK_ACTIVATION_EXCERPT)) {
+            throw new IOException("Minecraft client log has no safe pack-activation evidence.");
+        }
         return new LogEvidence(
                 "logs/client.log",
                 Hashing.sha256(bytes),
@@ -1192,21 +2019,262 @@ final class CaptureCoordinator {
                 List.of(
                         WORLD_READY_EXCERPT,
                         WORLD_SETTINGS_EXCERPT,
+                        PACK_ACTIVATION_EXCERPT,
                         RESOURCE_DIAGNOSTICS_EXCERPT,
                         RESOURCE_RELOAD_EXCERPT));
     }
 
-    private Map<String, Object> successReport(Minecraft client, LogEvidence log) {
+    private Map<String, Object> successReport(Minecraft client, LogEvidence log) throws IOException {
         Map<String, Object> report = commonReport(client);
         report.put("status", "complete");
+        report.put("packActivation", packActivationAttestation(client));
         report.put("views", captures.stream().map(CapturedScene::toReport).toList());
+        report.put("measurements", analyzeMeasurements());
         report.put("log", log.toReport());
         return report;
     }
 
+    private List<Map<String, Object>> analyzeMeasurements() throws IOException {
+        Map<String, CapturedScene> byId = new LinkedHashMap<>();
+        for (CapturedScene capture : captures) byId.put(capture.scene().id(), capture);
+        List<Map<String, Object>> results = new ArrayList<>();
+        for (CapturedScene primary : captures) {
+            for (CapturePlan.MeasurementIntent intent : primary.scene().measurementIntents()) {
+                List<String> sceneIds;
+                if (intent.sourceSceneIds() != null) {
+                    sceneIds = intent.sourceSceneIds();
+                } else {
+                    List<String> defaults = new ArrayList<>();
+                    defaults.add(primary.scene().id());
+                    defaults.addAll(primary.scene().comparisonSceneIds());
+                    sceneIds = defaults.stream().distinct().sorted().toList();
+                }
+                List<CapturedScene> sources = new ArrayList<>();
+                for (String id : sceneIds) {
+                    CapturedScene source = byId.get(id);
+                    if (source == null) {
+                        results.add(skippedMeasurement(
+                                intent, sceneIds, "A declared comparison framebuffer is missing."));
+                        sources.clear();
+                        break;
+                    }
+                    sources.add(source);
+                }
+                if (sources.isEmpty()) continue;
+                boolean debugPrimary = primary.scene().viewKind()
+                        == CapturePlan.ViewKind.DEBUG_HITBOX_REFERENCE;
+                if (sources.stream().anyMatch(source ->
+                        !source.scene().requiredForAuthority()
+                                && source.scene().viewKind()
+                                        != CapturePlan.ViewKind.MEASUREMENT_CONTROL
+                                && !(debugPrimary && source == primary))) {
+                    results.add(skippedMeasurement(
+                            intent,
+                            sceneIds,
+                            "Augmented or debug framebuffers cannot satisfy an authoritative pixel measurement."));
+                    continue;
+                }
+                MeasurementValue measured;
+                try {
+                    measured = measureClientPixels(primary, sources, intent);
+                } catch (UnsupportedOperationException unsupported) {
+                    results.add(skippedMeasurement(intent, sceneIds, unsupported.getMessage()));
+                    continue;
+                }
+                double value = measured.value();
+                String status = measurementStatus(value, intent.threshold());
+                Map<String, Object> result = measurementBase(intent, sceneIds, status);
+                result.put("value", value);
+                result.put(
+                        "message",
+                        measured.message());
+                result.put(
+                        "sourcePngSha256s",
+                        sources.stream()
+                                .sorted(java.util.Comparator.comparing(source -> source.scene().id()))
+                                .map(CapturedScene::sha256)
+                                .toList());
+                results.add(Map.copyOf(result));
+            }
+        }
+        return List.copyOf(results);
+    }
+
+    private MeasurementValue measureClientPixels(
+            CapturedScene primary,
+            List<CapturedScene> sources,
+            CapturePlan.MeasurementIntent intent) throws IOException {
+        String metric = intent.metric();
+        if (metric.equals("pairwise_pixel_delta")
+                || metric.equals("screen_coverage")
+                || metric.equals("animation_stability")
+                || metric.equals("texture_variant_resolution")) {
+            if (sources.size() != 2 || intent.unit().equals("dot")) {
+                throw unsupported("This changed-pixel metric requires exactly two bound framebuffers.");
+            }
+            CapturedScene other = sources.getFirst() == primary
+                    ? sources.getLast() : sources.getFirst();
+            double value = ClientPixelAnalysis.changedPercent(
+                    readPixels(primary), readPixels(other), primary.width(), primary.height());
+            return new MeasurementValue(
+                    value,
+                    "Exact percentage of unequal ABGR client framebuffer pixels across the two hash-bound frames.");
+        }
+        if (metric.equals("lighting_separation")) {
+            if (sources.size() != 2 || !intent.unit().equals("percent")) {
+                throw unsupported("Lighting separation requires exactly one day/low-light framebuffer pair.");
+            }
+            CapturedScene other = sources.getFirst() == primary
+                    ? sources.getLast() : sources.getFirst();
+            return new MeasurementValue(
+                    ClientPixelAnalysis.meanAbsoluteLuminanceDeltaPercent(
+                            readPixels(primary), readPixels(other), primary.width(), primary.height()),
+                    "Mean absolute sRGB-luminance difference across the exact day/low-light client framebuffer pair, normalized to percent.");
+        }
+        CapturedScene control = sources.stream()
+                .filter(source -> source.scene().viewKind()
+                        == CapturePlan.ViewKind.MEASUREMENT_CONTROL)
+                .findFirst()
+                .orElse(null);
+        if (metric.equals("frame_retention")
+                || metric.equals("first_person_obstruction")
+                || metric.equals("overlay_coverage")) {
+            if (control == null || !intent.unit().equals("percent")) {
+                throw unsupported("This subject-mask metric requires an exact matching empty-subject control.");
+            }
+            ClientPixelAnalysis.SubjectMask mask = ClientPixelAnalysis.compare(
+                    readPixels(primary), readPixels(control), primary.width(), primary.height());
+            if (metric.equals("frame_retention")) {
+                return new MeasurementValue(
+                        mask.frameRetentionPercent(),
+                        "Conservative 2-D clipping proxy: 100 minus subject-mask pixels touching the two-pixel framebuffer edge band; it does not infer off-screen geometry.");
+            }
+            return new MeasurementValue(
+                    mask.coverageRatio() * 100.0,
+                    "Exact client-pixel screen coverage derived from the matching empty-subject control; supplemental QA only.");
+        }
+        if (metric.equals("visibility_occlusion")) {
+            CapturedScene visible = sources.stream()
+                    .filter(source -> source != primary && source != control
+                            && source.scene().requiredForAuthority())
+                    .findFirst()
+                    .orElse(null);
+            if (control == null || visible == null || !intent.unit().equals("percent")) {
+                throw unsupported("Occlusion retention requires occluded, visible, and empty-control frames.");
+            }
+            return new MeasurementValue(
+                    ClientPixelAnalysis.retainedSubjectPercent(
+                            readPixels(primary), readPixels(visible), readPixels(control),
+                            primary.width(), primary.height()),
+                    "Percentage of the visible empty-control-derived subject mask retained in the occluded client frame.");
+        }
+        if (metric.equals("hitbox_containment")
+                || metric.equals("hitbox_empty_space")
+                || metric.equals("collision_interaction_footprint_delta")) {
+            CapturedScene authoritative = sources.stream()
+                    .filter(source -> source.scene().requiredForAuthority())
+                    .findFirst()
+                    .orElse(null);
+            if (primary.scene().viewKind() != CapturePlan.ViewKind.DEBUG_HITBOX_REFERENCE
+                    || control == null || authoritative == null) {
+                throw unsupported("Hitbox QA requires a debug frame, authoritative base, and matched empty control.");
+            }
+            ClientPixelAnalysis.HitboxQa qa = ClientPixelAnalysis.hitboxQa(
+                    readPixels(primary), readPixels(authoritative), readPixels(control),
+                    primary.width(), primary.height());
+            double value = switch (metric) {
+                case "hitbox_containment" -> qa.containmentPercent();
+                case "hitbox_empty_space" -> qa.emptySpacePercent();
+                default -> qa.footprintDeltaPixels();
+            };
+            return new MeasurementValue(
+                    value,
+                    "Augmented QA 2-D proxy from the F3+B overlay bounding box versus the empty-control-derived subject mask; never authoritative release evidence.");
+        }
+        throw unsupported(
+                "This metric requires calibrated geometry or semantic segmentation not available from the bound client framebuffers.");
+    }
+
+    private static UnsupportedOperationException unsupported(String message) {
+        return new UnsupportedOperationException(message);
+    }
+
+    private ClientPixelAnalysis.SubjectMask changedPixels(
+            CapturedScene primary, List<CapturedScene> sources)
+            throws IOException {
+        int[] baseline = readPixels(primary);
+        long changed = 0;
+        long total = 0;
+        long edgeChanged = 0;
+        for (CapturedScene comparison : sources) {
+            if (comparison == primary) continue;
+            if (comparison.width() != primary.width() || comparison.height() != primary.height()) {
+                throw new IOException("Pixel comparison scenes have different framebuffer dimensions.");
+            }
+            int[] pixels = readPixels(comparison);
+            if (pixels.length != baseline.length) {
+                throw new IOException("Pixel comparison scenes have different decoded sizes.");
+            }
+            ClientPixelAnalysis.SubjectMask pair = ClientPixelAnalysis.compare(
+                    baseline, pixels, primary.width(), primary.height());
+            changed += pair.changedPixels();
+            total += pair.totalPixels();
+            edgeChanged += pair.edgeChangedPixels();
+        }
+        if (total == 0) throw new IOException("Pixel comparison has no control pixels.");
+        return new ClientPixelAnalysis.SubjectMask(changed, total, edgeChanged);
+    }
+
+    private int[] readPixels(CapturedScene capture) throws IOException {
+        Path path = paths.outputDirectory().resolve("screenshots").resolve(capture.filename());
+        try (var input = Files.newInputStream(path); NativeImage image = NativeImage.read(input)) {
+            if (image.getWidth() != capture.width() || image.getHeight() != capture.height()) {
+                throw new IOException("Captured PNG dimensions changed before pixel analysis.");
+            }
+            return image.getPixelsABGR();
+        }
+    }
+
+    private static String measurementStatus(
+            double value, CapturePlan.MeasurementThreshold threshold) {
+        if (threshold == null) return "warning";
+        if (threshold.comparison().equals("above")) {
+            if (value >= threshold.failure()) return "failed";
+            if (value >= threshold.warning()) return "warning";
+        } else {
+            if (value <= threshold.failure()) return "failed";
+            if (value <= threshold.warning()) return "warning";
+        }
+        return "passed";
+    }
+
+    private static Map<String, Object> skippedMeasurement(
+            CapturePlan.MeasurementIntent intent, List<String> sceneIds, String message) {
+        Map<String, Object> result = measurementBase(intent, sceneIds, "skipped");
+        result.put("message", message);
+        result.put("sourcePngSha256s", List.of());
+        return Map.copyOf(result);
+    }
+
+    private static Map<String, Object> measurementBase(
+            CapturePlan.MeasurementIntent intent, List<String> sceneIds, String status) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", intent.id());
+        result.put("metric", intent.metric());
+        result.put("authority", intent.authority());
+        result.put("requiredForReadiness", intent.requiredForReadiness());
+        result.put("sceneIds", sceneIds);
+        result.put("status", status);
+        result.put("unit", intent.unit());
+        if (intent.threshold() != null) {
+            result.put("threshold", intent.threshold().toProtocolValue());
+        }
+        return result;
+    }
+
     private Map<String, Object> commonReport(Minecraft client) {
         Map<String, Object> report = new LinkedHashMap<>();
-        report.put("schemaVersion", 2);
+        report.put("schemaVersion", 3);
         report.put("kind", "packwright.client-capture-report");
         report.put("executionId", plan.execution().executionId());
         report.put("planSha256", plan.planSha256());
@@ -1229,9 +2297,9 @@ final class CaptureCoordinator {
         identity.put("runtimeManifestSha256", provenance.runtimeManifestSha256());
         identity.put("datapackContentSha256", provenance.datapackContentSha256());
         identity.put("resourcepackContentSha256", provenance.resourcepackContentSha256());
-        identity.put(
-                "itemStackSha256",
-                Hashing.sha256(CanonicalJson.encode(provenance.itemStack().toProtocolValue())));
+        identity.put("packActivation", provenance.packActivation().toProtocolValue());
+        identity.put("representationSha256", provenance.representationSha256());
+        identity.put("studioSha256", plan.studio().sha256());
         identity.put("clientJarSha1", provenance.client().jarSha1());
         identity.put("clientJarSha256", provenance.client().jarSha256());
         identity.put("captureModId", provenance.captureMod().id());
@@ -1240,7 +2308,40 @@ final class CaptureCoordinator {
         return identity;
     }
 
-    private static Map<String, Object> runtime(Minecraft client) {
+    private Map<String, Object> packActivationAttestation(Minecraft client) throws IOException {
+        VerifiedPackHashes verified = verifyStagedPacks();
+        MinecraftServer server = client.getSingleplayerServer();
+        if (server == null) {
+            throw new IOException("Integrated server disappeared before pack activation attestation.");
+        }
+        PackRepository datapackRepository = server.getPackRepository();
+        selectedDatapackIds = datapackRepository.getSelectedIds().stream().sorted().toList();
+        List<String> availableDatapacks =
+                datapackRepository.getAvailableIds().stream().sorted().toList();
+        String datapackFailure = projectDatapackIsolationFailure(
+                selectedDatapackIds, availableDatapacks);
+        if (datapackFailure != null) throw new IOException(datapackFailure);
+        selectedResourcePackIds = client.getResourcePackRepository()
+                .getSelectedIds().stream().sorted().toList();
+        if (!selectedResourcePackIds.contains(REQUIRED_RESOURCE_PACK)) {
+            throw new IOException("Project resource pack was not active when evidence finalized.");
+        }
+        Map<String, Object> datapack = Map.ofEntries(
+                Map.entry("mode", plan.provenance().packActivation().datapack()),
+                Map.entry("archivePath", DATAPACK_PROVENANCE_PATH),
+                Map.entry("archiveSha256", verified.datapackSha256()),
+                Map.entry("selected", false),
+                Map.entry("selectedPackIds", selectedDatapackIds));
+        Map<String, Object> resourcepack = Map.ofEntries(
+                Map.entry("mode", plan.provenance().packActivation().resourcepack()),
+                Map.entry("archivePath", RESOURCEPACK_PATH),
+                Map.entry("archiveSha256", verified.resourcepackSha256()),
+                Map.entry("selected", true),
+                Map.entry("selectedPackIds", selectedResourcePackIds));
+        return Map.of("datapack", datapack, "resourcepack", resourcepack);
+    }
+
+    private Map<String, Object> runtime(Minecraft client) {
         DeviceInfo device = RenderSystem.getDevice().getDeviceInfo();
         String backendName = device.backendName().toLowerCase(Locale.ROOT);
         String backend = backendName.contains("vulkan") ? "vulkan" : "opengl";
@@ -1252,6 +2353,23 @@ final class CaptureCoordinator {
         runtime.put("gpuVendor", boundedRuntimeField(device.vendorName()));
         runtime.put("gpuRenderer", boundedRuntimeField(device.name()));
         runtime.put("driverVersion", boundedRuntimeField(device.driverInfo()));
+        runtime.put("studioSha256", plan.studio().sha256());
+        Map<String, Object> settings = Map.ofEntries(
+                Map.entry("preferredGraphicsBackend", client.options.preferredGraphicsBackend().get().getSerializedName()),
+                Map.entry("graphicsMode", client.options.graphicsPreset().get().getSerializedName()),
+                Map.entry("clouds", client.options.cloudStatus().get() == CloudStatus.OFF
+                        ? "off"
+                        : client.options.cloudStatus().get().getSerializedName()),
+                Map.entry("particles", client.options.particles().get().name().toLowerCase(Locale.ROOT)),
+                Map.entry("entityShadows", client.options.entityShadows().get()),
+                Map.entry("viewBobbing", client.options.bobView().get()),
+                Map.entry("renderDistance", client.options.renderDistance().get()),
+                Map.entry("simulationDistance", client.options.simulationDistance().get()),
+                Map.entry("debugUi", client.debugEntries.isOverlayVisible()));
+        runtime.put("settings", settings);
+        runtime.put("settingsSha256", Hashing.sha256(CanonicalJson.encode(settings)));
+        runtime.put("resourceReloadReadyTick", resourceReloadReadyTick);
+        runtime.put("modelBakeReadyTick", resourceReloadReadyTick);
         return runtime;
     }
 
@@ -1269,7 +2387,7 @@ final class CaptureCoordinator {
         reportReference.put("sha256", Hashing.sha256(report));
         reportReference.put("bytes", report.length);
         Map<String, Object> sentinel = new LinkedHashMap<>();
-        sentinel.put("schemaVersion", 2);
+        sentinel.put("schemaVersion", 3);
         sentinel.put("kind", "packwright.client-capture-complete");
         sentinel.put("executionId", plan.execution().executionId());
         sentinel.put("planSha256", plan.planSha256());
@@ -1312,6 +2430,23 @@ final class CaptureCoordinator {
 
     private Scene currentScene() {
         return plan.scenes().get(sceneIndex);
+    }
+
+    private Scene environmentAnchorScene(Scene scene) {
+        return scene.fixture().kind().equals("measurement_control")
+                ? authoritativeBaseScene(scene)
+                : scene;
+    }
+
+    private Scene authoritativeBaseScene(Scene control) {
+        for (Scene candidate : plan.scenes()) {
+            if (candidate.requiredForAuthority()
+                    && candidate.baseSceneId().equals(control.baseSceneId())) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException(
+                "Measurement control lost its authoritative base scene after plan validation.");
     }
 
     private static LocalPlayer requirePlayer(Minecraft client) {
@@ -1440,25 +2575,74 @@ final class CaptureCoordinator {
         }
     }
 
+    private record MeasurementValue(double value, String message) {}
+
+    private record VerifiedPackHashes(String datapackSha256, String resourcepackSha256) {}
+
+    private record SceneRuntimeAttestation(
+            CapturePlan.CameraPose cameraPose,
+            String cameraMode,
+            String context,
+            int fov,
+            int guiScale,
+            String hand,
+            String playerModel,
+            CapturePlan.Environment environment,
+            Map<String, Object> scaleReference) {}
+
     private record CapturedScene(
             Scene scene,
             String filename,
             int width,
             int height,
             long bytes,
-            String sha256) {
+            String sha256,
+            String studioSha256,
+            String appliedFixtureSha256,
+            int actualSettledTicks,
+            int renderedSettleFrames,
+            int actualAnimationTick,
+            SceneRuntimeAttestation runtimeAttestation,
+            FixtureEvidence fixtureEvidence,
+            Map<String, Object> observedFixture) {
         Map<String, Object> toReport() {
             Map<String, Object> report = new LinkedHashMap<>();
             report.put("sceneId", scene.id());
             report.put("sceneSha256", scene.sha256());
             report.put("scene", scene.toProtocolValue());
+            report.put("representationSha256", scene.representationSha256());
+            report.put("studioSha256", studioSha256);
+            report.put("fixtureSha256", Hashing.sha256(
+                    CanonicalJson.encode(scene.fixture().toProtocolValue())));
+            report.put("appliedFixtureSha256", appliedFixtureSha256);
+            report.put("observedFixture", observedFixture);
+            report.put("observedFixtureSha256", Hashing.sha256(
+                    CanonicalJson.encode(observedFixture)));
             report.put("path", "screenshots/" + filename);
             report.put("pngSha256", sha256);
             report.put("bytes", bytes);
             report.put("width", width);
             report.put("height", height);
+            report.put("actualSettledTicks", actualSettledTicks);
+            report.put("renderedSettleFrames", renderedSettleFrames);
+            report.put("actualAnimationTick", actualAnimationTick);
+            report.put("actualCameraPose", runtimeAttestation.cameraPose().toProtocolValue());
+            report.put("actualCameraMode", runtimeAttestation.cameraMode());
+            report.put("actualContext", runtimeAttestation.context());
+            report.put("actualFov", runtimeAttestation.fov());
+            report.put("actualGuiScale", runtimeAttestation.guiScale());
+            report.put("actualHand", runtimeAttestation.hand());
+            report.put("actualPlayerModel", runtimeAttestation.playerModel());
+            report.put("actualEnvironment", runtimeAttestation.environment().toProtocolValue());
+            report.put("actualScaleReference", runtimeAttestation.scaleReference());
+            report.put("actualScaleReferenceSha256", Hashing.sha256(
+                    CanonicalJson.encode(runtimeAttestation.scaleReference())));
+            report.put("resourceReloadReady", true);
+            report.put("modelBakeReady", true);
+            report.put("fixtureEvidence", fixtureEvidence.toReport());
             return report;
         }
+
     }
 
     private record LogEvidence(String path, String sha256, long bytes, List<String> excerpts) {
@@ -1468,6 +2652,7 @@ final class CaptureCoordinator {
             report.put("sha256", sha256);
             report.put("bytes", bytes);
             report.put("resourceReloadSucceeded", true);
+            report.put("modelBakeSucceeded", true);
             report.put("excerpts", excerpts);
             return report;
         }
