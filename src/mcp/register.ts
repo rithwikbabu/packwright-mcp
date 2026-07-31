@@ -31,6 +31,30 @@ import {
   ValidationResultSchema,
   type JsonValue,
 } from './schemas.js';
+import {
+  ProjectBuildInputSchema,
+  ProjectBuildResultSchema,
+  TextureImportInputSchema,
+  VisualAssetInspectInputSchema,
+  VisualAssetInspectResultSchema,
+  VisualCapabilitiesInputSchema,
+  VisualCapabilitiesResultSchema,
+  VisualCommitInputSchema,
+  VisualCommitResultSchema,
+  VisualCompileInputSchema,
+  VisualConnectInputSchema,
+  VisualDraftResultSchema,
+  VisualProjectAttachInputSchema,
+  VisualProjectAttachResultSchema,
+  VisualProjectIdSchema,
+  VisualDraftIdSchema,
+  VisualRenderInputSchema,
+  VisualRenderResultSchema,
+  VisualRevisionCreateInputSchema,
+  VisualSpecUpsertInputSchema,
+  VisualValidateInputSchema,
+  VisualValidateResultSchema,
+} from './visual-schemas.js';
 import type { PackwrightProgress, PackwrightService, PackwrightServiceContext } from './service.js';
 import {
   PROJECT_DIAGNOSTICS_URI_TEMPLATE,
@@ -45,6 +69,17 @@ import {
   projectResourcesUri,
   versionRegistriesUri,
 } from './uris.js';
+import {
+  VISUAL_CAPABILITIES_URI,
+  VISUAL_PROJECT_GRAPH_URI_TEMPLATE,
+  VISUAL_PROJECT_MANIFEST_URI_TEMPLATE,
+  VISUAL_RUN_BINDING_URI_TEMPLATE,
+  VISUAL_RUN_CONTACT_SHEET_URI_TEMPLATE,
+  VISUAL_RUN_REVIEW_URI_TEMPLATE,
+  VISUAL_RUN_SPEC_URI_TEMPLATE,
+  VISUAL_RUN_VIEW_URI_TEMPLATE,
+  visualRunContactSheetUri,
+} from './visual-uris.js';
 
 export interface PackwrightMcpServerOptions {
   name?: string;
@@ -52,9 +87,11 @@ export interface PackwrightMcpServerOptions {
 }
 
 const SERVER_INSTRUCTIONS = [
-  'Packwright edits Minecraft Java Edition 26.2 datapacks inside one configured workspace.',
+  'Packwright edits paired Minecraft Java Edition 26.2 datapacks and resource packs inside one configured workspace.',
   'Inspect or read a resource before overwriting it, then provide its current SHA-256 as expectedSha256.',
   'Use dryRun for proposed creates and updates. Validate before testing, and test before building a ZIP.',
+  'For visual assets use describe, immutable draft, connect, render, review, targeted repair, validate, explicit commit, then paired build.',
+  'Treat simulated and replacement capabilities literally; display carriers are not new native blocks or entities.',
   'Minecraft lookups are cache-only and never access the network implicitly.',
 ].join(' ');
 
@@ -221,6 +258,38 @@ async function executeTool<T extends object>(
   }
 }
 
+async function executeVisualRender(
+  service: PackwrightService,
+  input: Parameters<PackwrightService['renderVisual']>[0],
+  context: PackwrightServiceContext,
+): Promise<CallToolResult> {
+  try {
+    const result = await service.renderVisual(input, context);
+    const contactSheet = await service.readVisualResource(
+      {
+        kind: 'contact_sheet',
+        runId: result.runId,
+        revisionId: result.revisionId,
+      },
+      context,
+    );
+    if (contactSheet.mimeType !== 'image/png' || contactSheet.encoding !== 'base64') {
+      throw new Error('Visual renderer returned an invalid contact-sheet resource.');
+    }
+    const response: CallToolResult = {
+      ...(result.ok ? {} : { isError: true }),
+      structuredContent: result,
+      content: [
+        { type: 'text', text: textFallback(result) },
+        { type: 'image', data: contactSheet.data, mimeType: 'image/png' },
+      ],
+    };
+    return enforceToolPayloadLimit(response);
+  } catch (error) {
+    return enforceToolPayloadLimit(executionError(error));
+  }
+}
+
 function jsonResource(uri: URL, value: unknown) {
   const response = {
     contents: [
@@ -244,6 +313,19 @@ function jsonResource(uri: URL, value: unknown) {
       },
     ],
   };
+}
+
+function visualResource(
+  uri: URL,
+  value: Awaited<ReturnType<PackwrightService['readVisualResource']>>,
+) {
+  const content =
+    value.encoding === 'base64'
+      ? { uri: uri.href, mimeType: value.mimeType, blob: value.data }
+      : { uri: uri.href, mimeType: value.mimeType, text: value.data };
+  const response = { contents: [content] };
+  if (fitsSerializedPayload(response)) return response;
+  return jsonResource(uri, sizeLimitPayload('Visual resource result'));
 }
 
 function templateValue(variables: Record<string, string | string[]>, name: string): string {
@@ -440,6 +522,251 @@ function registerTools(server: McpServer, service: PackwrightService): void {
     async (input, context) =>
       executeTool(() => service.buildDatapack(input, serviceContext(context))),
   );
+
+  server.registerTool(
+    'visual_capabilities',
+    {
+      title: 'Report Visual Capabilities',
+      description:
+        'Report the truthful Minecraft 26.2 capability boundary and the separately labeled current compiler support for each visual target.',
+      inputSchema: VisualCapabilitiesInputSchema,
+      outputSchema: VisualCapabilitiesResultSchema,
+      annotations: {
+        title: 'Report Visual Capabilities',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.getVisualCapabilities(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'visual_project_attach',
+    {
+      title: 'Attach Paired Packs',
+      description:
+        'Associate sibling datapack and resource-pack roots through a guarded project manifest. Can create a new format-88.0 resource pack without moving the datapack.',
+      inputSchema: VisualProjectAttachInputSchema,
+      outputSchema: VisualProjectAttachResultSchema,
+      annotations: {
+        title: 'Attach Paired Packs',
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.attachVisualProject(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'visual_asset_inspect',
+    {
+      title: 'Inspect Visual Asset',
+      description:
+        'Inspect a paired project, its logical item graph, current draft readiness, bindings, textures, renders, and commit state without changing files.',
+      inputSchema: VisualAssetInspectInputSchema,
+      outputSchema: VisualAssetInspectResultSchema,
+      annotations: {
+        title: 'Inspect Visual Asset',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.inspectVisualAsset(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'visual_spec_upsert',
+    {
+      title: 'Create Visual Draft',
+      description:
+        'Validate a semantic custom-item ModelSpec and create an immutable, content-addressed draft run. This never writes generated assets into either pack.',
+      inputSchema: VisualSpecUpsertInputSchema,
+      outputSchema: VisualDraftResultSchema,
+      annotations: {
+        title: 'Create Visual Draft',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.upsertVisualSpec(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'texture_import',
+    {
+      title: 'Import PNG Texture',
+      description:
+        'Strictly decode, bound, normalize, metadata-strip, and content-address a PNG supplied inline or through an exact hash-guarded workspace file.',
+      inputSchema: TextureImportInputSchema,
+      outputSchema: VisualDraftResultSchema,
+      annotations: {
+        title: 'Import PNG Texture',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.importTexture(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'visual_compile',
+    {
+      title: 'Compile Visual Draft',
+      description:
+        'Compile a semantic custom-item ModelSpec into exact Minecraft 26.2 item-definition, model, UV, and texture draft assets without changing the paired packs.',
+      inputSchema: VisualCompileInputSchema,
+      outputSchema: VisualDraftResultSchema,
+      annotations: {
+        title: 'Compile Visual Draft',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.compileVisual(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'visual_connect',
+    {
+      title: 'Connect Item Behavior',
+      description:
+        'Create a guarded multi-file proposal connecting a client item definition to a vanilla carrier through minecraft:item_model, with optional give helper and recipe.',
+      inputSchema: VisualConnectInputSchema,
+      outputSchema: VisualDraftResultSchema,
+      annotations: {
+        title: 'Connect Item Behavior',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.connectVisual(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'visual_render',
+    {
+      title: 'Render Visual Draft',
+      description:
+        'Use Packwright’s deterministic CPU renderer to create eight turntable angles and standardized inventory, ground, fixed, and hand previews. Returns the contact sheet as image content.',
+      inputSchema: VisualRenderInputSchema,
+      outputSchema: VisualRenderResultSchema,
+      annotations: {
+        title: 'Render Visual Draft',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) => {
+      const operationContext = serviceContext(context);
+      return executeVisualRender(service, input, operationContext);
+    },
+  );
+
+  server.registerTool(
+    'visual_revision_create',
+    {
+      title: 'Repair Visual Draft',
+      description:
+        'Create an immutable child revision by changing only named parts, materials, or display transforms against the reviewed spec hash.',
+      inputSchema: VisualRevisionCreateInputSchema,
+      outputSchema: VisualDraftResultSchema,
+      annotations: {
+        title: 'Repair Visual Draft',
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.createVisualRevision(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'visual_commit',
+    {
+      title: 'Commit Accepted Visual',
+      description:
+        'After explicit visual acceptance, atomically install every proposed datapack and resource-pack file using the proposal hash and captured per-file SHA preconditions.',
+      inputSchema: VisualCommitInputSchema,
+      outputSchema: VisualCommitResultSchema,
+      annotations: {
+        title: 'Commit Accepted Visual',
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.commitVisual(input, serviceContext(context))),
+  );
+
+  server.registerTool(
+    'visual_validate',
+    {
+      title: 'Validate Paired Visual Project',
+      description:
+        'Combine paired-pack metadata, strict ModelSpec, PNG, geometry, graph, render, binding, vanilla-command, and optional GameTest validation with normalized diagnostics.',
+      inputSchema: VisualValidateInputSchema,
+      outputSchema: VisualValidateResultSchema,
+      annotations: {
+        title: 'Validate Paired Visual Project',
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(
+        () => service.validateVisual(input, serviceContext(context)),
+        (result) => !result.ok,
+      ),
+  );
+
+  server.registerTool(
+    'project_build',
+    {
+      title: 'Build Paired Pack ZIPs',
+      description:
+        'Validate and build separate deterministic datapack and resource-pack ZIPs for an attached project. Existing artifacts require both current SHA-256 values.',
+      inputSchema: ProjectBuildInputSchema,
+      outputSchema: ProjectBuildResultSchema,
+      annotations: {
+        title: 'Build Paired Pack ZIPs',
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async (input, context) =>
+      executeTool(() => service.buildProject(input, serviceContext(context))),
+  );
 }
 
 function registerResources(server: McpServer, service: PackwrightService): void {
@@ -495,11 +822,15 @@ function registerResources(server: McpServer, service: PackwrightService): void 
           {
             minecraftVersion: MINECRAFT_26_2.minecraftVersion,
             packFormat: [...MINECRAFT_26_2.packFormat],
+            dataPackFormat: [...MINECRAFT_26_2.dataPack.packFormat],
+            resourcePackFormat: [...MINECRAFT_26_2.resourcePack.packFormat],
             javaMajor: MINECRAFT_26_2.javaMajor,
             resourceTypes: Object.keys(MINECRAFT_26_2.resourceDirectories),
+            clientResourceTypes: Object.keys(MINECRAFT_26_2.resourcePack.resourceDirectories),
             supportedRegistries: [...MINECRAFT_26_2.supportedRegistries],
             experimentalFlags: [...MINECRAFT_26_2.experimentalFlags],
             registriesUri: versionRegistriesUri('26.2'),
+            visualCapabilitiesUri: VISUAL_CAPABILITIES_URI,
           },
         ],
       }),
@@ -630,6 +961,146 @@ function registerResources(server: McpServer, service: PackwrightService): void 
       return jsonResource(uri, result);
     },
   );
+
+  server.registerResource(
+    'visual-capability-matrix',
+    VISUAL_CAPABILITIES_URI,
+    {
+      title: 'Minecraft 26.2 Visual Capability Matrix',
+      description:
+        'Truthful native, simulated, replacement, and requires-mod support boundaries for all visual targets.',
+      mimeType: 'application/json',
+    },
+    async (uri, context) =>
+      jsonResource(
+        uri,
+        await service.getVisualCapabilities({ minecraftVersion: '26.2' }, serviceContext(context)),
+      ),
+  );
+
+  server.registerResource(
+    'visual-project-manifest',
+    new ResourceTemplate(VISUAL_PROJECT_MANIFEST_URI_TEMPLATE, { list: undefined }),
+    {
+      title: 'Paired Project Manifest',
+      description:
+        'The final datapack/resource-pack association for one Packwright visual project.',
+      mimeType: 'application/json',
+    },
+    async (uri, variables, context) =>
+      visualResource(
+        uri,
+        await service.readVisualResource(
+          { kind: 'project_manifest', projectId: templateValue(variables, 'projectId') },
+          serviceContext(context),
+        ),
+      ),
+  );
+
+  server.registerResource(
+    'visual-project-asset-graph',
+    new ResourceTemplate(VISUAL_PROJECT_GRAPH_URI_TEMPLATE, { list: undefined }),
+    {
+      title: 'Visual Project Asset Graph',
+      description:
+        'Logical item, carrier, component, item-definition, model, and texture relationships for a paired project.',
+      mimeType: 'application/json',
+    },
+    async (uri, variables, context) =>
+      visualResource(
+        uri,
+        await service.readVisualResource(
+          { kind: 'project_graph', projectId: templateValue(variables, 'projectId') },
+          serviceContext(context),
+        ),
+      ),
+  );
+
+  const runResourceInput = (
+    variables: Record<string, string | string[]>,
+    kind: 'spec' | 'contact_sheet' | 'review' | 'binding',
+  ) =>
+    ({
+      kind,
+      runId: templateValue(variables, 'runId'),
+      revisionId: templateValue(variables, 'revisionId'),
+    }) as const;
+
+  for (const resource of [
+    {
+      name: 'visual-draft-model-spec',
+      template: VISUAL_RUN_SPEC_URI_TEMPLATE,
+      title: 'Draft Model Specification',
+      description: 'The immutable semantic ModelSpec for a visual revision.',
+      kind: 'spec' as const,
+      mimeType: 'application/json',
+    },
+    {
+      name: 'visual-contact-sheet',
+      template: VISUAL_RUN_CONTACT_SHEET_URI_TEMPLATE,
+      title: 'Visual Contact Sheet',
+      description: 'The deterministic standardized visual review contact sheet.',
+      kind: 'contact_sheet' as const,
+      mimeType: 'image/png',
+    },
+    {
+      name: 'visual-latest-review',
+      template: VISUAL_RUN_REVIEW_URI_TEMPLATE,
+      title: 'Latest Visual Review',
+      description: 'The immutable targeted repair record associated with a revision.',
+      kind: 'review' as const,
+      mimeType: 'application/json',
+    },
+    {
+      name: 'visual-binding-proposal',
+      template: VISUAL_RUN_BINDING_URI_TEMPLATE,
+      title: 'Visual Binding Proposal',
+      description: 'The declarative vanilla carrier and minecraft:item_model binding proposal.',
+      kind: 'binding' as const,
+      mimeType: 'application/json',
+    },
+  ]) {
+    server.registerResource(
+      resource.name,
+      new ResourceTemplate(resource.template, { list: undefined }),
+      {
+        title: resource.title,
+        description: resource.description,
+        mimeType: resource.mimeType,
+      },
+      async (uri, variables, context) =>
+        visualResource(
+          uri,
+          await service.readVisualResource(
+            runResourceInput(variables, resource.kind),
+            serviceContext(context),
+          ),
+        ),
+    );
+  }
+
+  server.registerResource(
+    'visual-render-view',
+    new ResourceTemplate(VISUAL_RUN_VIEW_URI_TEMPLATE, { list: undefined }),
+    {
+      title: 'Individual Visual Render View',
+      description: 'One deterministic turntable or context render from a visual revision.',
+      mimeType: 'image/png',
+    },
+    async (uri, variables, context) =>
+      visualResource(
+        uri,
+        await service.readVisualResource(
+          {
+            kind: 'view',
+            runId: templateValue(variables, 'runId'),
+            revisionId: templateValue(variables, 'revisionId'),
+            view: templateValue(variables, 'view'),
+          },
+          serviceContext(context),
+        ),
+      ),
+  );
 }
 
 function registerPrompts(server: McpServer): void {
@@ -738,6 +1209,159 @@ function registerPrompts(server: McpServer): void {
       ],
     }),
   );
+
+  server.registerPrompt(
+    'generate_visual_asset',
+    {
+      title: 'Generate a Visual Asset Draft',
+      description:
+        'Turn creative intent into a semantic ModelSpec and immutable draft without committing files.',
+      argsSchema: z.strictObject({
+        projectId: VisualProjectIdSchema,
+        request: z.string().min(1).max(4096),
+        target: z
+          .enum(['custom_item', 'furniture_static_prop', 'new_mob_pet'])
+          .default('custom_item'),
+      }),
+    },
+    ({ projectId, request, target }) => ({
+      messages: [
+        {
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: [
+              `Create a visual draft for project "${projectId}": ${request}`,
+              `Requested target: ${target}. Begin with visual_capabilities and disclose whether the result is native, simulated, replacement, or requires_mod.`,
+              'For the supported custom-item slice, author a semantic ModelSpec with named parts and materials, call visual_spec_upsert, import textures only when needed, then call visual_compile and visual_render.',
+              'Do not call visual_commit. Return the contact sheet for review and retain all creative provenance.',
+            ].join('\n'),
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'review_visual_asset',
+    {
+      title: 'Review a Visual Asset',
+      description: 'Judge a deterministic contact sheet against a semantic visual-review rubric.',
+      argsSchema: z.strictObject({
+        projectId: VisualProjectIdSchema,
+        runId: VisualDraftIdSchema,
+        revisionId: VisualDraftIdSchema,
+        intent: z.string().min(1).max(4096),
+      }),
+    },
+    ({ projectId, runId, revisionId, intent }) => ({
+      messages: [
+        {
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: [
+              `Visually review project ${projectId}, run ${runId}, revision ${revisionId}. Intended result: ${intent}`,
+              `Read ${visualRunContactSheetUri(runId, revisionId)} and inspect individual views when a defect is ambiguous.`,
+              'Check silhouette, semantic part proportions, palette/material separation, UV artifacts, transparency, inventory readability, hand transforms, clipping, and consistency across angles.',
+              'Return accept or repair. For repair, name the exact part, material, or display context and propose the smallest measurable change. Do not mutate or commit files.',
+            ].join('\n'),
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'repair_visual_asset',
+    {
+      title: 'Repair a Visual Asset',
+      description: 'Translate review findings into a targeted immutable visual revision.',
+      argsSchema: z.strictObject({
+        projectId: VisualProjectIdSchema,
+        runId: VisualDraftIdSchema,
+        revisionId: VisualDraftIdSchema,
+        finding: z.string().min(1).max(4096),
+      }),
+    },
+    ({ projectId, runId, revisionId, finding }) => ({
+      messages: [
+        {
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: [
+              `Repair visual project ${projectId}, run ${runId}, revision ${revisionId}: ${finding}`,
+              'Read the draft spec and contact sheet resources. Use visual_revision_create with the current spec SHA and only targeted part, material, or display-transform repairs.',
+              'Compile and render the child revision, then compare the same views. Do not commit until a subsequent visual review explicitly accepts it.',
+            ].join('\n'),
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'connect_custom_item',
+    {
+      title: 'Connect a Custom Item',
+      description:
+        'Create and validate a declarative vanilla carrier binding for an accepted custom-item draft.',
+      argsSchema: z.strictObject({
+        projectId: VisualProjectIdSchema,
+        runId: VisualDraftIdSchema,
+        revisionId: VisualDraftIdSchema,
+        carrierItem: ResourceIdSchema.default('minecraft:stick'),
+        recipe: z.enum(['yes', 'no']).default('no'),
+      }),
+    },
+    ({ projectId, runId, revisionId, carrierItem, recipe }) => ({
+      messages: [
+        {
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: [
+              `Connect accepted visual revision ${revisionId} from run ${runId} in project ${projectId} to carrier ${carrierItem}.`,
+              'Use visual_connect to create a proposal with a give helper and ' +
+                (recipe === 'yes' ? 'a requested explicit recipe.' : 'no recipe.'),
+              'Inspect the binding resource, run visual_validate with vanilla command validation, and present the proposal hash and file diffs. Do not call visual_commit without explicit acceptance.',
+            ].join('\n'),
+          },
+        },
+      ],
+    }),
+  );
+
+  server.registerPrompt(
+    'author_display_rig',
+    {
+      title: 'Author a Display Rig',
+      description:
+        'Plan a truthful vanilla display-entity approximation while the automatic rig compiler remains limited.',
+      argsSchema: z.strictObject({
+        projectId: VisualProjectIdSchema,
+        request: z.string().min(1).max(4096),
+        interaction: z.enum(['none', 'hitbox']).default('none'),
+      }),
+    },
+    ({ projectId, request, interaction }) => ({
+      messages: [
+        {
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: [
+              `Plan a display-entity rig in visual project ${projectId}: ${request}`,
+              'First call visual_capabilities. State prominently that the result is simulated and does not create a native block or entity identity.',
+              `Interaction requirement: ${interaction}. Describe carrier choice, stable tags, display nodes, cleanup, migration, and performance budget.`,
+              'The current public compiler automates the custom-item vertical slice only. Produce a reviewable plan and do not invent unsupported visual_commit outputs.',
+            ].join('\n'),
+          },
+        },
+      ],
+    }),
+  );
 }
 
 export function registerPackwrightMcp(server: McpServer, service: PackwrightService): McpServer {
@@ -754,7 +1378,7 @@ export function createPackwrightMcpServer(
   const server = new McpServer(
     {
       name: options.name ?? 'packwright-mcp',
-      version: options.version ?? '0.2.0',
+      version: options.version ?? '0.3.0',
     },
     { instructions: SERVER_INSTRUCTIONS },
   );

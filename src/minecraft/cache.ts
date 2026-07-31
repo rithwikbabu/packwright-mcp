@@ -9,7 +9,7 @@ import { PackwrightError } from '../core/errors.js';
 import { readStableFile } from '../core/stable-file.js';
 import type { Diagnostic } from '../core/types.js';
 import { MINECRAFT_26_2, RESOURCE_TYPES } from '../core/version.js';
-import type { RuntimeConfig } from '../config.js';
+import { assertRuntimePathSeparation, type RuntimeConfig } from '../config.js';
 import { getJavaVersion } from './java.js';
 import { runProcess } from '../runtime/process.js';
 
@@ -36,12 +36,25 @@ interface VersionManifest {
 interface VersionMetadata {
   readonly id: string;
   readonly downloads: {
+    readonly client?: DownloadArtifact;
     readonly server?: {
       readonly sha1: string;
       readonly size?: number;
       readonly url: string;
     };
   };
+  readonly assetIndex?: AssetIndexArtifact;
+}
+
+interface DownloadArtifact {
+  readonly sha1: string;
+  readonly size: number;
+  readonly url: string;
+}
+
+interface AssetIndexArtifact extends DownloadArtifact {
+  readonly id: string;
+  readonly totalSize?: number;
 }
 
 type JsonObject = Record<string, unknown>;
@@ -52,11 +65,24 @@ export interface SetupRecord {
   readonly generatedAt: string;
   readonly serverSha1: string;
   readonly versionManifestUrl: string;
+  readonly clientAssets?: ClientAssetsSetupRecord;
+}
+
+export interface ClientAssetsSetupRecord {
+  readonly preparedAt: string;
+  readonly versionMetadataSha1: string;
+  readonly clientSha1: string;
+  readonly clientSize: number;
+  readonly assetIndexId: string;
+  readonly assetIndexSha1: string;
+  readonly assetIndexSize: number;
 }
 
 export interface CachePaths {
   readonly versionDir: string;
   readonly serverJar: string;
+  readonly clientJar: string;
+  readonly assetIndex: string;
   readonly setupRecord: string;
   readonly versionMetadata: string;
   readonly commandsReport: string;
@@ -72,7 +98,23 @@ export interface CacheStatus {
   readonly acceptedEula: boolean;
   readonly commands: boolean;
   readonly registries: boolean;
+  /** Present in new Packwright versions; optional so existing API mocks remain source-compatible. */
+  readonly clientAssets?: ClientAssetsCacheStatus;
   readonly record?: SetupRecord;
+}
+
+export interface ClientAssetsCacheStatus {
+  readonly selected: boolean;
+  readonly ready: boolean;
+  readonly metadataVerified: boolean;
+  readonly clientJar: boolean;
+  readonly clientJarVerified: boolean;
+  readonly assetIndex: boolean;
+  readonly assetIndexVerified: boolean;
+}
+
+export interface SetupVersionOptions {
+  readonly clientAssets?: boolean;
 }
 
 export interface SetupVersionResult {
@@ -83,6 +125,15 @@ export interface SetupVersionResult {
   readonly commandsReport: string;
   readonly registriesReport: string;
   readonly generatedAt: string;
+  readonly clientAssets: {
+    readonly selected: boolean;
+    readonly ready: boolean;
+    readonly clientJar?: string;
+    readonly clientSha1?: string;
+    readonly assetIndex?: string;
+    readonly assetIndexId?: string;
+    readonly assetIndexSha1?: string;
+  };
 }
 
 export interface ReferenceCache {
@@ -110,6 +161,8 @@ export function cachePaths(cacheDir: string): CachePaths {
   return {
     versionDir,
     serverJar: path.join(versionDir, 'server.jar'),
+    clientJar: path.join(versionDir, 'client.jar'),
+    assetIndex: path.join(versionDir, 'asset-index.json'),
     setupRecord: path.join(versionDir, 'setup.json'),
     versionMetadata: path.join(versionDir, 'version.json'),
     commandsReport: path.join(reports, 'commands.json'),
@@ -144,12 +197,58 @@ async function readJsonFile<T>(filename: string, maxBytes = MAX_METADATA_BYTES):
   return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(stable.data)) as T;
 }
 
+async function readCachedVersionMetadata(filename: string): Promise<{
+  readonly metadata: VersionMetadata;
+  readonly manifestSha1Verified: boolean;
+}> {
+  const stable = await readStableFile(filename, {
+    maxBytes: MAX_METADATA_BYTES,
+    collect: true,
+    pathLabel: filename,
+  });
+  if (stable.data === undefined) {
+    throw new PackwrightError('invalid_content', 'Cached Minecraft version metadata is empty.');
+  }
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(stable.data);
+  return {
+    metadata: versionMetadata(JSON.parse(text) as unknown),
+    manifestSha1Verified:
+      createHash('sha1').update(stable.data).digest('hex') ===
+      MINECRAFT_26_2.resourcePack.artifacts.versionMetadataSha1,
+  };
+}
+
 function isIsoTimestamp(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)) {
     return false;
   }
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function isSha1(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{40}$/u.test(value);
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+}
+
+function clientAssetsSetupRecord(value: unknown): ClientAssetsSetupRecord | undefined {
+  const object = asObject(value);
+  if (
+    !isIsoTimestamp(object?.preparedAt) ||
+    object.versionMetadataSha1 !== MINECRAFT_26_2.resourcePack.artifacts.versionMetadataSha1 ||
+    !isSha1(object.clientSha1) ||
+    !isPositiveSafeInteger(object.clientSize) ||
+    typeof object.assetIndexId !== 'string' ||
+    object.assetIndexId.length === 0 ||
+    !isSha1(object.assetIndexSha1) ||
+    !isPositiveSafeInteger(object.assetIndexSize)
+  ) {
+    return undefined;
+  }
+  return object as unknown as ClientAssetsSetupRecord;
 }
 
 function setupRecord(value: unknown): SetupRecord | undefined {
@@ -166,7 +265,23 @@ function setupRecord(value: unknown): SetupRecord | undefined {
   if (Date.parse(object.acceptedMinecraftEulaAt) > Date.parse(object.generatedAt)) {
     return undefined;
   }
-  return object as unknown as SetupRecord;
+  const clientAssets =
+    object.clientAssets === undefined ? undefined : clientAssetsSetupRecord(object.clientAssets);
+  if (object.clientAssets !== undefined && clientAssets === undefined) return undefined;
+  if (
+    clientAssets !== undefined &&
+    Date.parse(clientAssets.preparedAt) > Date.parse(object.generatedAt)
+  ) {
+    return undefined;
+  }
+  return {
+    minecraftVersion: '26.2',
+    acceptedMinecraftEulaAt: object.acceptedMinecraftEulaAt,
+    generatedAt: object.generatedAt,
+    serverSha1: MINECRAFT_26_2.artifacts.serverSha1,
+    versionManifestUrl: VERSION_MANIFEST_URL,
+    ...(clientAssets === undefined ? {} : { clientAssets }),
+  };
 }
 
 function versionManifest(value: unknown): VersionManifest {
@@ -192,6 +307,47 @@ function versionManifest(value: unknown): VersionManifest {
   return { versions };
 }
 
+function downloadArtifact(value: unknown, label: string): DownloadArtifact | undefined {
+  if (value === undefined) return undefined;
+  const object = asObject(value);
+  if (
+    !isSha1(object?.sha1) ||
+    !isPositiveSafeInteger(object.size) ||
+    typeof object.url !== 'string'
+  ) {
+    throw new PackwrightError(
+      'invalid_content',
+      `Minecraft 26.2 metadata contains a malformed ${label} artifact.`,
+    );
+  }
+  assertOfficialUrl(object.url);
+  return { sha1: object.sha1, size: object.size, url: object.url };
+}
+
+function assetIndexArtifact(value: unknown): AssetIndexArtifact | undefined {
+  if (value === undefined) return undefined;
+  const object = asObject(value);
+  const download = downloadArtifact(value, 'asset index');
+  if (download === undefined || typeof object?.id !== 'string' || object.id.length === 0) {
+    throw new PackwrightError(
+      'invalid_content',
+      'Minecraft 26.2 metadata contains a malformed asset index.',
+    );
+  }
+  const totalSize = object.totalSize;
+  if (totalSize !== undefined && !isPositiveSafeInteger(totalSize)) {
+    throw new PackwrightError(
+      'invalid_content',
+      'Minecraft 26.2 metadata contains an invalid asset-index total size.',
+    );
+  }
+  return {
+    ...download,
+    id: object.id,
+    ...(totalSize === undefined ? {} : { totalSize }),
+  };
+}
+
 function versionMetadata(value: unknown): VersionMetadata {
   const object = asObject(value);
   const downloads = asObject(object?.downloads);
@@ -208,26 +364,34 @@ function versionMetadata(value: unknown): VersionMetadata {
       "Minecraft 26.2 metadata does not match Packwright's pinned official server artifact.",
     );
   }
+  const client = downloadArtifact(downloads?.client, 'client');
+  const assetIndex = assetIndexArtifact(object.assetIndex);
   return {
     id: '26.2',
     downloads: {
+      ...(client === undefined ? {} : { client }),
       server: {
         sha1: artifacts.serverSha1,
         size: artifacts.serverSize,
         url: artifacts.serverUrl,
       },
     },
+    ...(assetIndex === undefined ? {} : { assetIndex }),
   };
 }
 
 async function writeJsonAtomic(filename: string, value: unknown): Promise<void> {
+  await writeTextAtomic(filename, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+async function writeTextAtomic(filename: string, value: string): Promise<void> {
   await mkdir(path.dirname(filename), { recursive: true, mode: 0o755 });
   const temporary = path.join(
     path.dirname(filename),
     `.${path.basename(filename)}.${randomUUID()}.tmp`,
   );
   try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+    await writeFile(temporary, value, {
       flag: 'wx',
       mode: 0o600,
     });
@@ -267,10 +431,10 @@ function assertOfficialUrl(value: string): URL {
 async function fetchJson(
   url: string,
   signal?: AbortSignal,
-): Promise<{ readonly value: unknown; readonly sha1: string }> {
+): Promise<{ readonly value: unknown; readonly sha1: string; readonly rawText: string }> {
   assertOfficialUrl(url);
   const response = await fetch(url, {
-    headers: { 'user-agent': 'packwright-mcp/0.2.0' },
+    headers: { 'user-agent': 'packwright-mcp/0.3.0' },
     redirect: 'error',
     ...(signal === undefined ? {} : { signal }),
   });
@@ -288,6 +452,7 @@ async function fetchJson(
   return {
     value: JSON.parse(text) as unknown,
     sha1: createHash('sha1').update(text, 'utf8').digest('hex'),
+    rawText: text,
   };
 }
 
@@ -297,7 +462,7 @@ async function sha1File(filename: string): Promise<string> {
   return hash.digest('hex');
 }
 
-const jarVerificationCache = new Map<
+const artifactVerificationCache = new Map<
   string,
   {
     readonly device: number;
@@ -310,7 +475,7 @@ const jarVerificationCache = new Map<
   }
 >();
 
-async function verifyCachedJar(
+async function verifyCachedArtifact(
   filename: string,
   expected: string,
   expectedSize: number,
@@ -320,7 +485,7 @@ async function verifyCachedJar(
   try {
     const info = await lstat(filename);
     if (!info.isFile() || info.size !== expectedSize) return false;
-    const cached = jarVerificationCache.get(filename);
+    const cached = artifactVerificationCache.get(filename);
     if (
       !force &&
       cached?.device === info.dev &&
@@ -357,7 +522,7 @@ async function verifyCachedJar(
     } finally {
       await handle.close();
     }
-    jarVerificationCache.set(filename, {
+    artifactVerificationCache.set(filename, {
       device: info.dev,
       inode: info.ino,
       size: info.size,
@@ -455,7 +620,7 @@ async function downloadVerified(
   );
   try {
     const response = await fetch(url, {
-      headers: { 'user-agent': 'packwright-mcp/0.2.0' },
+      headers: { 'user-agent': 'packwright-mcp/0.3.0' },
       redirect: 'error',
       ...(signal === undefined ? {} : { signal }),
     });
@@ -465,7 +630,7 @@ async function downloadVerified(
     const declaredSize = Number(response.headers.get('content-length') ?? '0');
     if (expectedSize !== undefined && declaredSize !== 0 && declaredSize !== expectedSize) {
       throw new Error(
-        `Server jar size mismatch before download (expected ${String(expectedSize)}, received ${String(declaredSize)}).`,
+        `Artifact size mismatch before download (expected ${String(expectedSize)}, received ${String(declaredSize)}).`,
       );
     }
     await pipeline(
@@ -475,13 +640,13 @@ async function downloadVerified(
     const info = await stat(temporary);
     if (expectedSize !== undefined && info.size !== expectedSize) {
       throw new Error(
-        `Server jar size mismatch (expected ${String(expectedSize)}, received ${String(info.size)}).`,
+        `Artifact size mismatch (expected ${String(expectedSize)}, received ${String(info.size)}).`,
       );
     }
     const actualSha1 = await sha1File(temporary);
     if (actualSha1 !== expectedSha1.toLowerCase()) {
       throw new Error(
-        `Server jar SHA-1 mismatch (expected ${expectedSha1}, received ${actualSha1}).`,
+        `Artifact SHA-1 mismatch (expected ${expectedSha1}, received ${actualSha1}).`,
       );
     }
     await rename(temporary, destination);
@@ -496,13 +661,16 @@ export async function getCacheStatus(
   forceJarVerification = false,
 ): Promise<CacheStatus> {
   const paths = cachePaths(cacheDir);
-  const [jar, versionMetadataPresent, commands, registries, acceptedEula] = await Promise.all([
-    fileExists(paths.serverJar),
-    fileExists(paths.versionMetadata),
-    fileExists(paths.commandsReport),
-    fileExists(paths.registriesReport),
-    fileExists(paths.setupRecord),
-  ]);
+  const [jar, clientJar, assetIndex, versionMetadataPresent, commands, registries, acceptedEula] =
+    await Promise.all([
+      fileExists(paths.serverJar),
+      fileExists(paths.clientJar),
+      fileExists(paths.assetIndex),
+      fileExists(paths.versionMetadata),
+      fileExists(paths.commandsReport),
+      fileExists(paths.registriesReport),
+      fileExists(paths.setupRecord),
+    ]);
   let record: SetupRecord | undefined;
   if (acceptedEula) {
     try {
@@ -512,9 +680,11 @@ export async function getCacheStatus(
     }
   }
   let versionMetadataVerified = false;
+  let cachedMetadata:
+    { readonly metadata: VersionMetadata; readonly manifestSha1Verified: boolean } | undefined;
   if (versionMetadataPresent) {
     try {
-      versionMetadata(await readJsonFile<unknown>(paths.versionMetadata));
+      cachedMetadata = await readCachedVersionMetadata(paths.versionMetadata);
       versionMetadataVerified = true;
     } catch {
       versionMetadataVerified = false;
@@ -523,10 +693,43 @@ export async function getCacheStatus(
   const artifacts = MINECRAFT_26_2.artifacts;
   const jarVerified =
     jar && record !== undefined
-      ? await verifyCachedJar(
+      ? await verifyCachedArtifact(
           paths.serverJar,
           artifacts.serverSha1,
           artifacts.serverSize,
+          forceJarVerification,
+        )
+      : false;
+  const clientRecord = record?.clientAssets;
+  const clientMetadata = cachedMetadata?.metadata.downloads.client;
+  const assetIndexMetadata = cachedMetadata?.metadata.assetIndex;
+  const clientMetadataVerified =
+    cachedMetadata?.manifestSha1Verified === true &&
+    clientRecord !== undefined &&
+    clientMetadata !== undefined &&
+    assetIndexMetadata !== undefined &&
+    clientRecord.versionMetadataSha1 ===
+      MINECRAFT_26_2.resourcePack.artifacts.versionMetadataSha1 &&
+    clientRecord.clientSha1 === clientMetadata.sha1 &&
+    clientRecord.clientSize === clientMetadata.size &&
+    clientRecord.assetIndexId === assetIndexMetadata.id &&
+    clientRecord.assetIndexSha1 === assetIndexMetadata.sha1 &&
+    clientRecord.assetIndexSize === assetIndexMetadata.size;
+  const clientJarVerified =
+    clientJar && clientMetadataVerified
+      ? await verifyCachedArtifact(
+          paths.clientJar,
+          clientMetadata.sha1,
+          clientMetadata.size,
+          forceJarVerification,
+        )
+      : false;
+  const assetIndexVerified =
+    assetIndex && clientMetadataVerified
+      ? await verifyCachedArtifact(
+          paths.assetIndex,
+          assetIndexMetadata.sha1,
+          assetIndexMetadata.size,
           forceJarVerification,
         )
       : false;
@@ -539,22 +742,63 @@ export async function getCacheStatus(
     acceptedEula: record !== undefined,
     commands,
     registries,
+    clientAssets: {
+      selected: clientRecord !== undefined,
+      ready: clientJarVerified && assetIndexVerified,
+      metadataVerified: clientMetadataVerified,
+      clientJar,
+      clientJarVerified,
+      assetIndex,
+      assetIndexVerified,
+    },
     ...(record === undefined ? {} : { record }),
+  };
+}
+
+async function fetchPinnedVersionMetadata(signal?: AbortSignal): Promise<{
+  readonly metadata: VersionMetadata;
+  readonly rawText: string;
+}> {
+  const manifestResponse = await fetchJson(VERSION_MANIFEST_URL, signal);
+  const manifest = versionManifest(manifestResponse.value);
+  const entry = manifest.versions.find((candidate) => candidate.id === '26.2');
+  if (entry === undefined) {
+    throw new Error("Minecraft 26.2 is absent from Mojang's official version manifest.");
+  }
+  const artifacts = MINECRAFT_26_2.artifacts;
+  if (entry.url !== artifacts.versionMetadataUrl || entry.sha1 !== artifacts.versionMetadataSha1) {
+    throw new PackwrightError(
+      'invalid_content',
+      "Mojang's version manifest entry for 26.2 does not match Packwright's pinned metadata.",
+    );
+  }
+  const metadataResponse = await fetchJson(entry.url, signal);
+  if (metadataResponse.sha1 !== artifacts.versionMetadataSha1) {
+    throw new PackwrightError(
+      'invalid_content',
+      'Minecraft 26.2 metadata failed its manifest SHA-1 verification.',
+    );
+  }
+  return {
+    metadata: versionMetadata(metadataResponse.value),
+    rawText: metadataResponse.rawText,
   };
 }
 
 async function prepareServerJar(
   config: RuntimeConfig,
   signal?: AbortSignal,
+  requireClientAssets = false,
 ): Promise<{
   readonly metadata: VersionMetadata;
   readonly sha1: string;
 }> {
   const paths = cachePaths(config.cacheDir);
-  let metadata: VersionMetadata | undefined;
+  let cachedMetadata:
+    { readonly metadata: VersionMetadata; readonly manifestSha1Verified: boolean } | undefined;
   if (await fileExists(paths.versionMetadata)) {
     try {
-      metadata = versionMetadata(await readJsonFile<unknown>(paths.versionMetadata));
+      cachedMetadata = await readCachedVersionMetadata(paths.versionMetadata);
     } catch (error) {
       if (config.offline) {
         throw new PackwrightError(
@@ -563,49 +807,34 @@ async function prepareServerJar(
           { cause: error instanceof Error ? error.message : String(error) },
         );
       }
-      metadata = undefined;
+      cachedMetadata = undefined;
     }
   }
 
-  if (metadata === undefined) {
+  const clientMetadataMissing =
+    cachedMetadata?.manifestSha1Verified !== true ||
+    cachedMetadata.metadata.downloads.client === undefined ||
+    cachedMetadata.metadata.assetIndex === undefined;
+  if (cachedMetadata === undefined || (requireClientAssets && clientMetadataMissing)) {
     if (config.offline) {
       throw new PackwrightError(
         'not_found',
-        'Minecraft 26.2 metadata is not cached and offline mode forbids setup downloads.',
+        requireClientAssets
+          ? 'Manifest-verified Minecraft 26.2 client metadata is not cached and offline mode forbids setup downloads.'
+          : 'Minecraft 26.2 metadata is not cached and offline mode forbids setup downloads.',
       );
     }
-    const manifestResponse = await fetchJson(VERSION_MANIFEST_URL, signal);
-    const manifest = versionManifest(manifestResponse.value);
-    const entry = manifest.versions.find((candidate) => candidate.id === '26.2');
-    if (entry === undefined) {
-      throw new Error("Minecraft 26.2 is absent from Mojang's official version manifest.");
-    }
-    const artifacts = MINECRAFT_26_2.artifacts;
-    if (
-      entry.url !== artifacts.versionMetadataUrl ||
-      entry.sha1 !== artifacts.versionMetadataSha1
-    ) {
-      throw new PackwrightError(
-        'invalid_content',
-        "Mojang's version manifest entry for 26.2 does not match Packwright's pinned metadata.",
-      );
-    }
-    const metadataResponse = await fetchJson(entry.url, signal);
-    if (metadataResponse.sha1 !== artifacts.versionMetadataSha1) {
-      throw new PackwrightError(
-        'invalid_content',
-        'Minecraft 26.2 metadata failed its manifest SHA-1 verification.',
-      );
-    }
-    metadata = versionMetadata(metadataResponse.value);
-    await writeJsonAtomic(paths.versionMetadata, metadata);
+    const downloaded = await fetchPinnedVersionMetadata(signal);
+    await writeTextAtomic(paths.versionMetadata, downloaded.rawText);
+    cachedMetadata = { metadata: downloaded.metadata, manifestSha1Verified: true };
   }
 
+  const metadata = cachedMetadata.metadata;
   const server = metadata.downloads.server;
   if (server === undefined) throw new Error('Pinned Minecraft server metadata is unavailable.');
 
   if (await fileExists(paths.serverJar)) {
-    const verified = await verifyCachedJar(
+    const verified = await verifyCachedArtifact(
       paths.serverJar,
       MINECRAFT_26_2.artifacts.serverSha1,
       MINECRAFT_26_2.artifacts.serverSize,
@@ -636,11 +865,69 @@ async function prepareServerJar(
   return { metadata, sha1: MINECRAFT_26_2.artifacts.serverSha1 };
 }
 
+async function ensureVerifiedArtifact(
+  config: RuntimeConfig,
+  artifact: DownloadArtifact,
+  destination: string,
+  label: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (await fileExists(destination)) {
+    const verified = await verifyCachedArtifact(destination, artifact.sha1, artifact.size, true);
+    if (!verified) {
+      if (config.offline) {
+        throw new PackwrightError(
+          'invalid_content',
+          `The cached Minecraft ${label} failed SHA-1 or size verification.`,
+        );
+      }
+      await rm(destination, { force: true });
+    }
+  }
+  if (!(await fileExists(destination))) {
+    if (config.offline) {
+      throw new PackwrightError(
+        'not_found',
+        `The Minecraft 26.2 ${label} is not cached and offline mode forbids downloads.`,
+      );
+    }
+    await downloadVerified(artifact.url, destination, artifact.sha1, artifact.size, signal);
+  }
+}
+
+async function prepareClientAssets(
+  config: RuntimeConfig,
+  metadata: VersionMetadata,
+  signal?: AbortSignal,
+): Promise<Omit<ClientAssetsSetupRecord, 'preparedAt'>> {
+  const client = metadata.downloads.client;
+  const assetIndex = metadata.assetIndex;
+  if (client === undefined || assetIndex === undefined) {
+    throw new PackwrightError(
+      'invalid_content',
+      'Manifest-verified Minecraft 26.2 metadata does not declare both a client and asset index.',
+    );
+  }
+  const paths = cachePaths(config.cacheDir);
+  await ensureVerifiedArtifact(config, client, paths.clientJar, 'client jar', signal);
+  await ensureVerifiedArtifact(config, assetIndex, paths.assetIndex, 'asset index', signal);
+  return {
+    versionMetadataSha1: MINECRAFT_26_2.resourcePack.artifacts.versionMetadataSha1,
+    clientSha1: client.sha1,
+    clientSize: client.size,
+    assetIndexId: assetIndex.id,
+    assetIndexSha1: assetIndex.sha1,
+    assetIndexSize: assetIndex.size,
+  };
+}
+
 export async function setupVersion(
   config: RuntimeConfig,
   acceptMinecraftEula: boolean,
   signal?: AbortSignal,
+  options: SetupVersionOptions = {},
 ): Promise<SetupVersionResult> {
+  await assertRuntimePathSeparation(config);
   if (!acceptMinecraftEula) {
     throw new PackwrightError(
       'confirmation_required',
@@ -655,8 +942,22 @@ export async function setupVersion(
       `Minecraft 26.2 setup requires Java ${String(MINECRAFT_26_2.javaMajor)}; ${java.description}.`,
     );
   }
-  const { sha1 } = await prepareServerJar(config, signal);
   const paths = cachePaths(config.cacheDir);
+  const includeClientAssets = options.clientAssets === true;
+  let previousClientAssets: ClientAssetsSetupRecord | undefined;
+  if (!includeClientAssets && (await fileExists(paths.setupRecord))) {
+    try {
+      previousClientAssets = setupRecord(
+        await readJsonFile<unknown>(paths.setupRecord),
+      )?.clientAssets;
+    } catch {
+      previousClientAssets = undefined;
+    }
+  }
+  const { metadata, sha1 } = await prepareServerJar(config, signal, includeClientAssets);
+  const preparedClientAssets = includeClientAssets
+    ? await prepareClientAssets(config, metadata, signal)
+    : undefined;
   const work = path.join(paths.versionDir, `.data-${randomUUID()}`);
   const generated = path.join(work, 'generated', 'reports');
   await mkdir(work, { recursive: true, mode: 0o700 });
@@ -689,14 +990,27 @@ export async function setupVersion(
     await copyFileAtomic(generatedCommands, paths.commandsReport);
     await copyFileAtomic(generatedRegistries, paths.registriesReport);
     const generatedAt = new Date().toISOString();
+    const recordedClientAssets =
+      preparedClientAssets === undefined
+        ? previousClientAssets
+        : { ...preparedClientAssets, preparedAt: generatedAt };
     const record: SetupRecord = {
       minecraftVersion: '26.2',
       acceptedMinecraftEulaAt: generatedAt,
       generatedAt,
       serverSha1: sha1,
       versionManifestUrl: VERSION_MANIFEST_URL,
+      ...(recordedClientAssets === undefined ? {} : { clientAssets: recordedClientAssets }),
     };
     await writeJsonAtomic(paths.setupRecord, record);
+    const status = await getCacheStatus(config.cacheDir, true);
+    const clientStatus = status.clientAssets;
+    if (includeClientAssets && clientStatus?.ready !== true) {
+      throw new PackwrightError(
+        'precondition_failed',
+        'Minecraft client assets changed before setup readiness could be recorded.',
+      );
+    }
     return {
       ok: true,
       minecraftVersion: '26.2',
@@ -705,6 +1019,19 @@ export async function setupVersion(
       commandsReport: paths.commandsReport,
       registriesReport: paths.registriesReport,
       generatedAt,
+      clientAssets: {
+        selected: includeClientAssets,
+        ready: clientStatus?.ready ?? false,
+        ...(includeClientAssets && preparedClientAssets !== undefined
+          ? {
+              clientJar: paths.clientJar,
+              clientSha1: preparedClientAssets.clientSha1,
+              assetIndex: paths.assetIndex,
+              assetIndexId: preparedClientAssets.assetIndexId,
+              assetIndexSha1: preparedClientAssets.assetIndexSha1,
+            }
+          : {}),
+      },
     };
   } finally {
     await rm(work, { recursive: true, force: true }).catch(() => undefined);

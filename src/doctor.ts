@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 
-import type { RuntimeConfig } from './config.js';
+import { assertRuntimePathSeparation, type RuntimeConfig } from './config.js';
 import { getCacheStatus } from './minecraft/cache.js';
 import { getJavaVersion } from './minecraft/java.js';
 import { getSpyglassStatus, PINNED_SPYGLASS_VERSION } from './validation/spyglass.js';
@@ -80,6 +80,23 @@ export async function runDoctor(
     });
   }
 
+  try {
+    await assertRuntimePathSeparation(config);
+    checks.push({
+      name: 'workspace_cache_separation',
+      ok: true,
+      required: true,
+      message: 'Workspace and cache resolve to separate directory trees',
+    });
+  } catch (error) {
+    checks.push({
+      name: 'workspace_cache_separation',
+      ok: false,
+      required: true,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   const java = await getJavaVersion(config.javaCommand, signal);
   checks.push({
     name: 'java_25',
@@ -99,6 +116,17 @@ export async function runDoctor(
     message: cache.ready
       ? `Verified Minecraft 26.2 cache is ready at ${config.cacheDir}`
       : `Cache is incomplete (jar=${String(cache.jar)}, jarVerified=${String(cache.jarVerified)}, metadata=${String(cache.versionMetadata)}, metadataVerified=${String(cache.versionMetadataVerified)}, EULA=${String(cache.acceptedEula)}, commands=${String(cache.commands)}, registries=${String(cache.registries)})`,
+  });
+
+  const clientAssets = cache.clientAssets;
+  checks.push({
+    name: 'minecraft_client_assets',
+    ok: clientAssets?.ready ?? false,
+    required: false,
+    message:
+      clientAssets?.ready === true
+        ? 'Verified Minecraft 26.2 client jar and asset index are ready for client-profile lookups'
+        : 'Optional client metadata is not prepared; --client-assets only caches verified setup/readiness artifacts, and v0.3 does not resolve built-in assets from them',
   });
 
   if (config.spyglassCommand === undefined) {

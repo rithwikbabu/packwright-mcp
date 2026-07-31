@@ -22,6 +22,49 @@ import type {
   ResourceReadResult,
   ResourceUpsertInput,
 } from './schemas.js';
+import type {
+  ProjectBuildInput,
+  ProjectBuildResult,
+  TextureImportInput,
+  VisualAssetInspectInput,
+  VisualAssetInspectResult,
+  VisualCapabilitiesInput,
+  VisualCapabilitiesResult,
+  VisualCommitInput,
+  VisualCommitResult,
+  VisualCompileInput,
+  VisualConnectInput,
+  VisualDraftResult,
+  VisualProjectAttachInput,
+  VisualProjectAttachResult,
+  VisualRenderInput,
+  VisualRenderResult,
+  VisualRevisionCreateInput,
+  VisualSpecUpsertInput,
+  VisualValidateInput,
+  VisualValidateResult,
+} from './visual-schemas.js';
+
+export type VisualResourceInput =
+  | { readonly kind: 'project_manifest' | 'project_graph'; readonly projectId: string }
+  | {
+      readonly kind: 'spec' | 'contact_sheet' | 'review' | 'binding';
+      readonly runId: string;
+      readonly revisionId: string;
+    }
+  | {
+      readonly kind: 'view';
+      readonly runId: string;
+      readonly revisionId: string;
+      readonly view: string;
+    };
+
+export interface VisualResourceResult {
+  readonly mimeType: 'application/json' | 'image/png';
+  readonly encoding: 'utf8' | 'base64';
+  readonly data: string;
+  readonly sha256: string;
+}
 
 export interface PackwrightProgress {
   /** Completed work units. Values must increase across notifications. */
@@ -101,6 +144,71 @@ export interface PackwrightService {
     input: { minecraftVersion: '26.2' },
     context: PackwrightServiceContext,
   ): Promise<CachedRegistriesResult>;
+
+  getVisualCapabilities(
+    input: VisualCapabilitiesInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualCapabilitiesResult>;
+
+  attachVisualProject(
+    input: VisualProjectAttachInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualProjectAttachResult>;
+
+  inspectVisualAsset(
+    input: VisualAssetInspectInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualAssetInspectResult>;
+
+  upsertVisualSpec(
+    input: VisualSpecUpsertInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult>;
+
+  importTexture(
+    input: TextureImportInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult>;
+
+  compileVisual(
+    input: VisualCompileInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult>;
+
+  connectVisual(
+    input: VisualConnectInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult>;
+
+  renderVisual(
+    input: VisualRenderInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualRenderResult>;
+
+  createVisualRevision(
+    input: VisualRevisionCreateInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualDraftResult>;
+
+  commitVisual(
+    input: VisualCommitInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualCommitResult>;
+
+  validateVisual(
+    input: VisualValidateInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualValidateResult>;
+
+  buildProject(
+    input: ProjectBuildInput,
+    context: PackwrightServiceContext,
+  ): Promise<ProjectBuildResult>;
+
+  readVisualResource(
+    input: VisualResourceInput,
+    context: PackwrightServiceContext,
+  ): Promise<VisualResourceResult>;
 
   /** Whether the most recent project listing was shortened for payload safety. */
   projectsWereTruncated?(): boolean;

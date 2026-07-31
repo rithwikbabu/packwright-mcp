@@ -31,7 +31,9 @@ describe('compiled stdio server', () => {
 
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools).toHaveLength(9);
+    expect(tools.tools).toHaveLength(21);
+    expect(tools.tools.map((tool) => tool.name)).toContain('visual_render');
+    expect(tools.tools.map((tool) => tool.name)).toContain('project_build');
 
     const progress: number[] = [];
     const created = await client.callTool(

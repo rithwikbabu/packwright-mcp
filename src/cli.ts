@@ -143,8 +143,8 @@ export function createCli(): Command {
   const program = new Command();
   program
     .name('packwright-mcp')
-    .description('Local-first MCP server and CLI for Minecraft Java 26.2 datapacks')
-    .version('0.2.0')
+    .description('Local-first MCP server and visual compiler for Minecraft Java 26.2 packs')
+    .version('0.3.0')
     .showSuggestionAfterError()
     .showHelpAfterError();
   addGlobalOptions(program);
@@ -191,17 +191,30 @@ export function createCli(): Command {
       '--accept-minecraft-eula',
       'record explicit human acceptance of the Minecraft EULA',
     )
-    .action(async (version: string, _local: unknown, command: Command) => {
+    .option(
+      '--client-assets',
+      'also cache the manifest-verified official client jar and asset index',
+      false,
+    )
+    .action(async (version: string, local: { clientAssets: boolean }, command: Command) => {
       if (version !== '26.2') throw new InvalidArgumentError('Only Minecraft 26.2 is supported.');
       const options = globalOptions(command);
       const config = resolveRuntimeConfig(configOverrides(options));
       const abort = installAbortHandlers();
       try {
-        const result = await setupVersion(config, true, abort.controller.signal);
+        const result = await setupVersion(config, true, abort.controller.signal, {
+          clientAssets: local.clientAssets,
+        });
         emitResult(result, options.json ?? false, [
           `Minecraft ${result.minecraftVersion} validation cache is ready.`,
           `Cache: ${result.cacheDir}`,
           `Verified server SHA-1: ${result.serverSha1}`,
+          ...(result.clientAssets.selected
+            ? [
+                `Verified client SHA-1: ${result.clientAssets.clientSha1 ?? 'unknown'}`,
+                `Verified asset index: ${result.clientAssets.assetIndexId ?? 'unknown'} (${result.clientAssets.assetIndexSha1 ?? 'unknown'})`,
+              ]
+            : []),
         ]);
       } finally {
         abort.dispose();

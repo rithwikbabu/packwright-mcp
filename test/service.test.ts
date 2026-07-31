@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDatapack, upsertResource } from '../src/core/index.js';
 import { DatapackBuildInputSchema, DatapackValidateInputSchema } from '../src/mcp/schemas.js';
-import { PackwrightApplication } from '../src/service.js';
+import { assertPairedBuildByteBudget, PackwrightApplication } from '../src/service.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 
@@ -25,12 +25,14 @@ async function applicationWithoutMinecraftSetup(prefix: string): Promise<{
   application: PackwrightApplication;
   root: string;
 }> {
-  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
-  cleanups.push(async () => rm(root, { recursive: true, force: true }));
+  const container = await mkdtemp(path.join(os.tmpdir(), prefix));
+  cleanups.push(async () => rm(container, { recursive: true, force: true }));
+  const root = path.join(container, 'workspace');
+  await mkdir(root);
   const application = await PackwrightApplication.open({
     workspaceRoot: root,
-    cacheDir: path.join(root, '.missing-cache'),
-    javaCommand: path.join(root, 'missing-java'),
+    cacheDir: path.join(container, 'missing-cache'),
+    javaCommand: path.join(container, 'missing-java'),
     readOnly: false,
     offline: true,
   });
@@ -44,13 +46,30 @@ async function applicationWithoutMinecraftSetup(prefix: string): Promise<{
 }
 
 describe('Packwright application payload bounds', () => {
-  it('accounts for JSON escaping when truncating a resource_read result', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'packwright-service-'));
+  it('fails startup when the cache is inside the workspace', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'packwright-overlap-'));
     cleanups.push(async () => rm(root, { recursive: true, force: true }));
+
+    await expect(
+      PackwrightApplication.open({
+        workspaceRoot: root,
+        cacheDir: path.join(root, '.cache'),
+        javaCommand: 'java',
+        readOnly: false,
+        offline: true,
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_argument' });
+  });
+
+  it('accounts for JSON escaping when truncating a resource_read result', async () => {
+    const container = await mkdtemp(path.join(os.tmpdir(), 'packwright-service-'));
+    cleanups.push(async () => rm(container, { recursive: true, force: true }));
+    const root = path.join(container, 'workspace');
+    await mkdir(root);
 
     const application = await PackwrightApplication.open({
       workspaceRoot: root,
-      cacheDir: path.join(root, '.cache'),
+      cacheDir: path.join(container, 'cache'),
       javaCommand: 'java',
       readOnly: false,
       offline: true,
@@ -81,14 +100,16 @@ describe('Packwright application payload bounds', () => {
   });
 
   it('reports deep validators ready only when their runtime prerequisites work', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'packwright-readiness-'));
-    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const container = await mkdtemp(path.join(os.tmpdir(), 'packwright-readiness-'));
+    cleanups.push(async () => rm(container, { recursive: true, force: true }));
+    const root = path.join(container, 'workspace');
+    await mkdir(root);
 
     const application = await PackwrightApplication.open({
       workspaceRoot: root,
-      cacheDir: path.join(root, '.cache'),
-      javaCommand: path.join(root, 'missing-java'),
-      spyglassCommand: path.join(root, 'missing-spyglass'),
+      cacheDir: path.join(container, 'cache'),
+      javaCommand: path.join(container, 'missing-java'),
+      spyglassCommand: path.join(container, 'missing-spyglass'),
       readOnly: false,
       offline: true,
     });
@@ -172,5 +193,46 @@ describe('Packwright application vanilla validation contract', () => {
       }),
     );
     await expect(access(path.join(root, 'example.zip'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+});
+
+describe('Packwright paired-build overwrite contract', () => {
+  it('does not reinterpret missing overwrite preconditions as absent output files', async () => {
+    const { application } = await applicationWithoutMinecraftSetup(
+      'packwright-paired-build-preconditions-',
+    );
+
+    await expect(
+      application.buildProject(
+        {
+          projectId: 'missing-project',
+          overwrite: true,
+        },
+        serviceContext(),
+      ),
+    ).rejects.toMatchObject({ code: 'precondition_required' });
+    await expect(
+      application.buildProject(
+        {
+          projectId: 'missing-project',
+          overwrite: false,
+          expectedDatapackSha256: null,
+          expectedResourcepackSha256: null,
+        },
+        serviceContext(),
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_argument' });
+  });
+});
+
+describe('Packwright paired-build byte budget', () => {
+  it('rejects oversized source snapshots and ZIP artifacts before installation', () => {
+    expect(() => assertPairedBuildByteBudget('source snapshots', 64 * 1024 * 1024)).not.toThrow();
+    expect(() => assertPairedBuildByteBudget('source snapshots', 64 * 1024 * 1024 + 1)).toThrow(
+      expect.objectContaining({ code: 'size_limit' }),
+    );
+    expect(() => assertPairedBuildByteBudget('ZIP artifacts', Number.MAX_SAFE_INTEGER)).toThrow(
+      expect.objectContaining({ code: 'size_limit' }),
+    );
   });
 });

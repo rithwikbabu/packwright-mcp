@@ -5,9 +5,20 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 import { Workspace, createDatapack, upsertResource } from '../dist/core/index.js';
+import {
+  ProjectBuildInputSchema,
+  VisualCommitInputSchema,
+  VisualConnectInputSchema,
+  VisualProjectAttachInputSchema,
+  VisualRenderInputSchema,
+  VisualRevisionCreateInputSchema,
+  VisualSpecUpsertInputSchema,
+  VisualValidateInputSchema,
+} from '../dist/mcp/visual-schemas.js';
 import { setupVersion } from '../dist/minecraft/cache.js';
 import { runGameTests } from '../dist/minecraft/gametest.js';
 import { runProcess } from '../dist/runtime/process.js';
+import { PackwrightApplication } from '../dist/service.js';
 
 if (process.env.PACKWRIGHT_ACCEPT_MINECRAFT_EULA !== 'true') {
   throw new Error(
@@ -29,6 +40,10 @@ const config = {
   javaCommand: process.env.PACKWRIGHT_JAVA ?? 'java',
   readOnly: false,
   offline: false,
+};
+const serviceContext = {
+  signal: new globalThis.AbortController().signal,
+  reportProgress: () => Promise.resolve(),
 };
 
 /**
@@ -335,7 +350,257 @@ try {
     }),
     'built ZIP vanilla load',
   );
-  process.stderr.write('Packwright Minecraft 26.2 acceptance flow passed.\n');
+
+  requireSuccess(
+    await createDatapack(workspace, {
+      packPath: 'firestaff-data',
+      namespace: 'arcana',
+      description: 'Packwright paired visual acceptance datapack',
+    }),
+    'paired visual datapack create',
+  );
+  requireSuccess(
+    await upsertResource(workspace, 'firestaff-data', {
+      type: 'test_environment',
+      id: 'arcana:fixture',
+      content: `${JSON.stringify({ type: 'minecraft:all_of', definitions: [] }, null, 2)}\n`,
+    }),
+    'paired visual GameTest environment',
+  );
+  requireSuccess(
+    await upsertResource(workspace, 'firestaff-data', {
+      type: 'test_instance',
+      id: 'arcana:visual_smoke',
+      content: `${JSON.stringify(
+        {
+          type: 'function',
+          environment: 'arcana:fixture',
+          structure: 'minecraft:empty',
+          max_ticks: 100,
+          setup_ticks: 0,
+          required: true,
+          function: 'minecraft:always_pass',
+        },
+        null,
+        2,
+      )}\n`,
+    }),
+    'paired visual GameTest instance',
+  );
+
+  const application = await PackwrightApplication.open(config);
+  requireSuccess(
+    await application.attachVisualProject(
+      VisualProjectAttachInputSchema.parse({
+        id: 'firestaff',
+        datapack: 'firestaff-data',
+        resourcepack: 'firestaff-assets',
+        description: 'Packwright paired visual acceptance resource pack',
+      }),
+      serviceContext,
+    ),
+    'paired visual project attach',
+  );
+  const initialDraft = await application.upsertVisualSpec(
+    VisualSpecUpsertInputSchema.parse({
+      projectId: 'firestaff',
+      request: 'A crystal fire staff with an intentionally clipped first-person transform',
+      spec: {
+        id: 'arcana:firestaff',
+        targetKind: 'item',
+        template: 'handheld_3d',
+        textureSize: [32, 32],
+        materials: {
+          dark_oak: { color: '#4d2f1a' },
+          fire_crystal: { color: '#ff6a00', emissive: true, tintIndex: 0 },
+        },
+        parts: [
+          {
+            id: 'handle',
+            shape: 'cuboid',
+            from: [7, 0, 7],
+            to: [9, 13, 9],
+            material: 'dark_oak',
+          },
+          {
+            id: 'crystal',
+            shape: 'cuboid',
+            from: [6, 12, 6],
+            to: [10, 16, 10],
+            material: 'fire_crystal',
+            parent: 'handle',
+            rotation: { axis: 'y', angle: 22.5, pivot: [8, 14, 8] },
+          },
+        ],
+        displayPreset: 'handheld_3d',
+        display: {
+          firstperson_righthand: {
+            rotation: [0, -90, 25],
+            translation: [70, 3, 1],
+            scale: [0.68, 0.68, 0.68],
+          },
+        },
+        connection: { carrierItem: 'minecraft:blaze_rod' },
+      },
+    }),
+    serviceContext,
+  );
+  requireSuccess(initialDraft, 'paired visual semantic draft');
+  const clippedRender = await application.renderVisual(
+    VisualRenderInputSchema.parse({
+      projectId: 'firestaff',
+      runId: initialDraft.runId,
+      revisionId: initialDraft.revisionId,
+      viewSize: 64,
+    }),
+    serviceContext,
+  );
+  requireSuccess(clippedRender, 'paired visual clipped render');
+  const repairedDraft = await application.createVisualRevision(
+    VisualRevisionCreateInputSchema.parse({
+      projectId: 'firestaff',
+      runId: initialDraft.runId,
+      parentRevisionId: initialDraft.revisionId,
+      expectedSpecSha256: initialDraft.specSha256,
+      instructions: 'The first-person right-hand preview is clipped; reset its translation.',
+      repairs: [
+        {
+          kind: 'display',
+          context: 'firstperson_righthand',
+          transform: {
+            rotation: [0, -90, 25],
+            translation: [1.13, 3.2, 1.13],
+            scale: [0.68, 0.68, 0.68],
+          },
+        },
+      ],
+    }),
+    serviceContext,
+  );
+  requireSuccess(repairedDraft, 'paired visual targeted repair');
+  const repairedRender = await application.renderVisual(
+    VisualRenderInputSchema.parse({
+      projectId: 'firestaff',
+      runId: initialDraft.runId,
+      revisionId: repairedDraft.revisionId,
+      viewSize: 64,
+    }),
+    serviceContext,
+  );
+  requireSuccess(repairedRender, 'paired visual repaired render');
+  requireCondition(
+    repairedRender.pixelSha256 !== clippedRender.pixelSha256,
+    'The targeted visual repair did not change the deterministic contact sheet.',
+  );
+  const connection = await application.connectVisual(
+    VisualConnectInputSchema.parse({
+      projectId: 'firestaff',
+      runId: initialDraft.runId,
+      revisionId: repairedDraft.revisionId,
+      carrierItem: 'minecraft:blaze_rod',
+      generateGiveFunction: true,
+      generateRecipe: true,
+      recipe: {
+        pattern: [' B ', 'BCB', ' S '],
+        key: {
+          B: 'minecraft:blaze_powder',
+          C: 'minecraft:amethyst_shard',
+          S: 'minecraft:stick',
+        },
+      },
+    }),
+    serviceContext,
+  );
+  requireSuccess(connection, 'paired visual behavior connection');
+  requireCondition(
+    typeof connection.proposalSha256 === 'string',
+    'Paired visual connection did not produce an accepted proposal hash.',
+  );
+  const visualValidation = await application.validateVisual(
+    VisualValidateInputSchema.parse({
+      projectId: 'firestaff',
+      runId: initialDraft.runId,
+      revisionId: repairedDraft.revisionId,
+      includeVanilla: true,
+      includeGameTests: true,
+    }),
+    serviceContext,
+  );
+  requireSuccess(visualValidation, 'paired visual overlay validation and GameTest');
+  requireCondition(
+    visualValidation.layers.every(
+      (layer) => layer.status === 'passed' || layer.status === 'skipped',
+    ),
+    `Paired visual validation did not pass every selected layer:\n${JSON.stringify(visualValidation, null, 2)}`,
+  );
+  requireSuccess(
+    await application.commitVisual(
+      VisualCommitInputSchema.parse({
+        projectId: 'firestaff',
+        runId: initialDraft.runId,
+        revisionId: repairedDraft.revisionId,
+        proposalSha256: connection.proposalSha256,
+        confirm: true,
+      }),
+      serviceContext,
+    ),
+    'paired visual transaction commit',
+  );
+  const pairedBuild = await application.buildProject(
+    ProjectBuildInputSchema.parse({
+      projectId: 'firestaff',
+      outputDirectory: 'visual-build',
+    }),
+    serviceContext,
+  );
+  requireSuccess(pairedBuild, 'paired deterministic build');
+  const repeatBuild = await application.buildProject(
+    ProjectBuildInputSchema.parse({
+      projectId: 'firestaff',
+      outputDirectory: 'visual-build-repeat',
+    }),
+    serviceContext,
+  );
+  requireSuccess(repeatBuild, 'repeated paired deterministic build');
+  requireCondition(
+    pairedBuild.datapack.sha256 === repeatBuild.datapack.sha256 &&
+      pairedBuild.resourcepack.sha256 === repeatBuild.resourcepack.sha256,
+    'Repeated paired builds were not byte-identical.',
+  );
+
+  const builtVisualData = path.join(workspaceRoot, 'built-visual-data');
+  await mkdir(builtVisualData, { mode: 0o700 });
+  const unpackVisualData = await runProcess({
+    command: 'unzip',
+    args: ['-q', path.join(workspaceRoot, pairedBuild.datapack.path), '-d', builtVisualData],
+    timeoutMs: 30_000,
+  });
+  requireCondition(
+    unpackVisualData.exitCode === 0 && !unpackVisualData.timedOut && !unpackVisualData.cancelled,
+    `Could not extract the paired datapack ZIP: ${unpackVisualData.stderr}`,
+  );
+  requireSuccess(
+    await runGameTests(config, workspace, {
+      project: 'built-visual-data',
+      tests: ['arcana:visual_smoke'],
+      timeoutMs: 300_000,
+    }),
+    'built paired datapack vanilla load',
+  );
+  const resourcepackArchiveCheck = await runProcess({
+    command: 'unzip',
+    args: ['-tq', path.join(workspaceRoot, pairedBuild.resourcepack.path)],
+    timeoutMs: 30_000,
+  });
+  requireCondition(
+    resourcepackArchiveCheck.exitCode === 0 &&
+      !resourcepackArchiveCheck.timedOut &&
+      !resourcepackArchiveCheck.cancelled,
+    `Could not verify the paired resource-pack ZIP: ${resourcepackArchiveCheck.stderr}`,
+  );
+  process.stderr.write(
+    'Packwright Minecraft 26.2 datapack and paired visual acceptance flows passed.\n',
+  );
 } finally {
   await rm(workspaceRoot, { recursive: true, force: true });
 }

@@ -4,6 +4,7 @@ export {
   type PackwrightMcpServerOptions,
 } from './register.js';
 export * from './schemas.js';
+export * from './visual-schemas.js';
 export type { PackwrightProgress, PackwrightService, PackwrightServiceContext } from './service.js';
 export {
   PACKWRIGHT_URI_SCHEME,
@@ -20,3 +21,4 @@ export {
   projectResourcesUri,
   versionRegistriesUri,
 } from './uris.js';
+export * from './visual-uris.js';

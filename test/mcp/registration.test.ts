@@ -21,6 +21,19 @@ const service: PackwrightService = {
   listProjects: () => Promise.resolve([]),
   getLastDiagnostics: unused,
   getCachedRegistries: unused,
+  getVisualCapabilities: unused,
+  attachVisualProject: unused,
+  inspectVisualAsset: unused,
+  upsertVisualSpec: unused,
+  importTexture: unused,
+  compileVisual: unused,
+  connectVisual: unused,
+  renderVisual: unused,
+  createVisualRevision: unused,
+  commitVisual: unused,
+  validateVisual: unused,
+  buildProject: unused,
+  readVisualResource: unused,
 };
 
 describe('Packwright MCP registration', () => {
@@ -40,7 +53,7 @@ describe('Packwright MCP registration', () => {
       () => client.close(),
       () => server.close(),
     );
-    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.2.0' });
+    expect(client.getServerVersion()).toEqual({ name: 'packwright-mcp', version: '0.3.0' });
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([
@@ -53,6 +66,18 @@ describe('Packwright MCP registration', () => {
       'minecraft_lookup',
       'datapack_test',
       'datapack_build',
+      'visual_capabilities',
+      'visual_project_attach',
+      'visual_asset_inspect',
+      'visual_spec_upsert',
+      'texture_import',
+      'visual_compile',
+      'visual_connect',
+      'visual_render',
+      'visual_revision_create',
+      'visual_commit',
+      'visual_validate',
+      'project_build',
     ]);
     expect(tools.tools.every((tool) => tool.inputSchema.additionalProperties === false)).toBe(true);
     expect(tools.tools.every((tool) => tool.outputSchema?.additionalProperties === false)).toBe(
@@ -69,6 +94,13 @@ describe('Packwright MCP registration', () => {
       'pack-resources',
       'pack-last-diagnostics',
       'version-registries',
+      'visual-project-manifest',
+      'visual-project-asset-graph',
+      'visual-draft-model-spec',
+      'visual-contact-sheet',
+      'visual-latest-review',
+      'visual-binding-proposal',
+      'visual-render-view',
     ]);
 
     const resources = await client.listResources();
@@ -84,6 +116,11 @@ describe('Packwright MCP registration', () => {
       'scaffold_feature',
       'review_datapack',
       'author_gametest',
+      'generate_visual_asset',
+      'review_visual_asset',
+      'repair_visual_asset',
+      'connect_custom_item',
+      'author_display_rig',
     ]);
   });
 

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -39,11 +39,13 @@ afterEach(async () => {
 describe('Packwright shared GameTest deadline', () => {
   it('returns a structured timeout when the deadline expires during validation', async () => {
     vi.useFakeTimers();
-    const root = await mkdtemp(path.join(os.tmpdir(), 'packwright-test-deadline-'));
-    cleanups.push(async () => rm(root, { recursive: true, force: true }));
+    const container = await mkdtemp(path.join(os.tmpdir(), 'packwright-test-deadline-'));
+    cleanups.push(async () => rm(container, { recursive: true, force: true }));
+    const root = path.join(container, 'workspace');
+    await mkdir(root);
     const application = await PackwrightApplication.open({
       workspaceRoot: root,
-      cacheDir: path.join(root, '.cache'),
+      cacheDir: path.join(container, 'cache'),
       javaCommand: 'java',
       readOnly: false,
       offline: true,

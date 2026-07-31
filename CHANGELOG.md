@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-30
+
+### Added
+
+- Added paired datapack/resource-pack projects for Minecraft Java Edition 26.2, including resource-pack format `88.0` and optional verified client-asset setup.
+- Added a truthful capability matrix that distinguishes native, simulated, replacement, and mod-required visual targets without presenting display-based approximations as new blocks or entities.
+- Added the first visual-compiler vertical slice for custom items: strict semantic `ModelSpec` drafts, deterministic Minecraft item definitions/models, generated or imported PNG textures, `minecraft:item_model` bindings, recipe and `/give` proposals, and cross-pack asset graphs.
+- Added 12 visual MCP tools, image and JSON resources, and five non-mutating prompts for generation, review, repair, connection, and display-rig planning.
+- Added an immutable content-addressed generation run store with provenance, targeted semantic revisions, render/review artifacts, and SHA-guarded commit proposals.
+- Added a deterministic CPU renderer with eight turntable views, inventory and display-context previews, and MCP contact-sheet image responses.
+
+### Changed
+
+- `VersionProfile` now composes server datapack, client resource-pack, and visual capability profiles while retaining the existing datapack tool contracts.
+- `project_build` now requires the latest accepted visual revision to be compiled, rendered, connected, validated, and committed, then installs both deterministic ZIPs in one journaled transaction.
+- Project and artifact inspection now verifies referenced cached artifacts and committed workspace hashes instead of trusting workflow-state pointers.
+- The protected Minecraft integration workflow now exercises the paired custom-item draft, deterministic render, targeted repair, binding, vanilla command validation, GameTest, transactional commit, and byte-identical dual-build path.
+
+### Security
+
+- Added confined PNG decoding and deterministic metadata stripping with file, dimension, pixel, and decoded-byte limits.
+- Bound accepted proposals to the exact project-manifest hash and pack paths, revalidate before commit, and reject stale, redirected, or incomplete proposals.
+- Added sorted multi-file locks, optimistic SHA-256 preconditions, same-directory staging, transaction journals, and rollback for cross-pack commits.
+- Rejected symlinked visual state roots and scoped revision identities to their immutable generation runs.
+- Namespaced cached workflow state and operation locks by canonical workspace identity, and rejected any workspace/cache overlap, including symlink aliases.
+- Added durable workspace commit receipts so an interrupted cache-state update can be reconciled only after the exact proposal, manifest, outputs, and retained-journal state are verified.
+- Switched transaction installation and rollback restoration to atomic no-replace links with parent identity revalidation, preserving concurrent writers and recovery artifacts on races.
+- Added a fail-closed Minecraft 26.2 allow-list for compiled item-state properties, codec parameters, and enumerated select values.
+
+### Fixed
+
+- Preserved the latest revision when compiling, rendering, connecting, or committing an explicitly selected older revision.
+- Made concurrent derived operations merge state safely instead of erasing render, binding, or commit metadata.
+- Tracked imported versus generated texture provenance and invalidated generated textures when a material repair changes its appearance.
+
 ## [0.2.0] - 2026-07-30
 
 ### Added
@@ -56,7 +91,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Excluded Spyglass from runtime dependencies because its current dependency tree contains an unfixed critical archive-extraction advisory; external use requires explicit operator configuration.
 
-[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/rithwikbabu/packwright-mcp/compare/v0.1.0...v0.1.1

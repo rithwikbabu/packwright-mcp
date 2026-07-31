@@ -18,3 +18,4 @@ export type {
 } from './mcp/service.js';
 export * from './service.js';
 export * from './validation/spyglass.js';
+export * from './visual/index.js';

@@ -4,7 +4,7 @@
 [![npm](https://img.shields.io/npm/v/%40rithwikbabu%2Fpackwright-mcp)](https://www.npmjs.com/package/@rithwikbabu/packwright-mcp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Packwright MCP is a local-first [Model Context Protocol](https://modelcontextprotocol.io/) server for safely creating, inspecting, validating, testing, and packaging Minecraft Java Edition datapacks. It gives an MCP client structured tools instead of unrestricted filesystem or shell access.
+Packwright MCP is a local-first [Model Context Protocol](https://modelcontextprotocol.io/) server for safely creating, inspecting, validating, testing, and packaging Minecraft Java Edition datapacks and paired resource packs. It gives an MCP client structured tools instead of unrestricted filesystem or shell access.
 
 > **NOT AN OFFICIAL MINECRAFT PRODUCT. NOT APPROVED BY OR ASSOCIATED WITH MOJANG OR MICROSOFT.**
 
@@ -12,11 +12,11 @@ Packwright does not contain or redistribute Minecraft code, assets, server jars,
 
 ## Status and compatibility
 
-Packwright `0.2.x` supports [Minecraft Java Edition **26.2**](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2) only, datapack format **107.1**. Node.js 20 or newer is required. Default validation, every build, and vanilla GameTest runs require Java 25 plus an operator-prepared Minecraft 26.2 cache. Normal authoring and an explicitly requested structural-only validation do not require Java.
+Packwright supports [Minecraft Java Edition **26.2**](https://www.minecraft.net/en-us/article/minecraft-java-edition-26-2) only: datapack format **107.1** and resource-pack format **88.0**. Node.js 20 or newer is required. Default validation, every datapack or paired-project build, and vanilla GameTest runs require Java 25 plus an operator-prepared Minecraft 26.2 cache. Normal authoring, visual drafting/rendering, and an explicitly requested structural-only validation do not require Java.
 
 The server uses the stable MCP TypeScript SDK v2, targets the MCP `2026-07-28` specification, and relies on SDK protocol negotiation for compatible clients.
 
-The server is local and stdio-only. It does not install packs into a live world, expose an HTTP endpoint, support Bedrock behavior packs, or create resource packs.
+The server is local and stdio-only. It does not install packs into a live world, expose an HTTP endpoint, or support Bedrock behavior packs.
 
 ## What it provides
 
@@ -26,9 +26,12 @@ The server is local and stdio-only. It does not install packs into a live world,
 - Always-available structural validation, plus optional diagnostics from an operator-configured external Spyglass process.
 - Disposable vanilla pack-loading and GameTest execution after explicit setup.
 - Deterministic ZIP builds that fail when structural or vanilla command validation has errors.
+- Paired datapack/resource-pack projects with truthful Minecraft `native`, `simulated`, `replacement`, and `requires_mod` profiles plus a separate `compilerSupport` implementation status.
+- A semantic custom-item model DSL, `minecraft:item_model` bindings, safe PNG import, deterministic CPU previews, immutable repair revisions, and guarded multi-file commit.
+- Validation of the exact uncommitted proposal over stable datapack/resource-pack snapshots, followed by transactional deterministic ZIPs from the exact committed pack snapshots.
 - Read-only MCP resources and workflow prompts for review, scaffolding, and GameTest authoring.
 
-See [MCP tools, resources, and prompts](docs/mcp-reference.md) for the complete interface.
+The v0.3 visual compiler is intentionally narrower than the Minecraft capability matrix: `compilerSupport` is `full` for `custom_item`, `limited` for `conditional_item_state`, and `unsupported` for every other target. The automatic vertical slice covers custom items, including a constrained conditional state DSL, and keeps one active visual head per paired project. Blocks, equipment, paintings/trims, mob variants, display rigs, animations, GUIs, generator adapters, multi-asset project heads, and real-client capture remain later phases. See the [paired visual compiler guide](docs/visual-compiler.md) and [MCP tools, resources, and prompts](docs/mcp-reference.md).
 
 ## Install and connect
 
@@ -43,7 +46,7 @@ Generic MCP client configuration:
       "command": "npx",
       "args": [
         "-y",
-        "@rithwikbabu/packwright-mcp@0.2.0",
+        "@rithwikbabu/packwright-mcp@0.3.0",
         "serve",
         "--workspace",
         "/absolute/path/to/datapacks"
@@ -60,7 +63,7 @@ The workspace can instead be passed through the environment:
   "mcpServers": {
     "packwright": {
       "command": "npx",
-      "args": ["-y", "@rithwikbabu/packwright-mcp@0.2.0"],
+      "args": ["-y", "@rithwikbabu/packwright-mcp@0.3.0"],
       "env": {
         "PACKWRIGHT_WORKSPACE": "/absolute/path/to/datapacks"
       }
@@ -79,6 +82,7 @@ The installed `packwright-mcp` binary defaults to `serve` when no subcommand is 
 packwright-mcp serve --workspace /absolute/path/to/datapacks
 packwright-mcp doctor --workspace /absolute/path/to/datapacks
 packwright-mcp setup-version 26.2 --accept-minecraft-eula --workspace /absolute/path/to/datapacks
+packwright-mcp setup-version 26.2 --accept-minecraft-eula --client-assets --workspace /absolute/path/to/datapacks
 packwright-mcp validate <pack> --workspace /absolute/path/to/datapacks
 packwright-mcp test <pack> --workspace /absolute/path/to/datapacks
 packwright-mcp build <pack> --workspace /absolute/path/to/datapacks
@@ -96,6 +100,8 @@ packwright-mcp setup-version 26.2 \
   --workspace /absolute/path/to/datapacks
 ```
 
+Add `--client-assets` only to prepare and report official client-reference readiness. In v0.3 that opt-in step caches the manifest-verified official client jar and asset index, but it is not a built-in asset resolver and does not download all asset objects or redistribute Minecraft assets. Compilation, rendering, and validation do not load built-in model or texture content from this cache. Any custom external texture or item-state model referenced by a `ModelSpec` must already exist at its normal `assets/<namespace>/textures/...png` or `assets/<namespace>/models/...json` path in the paired sibling resource pack.
+
 After setup, `validate` uses the pinned vanilla runtime by default to parse each logical `.mcfunction` command against Minecraft 26.2's real command dispatcher, loaded datapack registries, and component codecs. This catches invalid command, selector, item/component, particle, attribute, entity, and text-component syntax before packaging. `validate --no-vanilla` is the explicit structural-only escape hatch; builds never provide that bypass.
 
 Both command validation and authoritative tests run Java 25 in newly created disposable state. Command validation substitutes inert placeholders for the pack's functions and validates unreferenced command probes, so it does not execute user functions. GameTests receive a freshly allocated universe; a user world path is never accepted. See [Validation and vanilla testing](docs/validation-and-testing.md).
@@ -106,7 +112,7 @@ Spyglass is deliberately not installed as a runtime dependency. The adapter is c
 
 ## Safety model
 
-Packwright resolves every requested path beneath the configured workspace, rejects traversal and symlink escapes, limits scans and payloads, and never recursively deletes directories. Existing files can be replaced or deleted only with explicit intent and the current SHA-256. Raw authoring is limited to supported datapack text formats; binary NBT and `pack.png` may be inspected and packaged but not authored.
+Packwright resolves every requested path beneath the configured workspace, rejects traversal and symlink escapes, limits scans and payloads, and never recursively deletes directories. Existing files can be replaced or deleted only with explicit intent and the current SHA-256. Raw authoring is limited to supported datapack text formats; binary NBT and `pack.png` may be inspected and packaged but not authored. Visual textures use a dedicated bounded PNG decoder, and accepted cross-pack proposals commit through a journaled transaction with all destination hashes checked first.
 
 Read [Security model](docs/security-model.md) before granting the server access to valuable projects. Consider source control and `PACKWRIGHT_READ_ONLY=true` for review-only sessions.
 
