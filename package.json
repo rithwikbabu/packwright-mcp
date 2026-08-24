@@ -63,8 +63,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
-    "commander": "^14.0.0",
-    "env-paths": "^3.0.0",
+    "commander": "^15.0.0",
+    "env-paths": "^4.0.0",
     "fast-xml-parser": "^5.2.5",
     "yauzl": "^3.4.0",
     "yazl": "^3.3.1",
